@@ -1,0 +1,75 @@
+from typing import *
+
+import os
+import numpy as np
+from decord import VideoReader, cpu
+import torch
+import torchvision.transforms as tvT
+
+from src.options import Options
+from src.data.base_dataset import BaseDataset
+from src.utils.geo_util import inverse_c2w
+
+
+class RealcamvidDataset(BaseDataset):
+    def __init__(self, opt: Options, training: bool = True):
+        super().__init__(opt, "realcamvid", training)
+
+        if training:
+            self.metadata = np.load(f"{self.root}/RealCam-Vid_train.npz", allow_pickle=True)["arr_0"]
+        else:
+            self.metadata = np.load(f"{self.root}/RealCam-Vid_test.npz", allow_pickle=True)["arr_0"]
+
+        self.valid_idxs = list(range(len(self.metadata)))
+
+    def __len__(self) -> int:
+        return len(self.valid_idxs)
+
+    def __getitem__(self, idx: int) -> Dict[str, Any]:
+        metadata = self.metadata[idx]
+        dataset_source = metadata["dataset_source"]  # "RealEstate10K", "DL3DV-10K", "MiraData9K"
+
+        # Load prompt
+        if np.random.rand() < 0.75:  # TODO: make it configurable
+            prompt = metadata["long_caption"]
+        else:
+            prompt = metadata["short_caption"]
+
+        # Sample frames
+        video_path = os.path.join(self.root, metadata["video_path"])
+        vr = VideoReader(str(video_path), ctx=cpu(0))
+        num_frames = len(vr)
+        input_frame_idxs = self._frame_sample(num_frames)
+
+        # Load cameras
+        W2C = metadata["camera_extrinsics"]
+        if num_frames != W2C.shape[0]:
+            if idx in self.valid_idxs:
+                self.valid_idxs.remove(idx)
+                if len(self.valid_idxs) == 0:
+                    raise ValueError("No valid data in RealcamvidDataset!")
+            return self.__getitem__(np.random.choice(self.valid_idxs))
+
+        W2C = torch.from_numpy(W2C).float()  # (F_all, 4, 4)
+        C2W = inverse_c2w(W2C[input_frame_idxs, ...])  # (F, 4, 4)
+        fxfycxcy = torch.from_numpy(metadata["camera_intrinsics"]).float()[None, :].repeat(C2W.shape[0], 1)  # (F, 4)
+
+        # Load video
+        images = {
+            idx: tvT.ToTensor()(vr[idx].asnumpy())
+            for idx in input_frame_idxs
+        }
+        images = torch.stack([images[idx] for idx in input_frame_idxs]).float()  # (F, 3, H, W)
+
+        # Data augmentation
+        images, C2W, fxfycxcy = self._data_augment(images, C2W, fxfycxcy)
+
+        # Camera normalization
+        C2W = self._camera_normalize(C2W)
+
+        return {
+            "prompt": prompt,      # str
+            "image": images,       # (F, 3, H, W) in [0, 1]
+            "C2W": C2W,            # (F, 4, 4)
+            "fxfycxcy": fxfycxcy,  # (F, 4)
+        }
