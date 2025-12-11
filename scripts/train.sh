@@ -21,6 +21,14 @@ if [ -z "$ROOT" ]; then
 fi
 echo "ROOT = $ROOT"
 
+cd $ROOT/projects/VGGM
+
+SETUP_FLAG=/tmp/.setup_done
+if [ ! -f "$SETUP_FLAG" ]; then
+    bash settings/setup.sh
+    touch $SETUP_FLAG
+fi
+
 FILE=$1
 CONFIG_FILE=$2
 TAG=$3

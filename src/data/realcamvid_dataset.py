@@ -50,8 +50,8 @@ class RealcamvidDataset(BaseDataset):
                     raise ValueError("No valid data in RealcamvidDataset!")
             return self.__getitem__(np.random.choice(self.valid_idxs))
 
-        W2C = torch.from_numpy(W2C).float()  # (F_all, 4, 4)
-        C2W = inverse_c2w(W2C[input_frame_idxs, ...])  # (F, 4, 4)
+        C2W = inverse_c2w(torch.from_numpy(W2C).float())[input_frame_idxs, ...]  # (F, 4, 4)
+        C2W[:, :3, 3] *= metadata["align_factor"]  # to metric scale
         fxfycxcy = torch.from_numpy(metadata["camera_intrinsics"]).float()[None, :].repeat(C2W.shape[0], 1)  # (F, 4)
 
         # Load video
