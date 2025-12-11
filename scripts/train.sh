@@ -34,6 +34,10 @@ CONFIG_FILE=$2
 TAG=$3
 shift 3  # remove $1~$3 for $@
 
+# 使用 Socket 网络
+export NCCL_NET=Socket # 数据传输协议，如果使用IB网卡协议，则不需要配置
+export NCCL_SOCKET_IFNAME=bond1  # 指定的socket协议网口，默认是eth0
+
 # export HF_ENDPOINT=https://hf-mirror.com
 # export WANDB_BASE_URL=https://api.bandw.top
 export HF_HOME=$ROOT/.cache/huggingface
