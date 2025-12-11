@@ -21,6 +21,7 @@ from accelerate import Accelerator
 from accelerate.logging import get_logger as get_accelerate_logger
 from accelerate import DataLoaderConfiguration, DeepSpeedPlugin
 
+import sys; sys.path.append(os.path.join(os.path.dirname(__file__), ".."))  # for src modules
 from src.options import opt_dict, ROOT
 from src.data import *  # import all dataset classes and `yield_forever`
 from src.models.networks import WanVAEWrapper
@@ -252,9 +253,6 @@ def main():
     if args.allow_tf32:
         torch.backends.cuda.matmul.allow_tf32 = True
 
-    # Allow the current step to be shared across processes in the model and dataloader
-    step_tracker = util.StepTracker()
-
     train_dataset = RealcamvidDataset(opt, training=True)
     train_loader = DataLoader(
         train_dataset,
@@ -290,9 +288,9 @@ def main():
 
     # Initialize the model, optimizer and lr scheduler
     if opt.use_dmd:
-        model = DMD_Wan(opt, step_tracker)
+        model = DMD_Wan(opt)
     else:
-        model = Wan(opt, step_tracker)
+        model = Wan(opt)
     params_to_optimize = filter(lambda p: p.requires_grad, model.parameters())
     logger.info(f"Trainable parameter names: {sorted([name for name, param in model.named_parameters() if param.requires_grad])}\n")
 
@@ -419,7 +417,6 @@ def main():
         # Load EMA states
         if args.use_ema and os.path.exists(os.path.join(ckpt_dir, f"{args.resume_from_iter:06d}", "ema_states.pth")):
             ema_states.load_state_dict(torch.load(os.path.join(ckpt_dir, f"{args.resume_from_iter:06d}", "ema_states.pth"), map_location="cpu" if args.ema_on_cpu else accelerator.device))
-    step_tracker.set_step(global_update_step)
 
     # Save all experimental parameters and model architecture of this run to a file (args and configs)
     if accelerator.is_main_process:
@@ -691,7 +688,6 @@ def main():
 
                 # Update training step
                 global_update_step += 1
-                step_tracker.set_step(global_update_step)
 
 
 if __name__ == "__main__":
