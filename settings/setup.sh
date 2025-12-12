@@ -5,7 +5,9 @@ export no_proxy=".woa.com,mirrors.cloud.tencent.com,tlinux-mirror.tencent-cloud.
 
 ROOT_LIST=(
     "/apdcephfs_fsgm/share_303967936/cglin"
+    "/apdcephfs_sgfd/share_303967936/cglin"
     "/apdcephfs/share_gz/apdcephfs_fsgm/share_303967936/cglin"
+    "/apdcephfs/share_sg/apdcephfs_sgfd/share_303967936/cglin"
 )
 ROOT=""
 for path in "${ROOT_LIST[@]}"; do
