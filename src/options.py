@@ -24,7 +24,7 @@ class Options:
     # Data
     input_res: int = (288, 512)
     size_divisor: int = 16  # required for Wan2.1
-    num_input_frames: int = 49
+    num_input_frames: int = 81
     num_input_frames_test: Optional[int] = None
     crop_resize_ratio: Tuple[float, float] = (0.77, 1.)
         ## Camera normalization
