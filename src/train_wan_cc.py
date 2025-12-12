@@ -94,7 +94,7 @@ def main():
     parser.add_argument(
         "--num_workers",
         type=int,
-        default=16,
+        default=12,
         help="The number of processed spawned by the batch provider"
     )
     parser.add_argument(
