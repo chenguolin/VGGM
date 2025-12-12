@@ -123,7 +123,6 @@ class WanVAEWrapper(nn.Module):
 class WanDiffusionWrapper(nn.Module):
     def __init__(self,
         pretrained_dir: str,
-        concat_in_dim: int = 0,
         num_train_timesteps: int = 1000,
         num_inference_steps: int = 50,
         shift: float = 5.,
@@ -154,20 +153,6 @@ class WanDiffusionWrapper(nn.Module):
         self.model.use_gradient_checkpointing = use_gradient_checkpointing
         self.model.use_gradient_checkpointing_offload = use_gradient_checkpointing_offload
 
-        # Handle concat inputs
-        if concat_in_dim > 0:
-            new_conv = nn.Conv3d(
-                self.model.in_dim + concat_in_dim,
-                self.model.dim,
-                kernel_size=self.model.patch_size,
-                stride=self.model.patch_size,
-            )
-            new_conv.weight.data[:, :self.model.in_dim, ...] = self.model.patch_embedding.weight.data
-            new_conv.weight.data[:, self.model.in_dim:, ...] = 0.
-            if self.model.patch_embedding.bias.data is not None:
-                new_conv.bias.data = self.model.patch_embedding.bias.data
-            self.model.patch_embedding = new_conv
-
         self.scheduler = FlowMatchScheduler(
             num_train_timesteps=num_train_timesteps,
             num_inference_steps=num_inference_steps,
@@ -186,7 +171,6 @@ class WanDiffusionWrapper(nn.Module):
         clip_features: Optional[Tensor] = None,  # (B, N', D'')
         cond_latents: Optional[Tensor] = None,  # (B, D, f, h, w)
         add_embeds: Optional[Tensor] = None,  # (B, D, f, h, w)
-        concat_embeds: Optional[Tensor] = None,  # (B, D, f, h, w)
         #
         kv_cache: Optional[List[Dict[str, Any]]] = None,
         crossattn_cache: Optional[List[Dict[str, Any]]] = None,
@@ -195,18 +179,10 @@ class WanDiffusionWrapper(nn.Module):
         clean_x: Optional[Tensor] = None,
         aug_t: Optional[Tensor] = None,
     ):
-        # (Optional) Concatenate extra embeds
-        if concat_embeds is not None:
-            noisy_latents = torch.cat([noisy_latents, concat_embeds], dim=1)
-
         f, h, w = noisy_latents.shape[2:]
         if timesteps.dim() == 1:
             timesteps = timesteps.unsqueeze(1).repeat(1, f)  # (B, f)
         timesteps = timesteps[:, :, None, None].repeat(1, 1, h//2, w//2).flatten(1)  # (B, f*hh*ww); `//2`: hard-coded for patch embeddig
-        # timesteps = torch.cat([
-        #     timesteps,
-        #     timesteps.new_ones((timesteps.shape[0], self.max_seq_len - timesteps.shape[1])) * timesteps[:, 0:1],
-        # ], dim=1)  # (B, `self.max_seq_len`)
 
         if kv_cache is not None:
             model_outputs = torch.stack(self.model(

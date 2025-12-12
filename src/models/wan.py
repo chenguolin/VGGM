@@ -3,7 +3,6 @@ from torch import Tensor
 
 import os
 from tqdm import tqdm
-import numpy as np
 import torch
 from torch import nn
 import torch.nn.functional as tF
@@ -45,7 +44,6 @@ class Wan(nn.Module):
         # Diffusion model
         self.diffusion = WanDiffusionWrapper(
             opt.wan_dir,
-            0,  # no concat features
             opt.num_train_timesteps,
             opt.num_inference_steps,
             opt.shift,

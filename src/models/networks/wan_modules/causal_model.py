@@ -26,9 +26,9 @@ from .model import (
 # wan 1.3B model has a weird channel / head configurations and require max-autotune to work with flexattention
 # see https://github.com/pytorch/pytorch/issues/133254
 # change to default for other models
-# flex_attention = torch.compile(
-#     flex_attention, dynamic=False, mode="max-autotune-no-cudagraphs")
-flex_attention = torch.compile(flex_attention)
+flex_attention = torch.compile(
+    flex_attention, dynamic=False, mode="max-autotune-no-cudagraphs")
+# flex_attention = torch.compile(flex_attention)
 
 
 @torch.amp.autocast('cuda', enabled=False)

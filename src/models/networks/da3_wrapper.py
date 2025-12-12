@@ -11,7 +11,6 @@ from src.options import Options
 from depth_anything_3.api import DepthAnything3
 from depth_anything_3.model.utils.transform import quat_to_mat
 from depth_anything_3.utils.ray_utils import get_extrinsic_from_camray
-from depth_anything_3.utils.geometry import affine_inverse
 
 
 class DA3Wrapper(nn.Module):
