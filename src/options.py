@@ -186,15 +186,6 @@ opt_dict["wan2.1_t2v_1.3b_i2v_causal"] = Options(
     is_causal=True,
     use_teacher_forcing=True,
 )
-opt_dict["wan2.1_t2v_1.3b_i2v_causal_loadsf"] = Options(
-    first_latent_cond=True,
-    input_plucker=True,
-    exclude_name_lr_mult="plucker",
-    #
-    is_causal=True,
-    use_teacher_forcing=True,
-    generator_path=f"{ROOT}/.cache/self_forcing_dmd.pt",
-)
 opt_dict["sf_rep"] = Options(
     is_causal=True,
     generator_path=f"{ROOT}/.cache/ode_init.pt",
