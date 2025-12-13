@@ -30,10 +30,11 @@ class RealcamvidDataset(BaseDataset):
         dataset_source = metadata["dataset_source"]  # "RealEstate10K", "DL3DV-10K", "MiraData9K"
 
         # Load prompt
-        if np.random.rand() < 0.75:  # TODO: make it configurable
-            prompt = metadata["long_caption"]
-        else:
-            prompt = metadata["short_caption"]
+        # if np.random.rand() < 0.75:  # TODO: make it configurable
+        #     prompt = metadata["long_caption"]
+        # else:
+        #     prompt = metadata["short_caption"]
+        prompt = metadata["long_caption"]
 
         # Sample frames
         video_path = os.path.join(self.root, metadata["video_path"])
