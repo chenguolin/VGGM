@@ -8,7 +8,7 @@ import torchvision.transforms as tvT
 
 from src.options import Options
 from src.data.base_dataset import BaseDataset
-from src.utils.geo_util import inverse_c2w
+from src.utils.geo_util import inverse_c2w, intrinsics_to_fxfycxcy
 
 
 class RealcamvidDataset(BaseDataset):
@@ -43,17 +43,30 @@ class RealcamvidDataset(BaseDataset):
         input_frame_idxs = self._frame_sample(num_frames)
 
         # Load cameras
-        W2C = metadata["camera_extrinsics"]
-        if num_frames != W2C.shape[0]:
-            if idx in self.valid_idxs:
-                self.valid_idxs.remove(idx)
-                if len(self.valid_idxs) == 0:
-                    raise ValueError("No valid data in RealcamvidDataset!")
-            return self.__getitem__(np.random.choice(self.valid_idxs))
+        if self.opt.load_da3_cam:
+            da3_path = video_path.replace("RealCam-Vid", "RealCam-Vid-DA3").replace(".mp4", ".npz")
+            da3_data = np.load(da3_path, allow_pickle=True)
+            W2C, intrinsics = da3_data["extrinsics"], da3_data["intrinsics"]
+            W2C_ = torch.eye(4).unsqueeze(0).repeat(W2C.shape[0], 1, 1)
+            W2C_[:, :3, :4] = torch.from_numpy(W2C).float()
+            C2W = inverse_c2w(W2C_)  # (F, 4, 4); already in metric scale
+            intrinsics[:, 0, 0] /= 504  # `504`: hard-coded
+            intrinsics[:, 1, 1] /= 280  # `280`: hard-coded
+            intrinsics[:, 0, 2] /= 504
+            intrinsics[:, 1, 2] /= 280
+            fxfycxcy = intrinsics_to_fxfycxcy(torch.from_numpy(intrinsics).float()[None, ...])[0]  # (F, 4)
+        else:
+            W2C = metadata["camera_extrinsics"]
+            if num_frames != W2C.shape[0]:
+                if idx in self.valid_idxs:
+                    self.valid_idxs.remove(idx)
+                    if len(self.valid_idxs) == 0:
+                        raise ValueError("No valid data in RealcamvidDataset!")
+                return self.__getitem__(np.random.choice(self.valid_idxs))
 
-        C2W = inverse_c2w(torch.from_numpy(W2C).float())[input_frame_idxs, ...]  # (F, 4, 4)
-        C2W[:, :3, 3] *= metadata["align_factor"]  # to metric scale
-        fxfycxcy = torch.from_numpy(metadata["camera_intrinsics"]).float()[None, :].repeat(C2W.shape[0], 1)  # (F, 4)
+            C2W = inverse_c2w(torch.from_numpy(W2C).float())[input_frame_idxs, ...]  # (F, 4, 4)
+            C2W[:, :3, 3] *= metadata["align_factor"]  # to metric scale
+            fxfycxcy = torch.from_numpy(metadata["camera_intrinsics"]).float()[None, :].repeat(C2W.shape[0], 1)  # (F, 4)
 
         # Load video
         images = {

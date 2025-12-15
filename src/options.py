@@ -27,6 +27,7 @@ class Options:
     num_input_frames: int = 81
     num_input_frames_test: Optional[int] = None
     crop_resize_ratio: Tuple[float, float] = (0.77, 1.)
+    load_da3_cam: bool = False
         ## Camera normalization
     camera_norm_type: Literal[
         "none",
