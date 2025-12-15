@@ -46,7 +46,7 @@ class RealcamvidDataset(BaseDataset):
         if self.opt.load_da3_cam:
             da3_path = video_path.replace("RealCam-Vid", "RealCam-Vid-DA3").replace(".mp4", ".npz")
             da3_data = np.load(da3_path, allow_pickle=True)
-            W2C, intrinsics = da3_data["extrinsics"], da3_data["intrinsics"]
+            W2C, intrinsics = da3_data["extrinsics"][input_frame_idxs, ...], da3_data["intrinsics"][input_frame_idxs, ...]
             W2C_ = torch.eye(4).unsqueeze(0).repeat(W2C.shape[0], 1, 1)
             W2C_[:, :3, :4] = torch.from_numpy(W2C).float()
             C2W = inverse_c2w(W2C_)  # (F, 4, 4); already in metric scale
@@ -76,7 +76,7 @@ class RealcamvidDataset(BaseDataset):
         images = torch.stack([images[idx] for idx in input_frame_idxs]).float()  # (F, 3, H, W)
 
         # Data augmentation
-        images, C2W, fxfycxcy = self._data_augment(images, C2W, fxfycxcy)
+        images, fxfycxcy = self._data_augment(images, fxfycxcy)
 
         # Camera normalization
         C2W = self._camera_normalize(C2W)

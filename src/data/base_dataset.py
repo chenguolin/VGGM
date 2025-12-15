@@ -81,8 +81,8 @@ class BaseDataset(EasyDataset):
         # Uniformly sampling
         return clip_frame_idxs[np.linspace(0, gap-1, F, dtype=int)].tolist()
 
-    def _data_augment(self, images: Tensor, C2W: Tensor, fxfycxcy: Tensor) -> Tuple[Tensor, Tensor, Tensor]:
-        images, C2W, fxfycxcy = images.clone(), C2W.clone(), fxfycxcy.clone()  # not inplace
+    def _data_augment(self, images: Tensor, fxfycxcy: Tensor) -> Tuple[Tensor, Tensor]:
+        images, fxfycxcy = images.clone(), fxfycxcy.clone()  # not inplace
 
         assert images.ndim == 4  # (F, C, H, W)
         H, W = images.shape[-2:]
@@ -105,7 +105,7 @@ class BaseDataset(EasyDataset):
         fxfycxcy[:, 0] *= (scaled_W / new_W)
         fxfycxcy[:, 1] *= (scaled_H / new_H)
 
-        return images.clamp(0., 1.), C2W, fxfycxcy
+        return images.clamp(0., 1.), fxfycxcy
 
     def _camera_normalize(self, C2W: Tensor) -> Tensor:
         C2W = C2W.clone()  # not inplace
