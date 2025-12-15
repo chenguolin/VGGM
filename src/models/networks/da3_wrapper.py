@@ -62,7 +62,7 @@ class DA3Wrapper(nn.Module):
                     pred_principal_points[:, :, 1] / 2,
                 ], dim=-1)  # (B, F, 4)
 
-        rays = rearrange(rays, "b f h w c -> b f c h w")  # (B, F, 6, H, W)
+        rays = rearrange(rays, "b f h w c -> b f c h w")  # (B, F, 6, H/2, W/2)
         return {
             "depth": depths,            # (B, F, H, W)
             "depth_conf": depths_conf,  # (B, F, H, W)
