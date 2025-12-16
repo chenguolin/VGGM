@@ -84,6 +84,7 @@ class Wan(nn.Module):
                 da3_model_name=opt.da3_model_name,
                 da3_chunk_size=opt.da3_chunk_size,
                 da3_use_ray_pose=opt.da3_use_ray_pose,
+                use_bicrossattn=opt.use_bicrossattn,
             )
         if opt.generator_path is not None:
             state_dict = torch.load(opt.generator_path, map_location="cpu", weights_only=True)

@@ -28,7 +28,8 @@ class Options:
     num_input_frames_test: Optional[int] = None
     crop_resize_ratio: Tuple[float, float] = (0.77, 1.)
     load_da3_cam: bool = True
-    load_depth: bool = False
+    load_depth: bool = True
+    normalize_xyz: bool = True
         ## Camera normalization
     camera_norm_type: Literal[
         "none",

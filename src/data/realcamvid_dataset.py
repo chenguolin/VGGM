@@ -8,7 +8,7 @@ import torchvision.transforms as tvT
 
 from src.options import Options
 from src.data.base_dataset import BaseDataset
-from src.utils.geo_util import inverse_c2w, intrinsics_to_fxfycxcy
+from src.utils.geo_util import inverse_c2w, intrinsics_to_fxfycxcy, unproject_depth
 
 
 class RealcamvidDataset(BaseDataset):
@@ -90,12 +90,22 @@ class RealcamvidDataset(BaseDataset):
         # Camera normalization
         C2W = self._camera_normalize(C2W)
 
+        # (Optional) Normalize XYZ
+        scaling_factor = 1.
+        if self.opt.normalize_xyz and depths is not None:
+            _xyz = unproject_depth(depths[None, ...], C2W[None, ...], fxfycxcy[None, ...])[0]  # (F, 3, H, W)
+            _xyz_norm = _xyz.norm(dim=1).mean()
+            scaling_factor = 1. / (_xyz_norm + 1e-6)
+            depths = depths * scaling_factor
+            C2W[:, :3, 3] = C2W[:, :3, 3] * scaling_factor
+
         return_dict = {
             "uid": uid,            # str
             "prompt": prompt,      # str
             "image": images,       # (F, 3, H, W) in [0, 1]
             "C2W": C2W,            # (F, 4, 4)
             "fxfycxcy": fxfycxcy,  # (F, 4)
+            "scaling_factor": torch.tensor(scaling_factor),  # (1,)
         }
         if depths is not None:
             return_dict["depth"] = depths  # (F, H, W)
