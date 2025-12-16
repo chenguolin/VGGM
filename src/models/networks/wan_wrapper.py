@@ -296,6 +296,7 @@ class WanDiffusionDA3Wrapper(nn.Module):
         da3_model_name: str = "da3-large-1.1",
         da3_chunk_size: int = 8,
         da3_use_ray_pose: bool = False,
+        use_bicrossattn: bool = False,
     ):
         super().__init__()
 
@@ -338,14 +339,16 @@ class WanDiffusionDA3Wrapper(nn.Module):
 
         # Extra modules of WanDA3
         self.da3_adapter = nn.Linear(1536, 1024)  # hard-coded for Wan2.1-1.3B to DA3-large
-        self.dit_da3_attns = nn.ModuleList([
-            # `1536` and `1024` are hard-coded for Wan1.3B and DA3-large
-            BiCrossAttention(dim1=1536, dim2=1024, dim=1536, num_heads=24)
-            for _ in range(24)  # `24`: hard-coded for DA3-large
-        ])
+        if use_bicrossattn:
+            self.dit_da3_attns = nn.ModuleList([
+                # `1536` and `1024` are hard-coded for Wan1.3B and DA3-large
+                BiCrossAttention(dim1=1536, dim2=1024, dim=1536, num_heads=24)
+                for _ in range(24)  # `24`: hard-coded for DA3-large
+            ])
 
         self.da3_chunk_size = da3_chunk_size
         self.da3_use_ray_pose = da3_use_ray_pose
+        self.use_bicrossattn = use_bicrossattn
 
     def forward(self,
         noisy_latents: Tensor,  # (B, D, f, h, w)
@@ -511,13 +514,14 @@ class WanDiffusionDA3Wrapper(nn.Module):
                     out_da3_x = torch.cat([local_da3_x, da3_x], dim=-1)
                     da3_output.append((out_da3_x[:, :, 0], out_da3_x))
 
-                ### Interaction
-                dit_x = rearrange(dit_x, "b (f h w) d -> (b f) (h w) d", f=f, h=h//2, w=w//2)  # `2`: hard-coded for patch embedding
-                da3_x = rearrange(da3_x, "b f n d -> (b f) n d")
-                dit_x_, da3_x_ = self.dit_da3_attns[da3_i](dit_x, da3_x)
-                dit_x, da3_x = dit_x + dit_x_, da3_x + da3_x_
-                dit_x = rearrange(dit_x, "(b f) (h w) d -> b (f h w) d", f=f, h=h//2, w=w//2)  # `2`: hard-coded for patch embedding
-                da3_x = rearrange(da3_x, "(b f) n d -> b f n d", f=f)
+                ### (Optional) Interaction
+                if self.use_bicrossattn:
+                    dit_x = rearrange(dit_x, "b (f h w) d -> (b f) (h w) d", f=f, h=h//2, w=w//2)  # `2`: hard-coded for patch embedding
+                    da3_x = rearrange(da3_x, "b f n d -> (b f) n d")
+                    dit_x_, da3_x_ = self.dit_da3_attns[da3_i](dit_x, da3_x)
+                    dit_x, da3_x = dit_x + dit_x_, da3_x + da3_x_
+                    dit_x = rearrange(dit_x, "(b f) (h w) d -> b (f h w) d", f=f, h=h//2, w=w//2)  # `2`: hard-coded for patch embedding
+                    da3_x = rearrange(da3_x, "(b f) n d -> b f n d", f=f)
 
         # Wan DiT head & unpatchify
         dit_x = self.model.head(dit_x, e.unflatten(0, (bt, seq_len)))
