@@ -137,6 +137,9 @@ class Options:
         if self.num_input_frames_test is None:
             self.num_input_frames_test = self.num_input_frames
 
+        if self.load_da3:
+            self.load_depth = True
+
         # Dataset directories
         self.dataset_dir_train = {
             "realcamvid": f"{self.root}/RealCam-Vid",

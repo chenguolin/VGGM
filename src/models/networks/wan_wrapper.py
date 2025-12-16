@@ -520,7 +520,7 @@ class WanDiffusionDA3Wrapper(nn.Module):
                 da3_x = rearrange(da3_x, "(b f) n d -> b f n d", f=f)
 
         # Wan DiT head & unpatchify
-        dit_x = self.model.head(x, e.unflatten(0, (bt, seq_len)))
+        dit_x = self.model.head(dit_x, e.unflatten(0, (bt, seq_len)))
         dit_x = self.model.unpatchify(dit_x, grid_sizes)
         dit_x = torch.stack([u.float() for u in dit_x])
 
