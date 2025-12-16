@@ -94,7 +94,7 @@ class RealcamvidDataset(BaseDataset):
         scaling_factor = 1.
         if self.opt.normalize_xyz and depths is not None:
             _xyz = unproject_depth(depths[None, ...], C2W[None, ...], fxfycxcy[None, ...])[0]  # (F, 3, H, W)
-            _xyz_norm = _xyz.norm(dim=1).mean()
+            _xyz_norm = _xyz.norm(dim=1).mean().item()
             scaling_factor = 1. / (_xyz_norm + 1e-6)
             depths = depths * scaling_factor
             C2W[:, :3, 3] = C2W[:, :3, 3] * scaling_factor
