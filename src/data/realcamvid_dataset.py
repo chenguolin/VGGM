@@ -28,6 +28,7 @@ class RealcamvidDataset(BaseDataset):
     def __getitem__(self, idx: int) -> Dict[str, Any]:
         metadata = self.metadata[idx]
         dataset_source = metadata["dataset_source"]  # "RealEstate10K", "DL3DV-10K", "MiraData9K"
+        uid = metadata["video_path"].replace("/", "_").replace(".mp4", "")
 
         # Load prompt
         # if np.random.rand() < 0.75:  # TODO: make it configurable
@@ -42,6 +43,8 @@ class RealcamvidDataset(BaseDataset):
         num_frames = len(vr)
         input_frame_idxs = self._frame_sample(num_frames)
 
+        depths = None
+
         # Load cameras
         if self.opt.load_da3_cam:
             da3_path = video_path.replace("RealCam-Vid", "RealCam-Vid-DA3").replace(".mp4", ".npz")
@@ -55,6 +58,10 @@ class RealcamvidDataset(BaseDataset):
             intrinsics[:, 0, 2] /= 504
             intrinsics[:, 1, 2] /= 280
             fxfycxcy = intrinsics_to_fxfycxcy(torch.from_numpy(intrinsics).float()[None, ...])[0]  # (F, 4)
+
+            if self.opt.load_depth:
+                depths = torch.from_numpy(da3_data["depth"][input_frame_idxs, ...]).float()  # (F, H, W)
+
         else:
             W2C = metadata["camera_extrinsics"]
             if num_frames != W2C.shape[0]:
@@ -68,6 +75,8 @@ class RealcamvidDataset(BaseDataset):
             C2W[:, :3, 3] *= metadata["align_factor"]  # to metric scale
             fxfycxcy = torch.from_numpy(metadata["camera_intrinsics"]).float()[None, :].repeat(C2W.shape[0], 1)  # (F, 4)
 
+            assert not self.opt.load_depth
+
         # Load video
         images = {
             idx: tvT.ToTensor()(vr[idx].asnumpy())
@@ -76,14 +85,18 @@ class RealcamvidDataset(BaseDataset):
         images = torch.stack([images[idx] for idx in input_frame_idxs]).float()  # (F, 3, H, W)
 
         # Data augmentation
-        images, fxfycxcy = self._data_augment(images, fxfycxcy)
+        images, depths, fxfycxcy = self._data_augment(images, depths, fxfycxcy)
 
         # Camera normalization
         C2W = self._camera_normalize(C2W)
 
-        return {
+        return_dict = {
+            "uid": uid,            # str
             "prompt": prompt,      # str
             "image": images,       # (F, 3, H, W) in [0, 1]
             "C2W": C2W,            # (F, 4, 4)
             "fxfycxcy": fxfycxcy,  # (F, 4)
         }
+        if depths is not None:
+            return_dict["depth"] = depths  # (F, H, W)
+        return return_dict

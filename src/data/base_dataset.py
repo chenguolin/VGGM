@@ -40,7 +40,7 @@ class BaseDataset(EasyDataset):
         """
         return_batch = {}
         for key in batch[0].keys():
-            if key in ["prompt"]:
+            if key in ["uid", "prompt"]:
                 return_batch[key] = [sample[key] for sample in batch]  # a list of str
             else:
                 return_batch[key] = torch.stack([sample[key] for sample in batch])  # a Tensor
@@ -81,8 +81,10 @@ class BaseDataset(EasyDataset):
         # Uniformly sampling
         return clip_frame_idxs[np.linspace(0, gap-1, F, dtype=int)].tolist()
 
-    def _data_augment(self, images: Tensor, fxfycxcy: Tensor) -> Tuple[Tensor, Tensor]:
+    def _data_augment(self, images: Tensor, depths: Optional[Tensor], fxfycxcy: Tensor):
         images, fxfycxcy = images.clone(), fxfycxcy.clone()  # not inplace
+        if depths is not None:
+            depths = depths.clone()
 
         assert images.ndim == 4  # (F, C, H, W)
         H, W = images.shape[-2:]
@@ -105,7 +107,12 @@ class BaseDataset(EasyDataset):
         fxfycxcy[:, 0] *= (scaled_W / new_W)
         fxfycxcy[:, 1] *= (scaled_H / new_H)
 
-        return images.clamp(0., 1.), fxfycxcy
+        # (Optional) Resize and CenterCrop depths
+        if depths is not None:
+            depths = tvT.Resize((scaled_H, scaled_W), tvT.InterpolationMode.NEAREST_EXACT)(depths)
+            depths = tvT.CenterCrop((new_H, new_W))(depths)
+
+        return images.clamp(0., 1.), depths, fxfycxcy
 
     def _camera_normalize(self, C2W: Tensor) -> Tensor:
         C2W = C2W.clone()  # not inplace

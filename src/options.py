@@ -22,12 +22,13 @@ if ROOT is None:
 @dataclass
 class Options:
     # Data
-    input_res: int = (288, 512)
+    input_res: Tuple[int, int] = (288, 512)
     size_divisor: int = 16  # required for Wan2.1
     num_input_frames: int = 81
     num_input_frames_test: Optional[int] = None
     crop_resize_ratio: Tuple[float, float] = (0.77, 1.)
-    load_da3_cam: bool = False
+    load_da3_cam: bool = True
+    load_depth: bool = False
         ## Camera normalization
     camera_norm_type: Literal[
         "none",
@@ -43,6 +44,7 @@ class Options:
     model_name: str = "da3-large-1.1"
     da3_chunk_size: int = 8
     use_ray_pose: bool = False
+    load_da3: bool = False
 
     # VAE
     vae_path: str = f"{ROOT}/.cache/huggingface/hub/Wan-AI/Wan2.1-T2V-1.3B/Wan2.1_VAE.pth"
