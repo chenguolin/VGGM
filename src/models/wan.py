@@ -475,6 +475,7 @@ class Wan(nn.Module):
             # (Optional) DA3 evaluation
             if self.opt.load_da3:
                 assert da3_outputs is not None
+
                 ## Get ground-truth geometry labels
                 idxs = torch.arange(0, F, 4).to(device=device, dtype=torch.long)
                 gt_depths = depths[:, idxs, ...]  # (B, f, H, W)
@@ -487,6 +488,8 @@ class Wan(nn.Module):
                     fxfycxcy[:, idxs, 1:2],  # (B, f, 1)
                     fxfycxcy[:, idxs, 0:1],  # (B, f, 1)
                 ], dim=-1).to(dtype)  # (B, f, 9)
+                outputs[f"images_gt_depth"] = colorize_depth(gt_depths, batch_mode=True)
+
                 ## Compute geometry losses
                     ### 1. Depth
                 depth_loss = tF.mse_loss(da3_outputs["depth"], gt_depths, reduction="none")  # (B, f, H, W)
@@ -501,7 +504,6 @@ class Wan(nn.Module):
                 outputs[f"pose_{cfg_scale}"] = pose_loss.mean()
 
                 # For visualization
-                outputs[f"images_gt_depth_{cfg_scale}"] = colorize_depth(gt_depths, batch_mode=True)
                 outputs[f"images_pred_depth_{cfg_scale}"] = colorize_depth(da3_outputs["depth"], batch_mode=True)
 
         return outputs

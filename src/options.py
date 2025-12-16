@@ -46,7 +46,7 @@ class Options:
     da3_chunk_size: int = 8
     da3_use_ray_pose: bool = False
     load_da3: bool = False
-    use_bicrossattn: bool = False
+    use_bicrossattn: bool = True
 
     # VAE
     vae_path: str = f"{ROOT}/.cache/huggingface/hub/Wan-AI/Wan2.1-T2V-1.3B/Wan2.1_VAE.pth"
