@@ -4,4 +4,5 @@ from src.models.networks.wan_wrapper import (
     WanTextEncoderWrapper,
     WanVAEWrapper,
     WanDiffusionWrapper,
+    WanDiffusionDA3Wrapper,
 )

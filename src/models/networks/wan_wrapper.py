@@ -23,11 +23,7 @@ from .wan_modules.model import WanRMSNorm, sinusoidal_embedding_1d, attention
 from depth_anything_3.api import DepthAnything3
 from depth_anything_3.model.utils.transform import quat_to_mat
 from depth_anything_3.utils.ray_utils import get_extrinsic_from_camray
-from depth_anything_3.model.reference_view_selector import (
-    select_reference_view,
-    reorder_by_reference,
-    restore_original_order,
-)
+
 
 class WanCLIPEncoderWrapper(nn.Module):
     def __init__(self, pretrained_dir: str):
@@ -139,6 +135,7 @@ class WanDiffusionWrapper(nn.Module):
         shift: float = 5.,
         sigma_min: float = 0.,
         extra_one_step: bool = True,
+        #
         use_gradient_checkpointing: bool = True,
         use_gradient_checkpointing_offload: bool = False,
         #
@@ -285,6 +282,7 @@ class WanDiffusionDA3Wrapper(nn.Module):
         shift: float = 5.,
         sigma_min: float = 0.,
         extra_one_step: bool = True,
+        #
         use_gradient_checkpointing: bool = True,
         use_gradient_checkpointing_offload: bool = False,
         #
@@ -296,7 +294,7 @@ class WanDiffusionDA3Wrapper(nn.Module):
         #
         da3_model_name: str = "da3-large-1.1",
         da3_chunk_size: int = 8,
-        use_ray_pose: bool = False,
+        da3_use_ray_pose: bool = False,
     ):
         super().__init__()
 
@@ -346,7 +344,7 @@ class WanDiffusionDA3Wrapper(nn.Module):
         ])
 
         self.da3_chunk_size = da3_chunk_size
-        self.use_ray_pose = use_ray_pose
+        self.da3_use_ray_pose = da3_use_ray_pose
 
     def forward(self,
         noisy_latents: Tensor,  # (B, D, f, h, w)
@@ -490,11 +488,6 @@ class WanDiffusionDA3Wrapper(nn.Module):
                 else:
                     g_pos, l_pos = pos_nodiff, pos
 
-                if da3_i == 8-1:  # `8`: hard-coded for DA3-large `self.alt_start`
-                    b_idx = select_reference_view(da3_x, strategy="saddle_balanced")  # TODO: make it configurable
-                    da3_x = reorder_by_reference(da3_x, b_idx)
-                    local_da3_x = reorder_by_reference(local_da3_x, b_idx)
-
                 if da3_i == 8:  # `8`: hard-coded for DA3-large `self.alt_start`
                     ref_token = self.da3_model.backbone.pretrained.camera_token[:, :1].expand(B, -1, -1)
                     src_token = self.da3_model.backbone.pretrained.camera_token[:, 1:].expand(B, f - 1, -1)
@@ -515,7 +508,6 @@ class WanDiffusionDA3Wrapper(nn.Module):
 
                 if da3_i in blocks_to_take:
                     out_da3_x = torch.cat([local_da3_x, da3_x], dim=-1)
-                    out_da3_x = restore_original_order(out_da3_x, b_idx)
                     da3_output.append((out_da3_x[:, :, 0], out_da3_x))
 
                 ### Interaction
@@ -554,7 +546,7 @@ class WanDiffusionDA3Wrapper(nn.Module):
         pose_enc = self.da3_model.cam_dec(feats[-1][1])  # (B, f, 9)
         with torch.no_grad():
             ## Camera decoder
-            if not self.use_ray_pose:
+            if not self.da3_use_ray_pose:
                 R, T = quat_to_mat(pose_enc[..., 3:7]), pose_enc[..., :3]
                 C2W = torch.cat([R, T[..., None]], dim=-1)  # (B, f, 3, 4)
                 C2W = torch.cat([C2W, torch.zeros_like(C2W[..., :1, :])], dim=-2)  # (B, f, 4, 4)

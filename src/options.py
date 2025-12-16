@@ -41,9 +41,9 @@ class Options:
     dataset_dir_test: str = None
 
     # DA3
-    model_name: str = "da3-large-1.1"
+    da3_model_name: str = "da3-large-1.1"
     da3_chunk_size: int = 8
-    use_ray_pose: bool = False
+    da3_use_ray_pose: bool = False
     load_da3: bool = False
 
     # VAE
