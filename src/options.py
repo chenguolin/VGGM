@@ -174,21 +174,23 @@ opt_dict: Dict[str, Options] = {}
 # Wan2.1-T2V-1.3B
 opt_dict["wan2.1_t2v_1.3b"] = Options(
     input_plucker=True,
-    exclude_name_lr_mult="plucker",
+    exclude_name_lr_mult="plucker,da3_adapter",
 )
 opt_dict["wan2.1_t2v_1.3b_i2v"] = Options(
     first_latent_cond=True,
     input_plucker=True,
-    exclude_name_lr_mult="plucker",
+    exclude_name_lr_mult="plucker,da3_adapter",
 )
 opt_dict["wan2.1_t2v_1.3b_i2v_causal"] = Options(
     first_latent_cond=True,
     input_plucker=True,
-    exclude_name_lr_mult="plucker",
+    exclude_name_lr_mult="plucker,da3_adapter",
     #
     is_causal=True,
     use_teacher_forcing=True,
 )
+
+# Self-Forcing reproduction
 opt_dict["sf_rep"] = Options(
     is_causal=True,
     generator_path=f"{ROOT}/.cache/ode_init.pt",

@@ -19,6 +19,7 @@ from .wan_modules.causal_model import CausalWanModel
 from .scheduler import FlowMatchScheduler
 
 from .wan_modules.model import WanRMSNorm, sinusoidal_embedding_1d, attention
+from src.utils import zero_init_module
 
 from depth_anything_3.api import DepthAnything3
 from depth_anything_3.model.utils.transform import quat_to_mat
@@ -335,7 +336,7 @@ class WanDiffusionDA3Wrapper(nn.Module):
 
         del _da3
 
-        # Extra modules of DiT&DA3
+        # Extra modules of WanDA3
         self.da3_adapter = nn.Linear(1536, 1024)  # hard-coded for Wan2.1-1.3B to DA3-large
         self.dit_da3_attns = nn.ModuleList([
             # `1536` and `1024` are hard-coded for Wan1.3B and DA3-large
@@ -640,6 +641,9 @@ class BiCrossAttention(nn.Module):
         else:
             self.norm_q1, self.norm_q2 = nn.Identity(), nn.Identity()
             self.norm_k1, self.norm_k2 = nn.Identity(), nn.Identity()
+
+        zero_init_module(self.o1)
+        zero_init_module(self.o2)
 
     def forward(self, x1: Tensor, x2: Tensor) -> Tuple[Tensor, Tensor]:
         reshape_fn = lambda x: rearrange(x, "b n (h hd) -> b n h hd", h=self.num_heads)
