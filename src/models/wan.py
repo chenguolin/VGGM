@@ -12,14 +12,17 @@ from einops import rearrange
 from pytorch_msssim import ssim as SSIM
 from lpips import LPIPS
 
+from depth_anything_3.model.utils.transform import mat_to_quat
+
 from src.options import Options
 from src.models.networks import (
     FeatureEmbed,
     WanTextEncoderWrapper,
     WanVAEWrapper,
     WanDiffusionWrapper,
+    WanDiffusionDA3Wrapper,
 )
-from src.utils import convert_to_buffer, plucker_ray, zero_init_module
+from src.utils import convert_to_buffer, plucker_ray, zero_init_module, colorize_depth
 
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -42,23 +45,46 @@ class Wan(nn.Module):
             self.text_encoder = None
 
         # Diffusion model
-        self.diffusion = WanDiffusionWrapper(
-            opt.wan_dir,
-            opt.num_train_timesteps,
-            opt.num_inference_steps,
-            opt.shift,
-            opt.sigma_min,
-            opt.extra_one_step,
-            #
-            opt.use_gradient_checkpointing,
-            opt.use_gradient_checkpointing_offload,
-            #
-            is_causal=opt.is_causal,
-            sink_size=opt.sink_size,
-            chunk_size=opt.chunk_size,
-            max_attention_size=opt.max_attention_size,
-            rope_outside=opt.rope_outside,
-        )
+        if not opt.load_da3:
+            self.diffusion = WanDiffusionWrapper(
+                opt.wan_dir,
+                opt.num_train_timesteps,
+                opt.num_inference_steps,
+                opt.shift,
+                opt.sigma_min,
+                opt.extra_one_step,
+                #
+                opt.use_gradient_checkpointing,
+                opt.use_gradient_checkpointing_offload,
+                #
+                is_causal=opt.is_causal,
+                sink_size=opt.sink_size,
+                chunk_size=opt.chunk_size,
+                max_attention_size=opt.max_attention_size,
+                rope_outside=opt.rope_outside,
+            )
+        else:
+            self.diffusion = WanDiffusionDA3Wrapper(
+                opt.wan_dir,
+                opt.num_train_timesteps,
+                opt.num_inference_steps,
+                opt.shift,
+                opt.sigma_min,
+                opt.extra_one_step,
+                #
+                opt.use_gradient_checkpointing,
+                opt.use_gradient_checkpointing_offload,
+                #
+                is_causal=opt.is_causal,
+                sink_size=opt.sink_size,
+                chunk_size=opt.chunk_size,
+                max_attention_size=opt.max_attention_size,
+                rope_outside=opt.rope_outside,
+                #
+                da3_model_name=opt.da3_model_name,
+                da3_chunk_size=opt.da3_chunk_size,
+                da3_use_ray_pose=opt.da3_use_ray_pose,
+            )
         if opt.generator_path is not None:
             state_dict = torch.load(opt.generator_path, map_location="cpu", weights_only=True)
             if "generator_ema" in state_dict:
@@ -139,6 +165,11 @@ class Wan(nn.Module):
             F, H, W = self.opt.num_input_frames, self.opt.input_res[0], self.opt.input_res[1]
             device = self.diffusion.model.device
 
+        if self.opt.load_da3:
+            depths = data["depth"].to(dtype)  # (B, F, H, W)
+        C2W = data["C2W"].to(dtype)  # (B, F, 4, 4)
+        fxfycxcy = data["fxfycxcy"].to(dtype)  # (B, F, 4)
+
         # Text encoder
         if self.text_encoder is not None:
             prompts = data["prompt"]  # a list of strings
@@ -170,9 +201,7 @@ class Wan(nn.Module):
 
         # (Optional) Plucker embeddings
         if self.opt.input_plucker:
-            C2W = data["C2W"].float()  # (B, F, 4, 4)
-            fxfycxcy = data["fxfycxcy"].float()  # (B, F, 4)
-            plucker, _ = plucker_ray(H, W, C2W, fxfycxcy)  # (B, F, 6, H, W)
+            plucker, _ = plucker_ray(H, W, C2W.float(), fxfycxcy.float())  # (B, F, 6, H, W)
             plucker = rearrange(plucker, "b f c h w -> b c f h w").to(dtype)
             plucker_embeds = self.plucker_embed(plucker)  # (B, D, f, hh, ww)
         else:
@@ -228,14 +257,50 @@ class Wan(nn.Module):
                 clean_x=latents if self.opt.use_teacher_forcing else None,
             )
 
+        if self.opt.load_da3:
+            model_outputs, da3_outputs = model_outputs
+
+        # Diffusion loss
         diffusion_loss = tF.mse_loss(model_outputs.float(), targets.float(), reduction="none")  # (B, D, f, h, w)
         diffusion_loss = self.diffusion.scheduler.training_weight(timesteps.flatten(0, 1)).reshape(-1, 1, 1, 1) * \
             diffusion_loss.transpose(1, 2).flatten(0, 1)  # (B*f, D, h, w)
         diffusion_loss = diffusion_loss.unflatten(0, (B, f)).transpose(1, 2)  # (B, D, f, h, w)
         if cond_latents is not None:
-            outputs["loss"] = diffusion_loss[:, :, 1:, ...].mean()
+            outputs["diffusion_loss"] = diffusion_loss[:, :, 1:, ...].mean()
         else:
-            outputs["loss"] = diffusion_loss.mean()
+            outputs["diffusion_loss"] = diffusion_loss.mean()
+
+        outputs["loss"] = outputs["diffusion_loss"]
+
+        # (Optional) DA3 loss
+        if self.opt.load_da3:
+            ## Get ground-truth geometry labels
+            idxs = torch.arange(0, F, 4).to(device=device, dtype=torch.long)
+            gt_depths = depths[:, idxs, ...]  # (B, f, H, W)
+            _, (ray_o, ray_d) = plucker_ray(H//2, W//2,
+                C2W[:, idxs, ...].float(), fxfycxcy[:, idxs, ...].float(), normalize_ray_d=False)
+            gt_raymaps = torch.cat([ray_d, ray_o], dim=2).to(dtype)  # (B, f, 6, H/2, W/2)
+            gt_pose_enc = torch.cat([
+                mat_to_quat(C2W[:, idxs, :3, :3].float()),  # (B, f, 4)
+                C2W[:, idxs, :3, 3].float(),  # (B, f, 3)
+                fxfycxcy[:, idxs, 1:2],  # (B, f, 1)
+                fxfycxcy[:, idxs, 0:1],  # (B, f, 1)
+            ], dim=-1).to(dtype)  # (B, f, 9)
+            ## Compute geometry losses
+                ### 1. Depth
+            depth_loss = tF.mse_loss(da3_outputs["depth"], gt_depths, reduction="none")  # (B, f, H, W)
+            depth_loss = da3_outputs["depth_conf"] * depth_loss - 0.2 * torch.log(da3_outputs["depth_conf"])
+            outputs["depth_loss"] = depth_loss.mean()
+                ### 2. Ray
+            ray_loss = tF.mse_loss(da3_outputs["ray"], gt_raymaps, reduction="none").mean(dim=2)  # (B, f, H/2, W/2)
+            ray_loss = da3_outputs["ray_conf"] * ray_loss - 0.2 * torch.log(da3_outputs["ray_conf"])
+            outputs["ray_loss"] = ray_loss.mean()
+                ### 3. Pose
+            pose_loss = tF.mse_loss(da3_outputs["pose_enc"], gt_pose_enc, reduction="none")  # (B, f, 9)
+            outputs["pose_loss"] = pose_loss.mean()
+
+            outputs["loss"] += \
+                outputs["depth_loss"] + outputs["ray_loss"] + outputs["pose_loss"]
 
         # For visualizaiton
         if is_eval:
@@ -251,6 +316,10 @@ class Wan(nn.Module):
             outputs["images_predx0"] = (self.decode_latent(pred_x0, vae).clamp(-1., 1.) + 1.) / 2.
             if "image" in data:
                 outputs["images_recon"] = (self.decode_latent(latents, vae).clamp(-1., 1.) + 1.) / 2.
+
+            if self.opt.load_da3:
+                outputs["images_gt_depth"] = colorize_depth(gt_depths, batch_mode=True)
+                outputs["images_pred_depth"] = colorize_depth(da3_outputs["depth"], batch_mode=True)
 
         return outputs
 
@@ -277,6 +346,11 @@ class Wan(nn.Module):
             F, H, W = self.opt.num_input_frames_test, self.opt.input_res[0], self.opt.input_res[1]
             device = self.diffusion.model.device
 
+        if self.opt.load_da3:
+            depths = data["depth"].to(dtype)  # (B, F, H, W)
+        C2W = data["C2W"].to(dtype)  # (B, F, 4, 4)
+        fxfycxcy = data["fxfycxcy"].to(dtype)  # (B, F, 4)
+
         f = 1 + (F - 1) // self.opt.compression_ratio[0]
         h = H // self.opt.compression_ratio[1]
         w = W // self.opt.compression_ratio[2]
@@ -299,9 +373,7 @@ class Wan(nn.Module):
 
         # (Optional) Plucker embeddings
         if self.opt.input_plucker:
-            C2W = data["C2W"]  # (B, F, 4, 4)
-            fxfycxcy = data["fxfycxcy"]  # (B, F, 4)
-            plucker, _ = plucker_ray(H, W, C2W, fxfycxcy)  # (B, F, 6, H, W)
+            plucker, _ = plucker_ray(H, W, C2W.float(), fxfycxcy.float())  # (B, F, 6, H, W)
             plucker = rearrange(plucker, "b f c h w -> b c f h w").to(dtype)
             plucker_embeds = self.plucker_embed(plucker)  # (B, D, f, hh, ww)
         else:
@@ -347,7 +419,16 @@ class Wan(nn.Module):
                             negative_prompt_embeds,  # torch.zeros_like(prompt_embeds)
                             add_embeds=plucker_embeds,  # torch.zeros_like(plucker_embeds) if plucker_embeds is not None else None,
                         )
-                    model_outputs = model_outputs_neg + cfg_scale * (model_outputs - model_outputs_neg)
+                    if not self.opt.load_da3:
+                        model_outputs = model_outputs_neg + cfg_scale * (model_outputs - model_outputs_neg)
+                    else:
+                        model_outputs, da3_outputs = model_outputs
+                        model_outputs_neg, _ = model_outputs_neg
+                        model_outputs = model_outputs_neg + cfg_scale * (model_outputs - model_outputs_neg)
+                        model_outputs = (model_outputs, da3_outputs)
+
+                model_outputs, da3_outputs = \
+                    model_outputs if self.opt.load_da3 else (model_outputs, None)
 
                 if self.opt.deterministic_inference:
                     latents = self.diffusion.scheduler.step(
@@ -389,6 +470,38 @@ class Wan(nn.Module):
                         rearrange(images, "b f c h w -> (b f) c h w") * 2. - 1.,
                     )  # (B*F, 1, 1, 1)
                     outputs[f"lpips_{cfg_scale}"] = rearrange(outputs[f"lpips_{cfg_scale}"], "(b f) c h w -> b f c h w", b=B).mean(dim=(1, 2, 3, 4))  # (B,)
+
+            # (Optional) DA3 evaluation
+            if self.opt.load_da3:
+                assert da3_outputs is not None
+                ## Get ground-truth geometry labels
+                idxs = torch.arange(0, F, 4).to(device=device, dtype=torch.long)
+                gt_depths = depths[:, idxs, ...]  # (B, f, H, W)
+                _, (ray_o, ray_d) = plucker_ray(H//2, W//2,
+                    C2W[:, idxs, ...].float(), fxfycxcy[:, idxs, ...].float(), normalize_ray_d=False)
+                gt_raymaps = torch.cat([ray_d, ray_o], dim=2).to(dtype)  # (B, f, 6, H/2, W/2)
+                gt_pose_enc = torch.cat([
+                    mat_to_quat(C2W[:, idxs, :3, :3].float()),  # (B, f, 4)
+                    C2W[:, idxs, :3, 3].float(),  # (B, f, 3)
+                    fxfycxcy[:, idxs, 1:2],  # (B, f, 1)
+                    fxfycxcy[:, idxs, 0:1],  # (B, f, 1)
+                ], dim=-1).to(dtype)  # (B, f, 9)
+                ## Compute geometry losses
+                    ### 1. Depth
+                depth_loss = tF.mse_loss(da3_outputs["depth"], gt_depths, reduction="none")  # (B, f, H, W)
+                # depth_loss = da3_outputs["depth_conf"] * depth_loss - 0.2 * torch.log(da3_outputs["depth_conf"])
+                outputs[f"depth_{cfg_scale}"] = depth_loss.mean()
+                    ### 2. Ray
+                ray_loss = tF.mse_loss(da3_outputs["ray"], gt_raymaps, reduction="none").mean(dim=2)  # (B, f, H/2, W/2)
+                # ray_loss = da3_outputs["ray_conf"] * ray_loss - 0.2 * torch.log(da3_outputs["ray_conf"])
+                outputs[f"ray_{cfg_scale}"] = ray_loss.mean()
+                    ### 3. Pose
+                pose_loss = tF.mse_loss(da3_outputs["pose_enc"], gt_pose_enc, reduction="none")  # (B, f, 9)
+                outputs[f"pose_{cfg_scale}"] = pose_loss.mean()
+
+                # For visualization
+                outputs[f"images_gt_depth_{cfg_scale}"] = colorize_depth(gt_depths, batch_mode=True)
+                outputs[f"images_pred_depth_{cfg_scale}"] = colorize_depth(da3_outputs["depth"], batch_mode=True)
 
         return outputs
 

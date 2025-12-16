@@ -486,6 +486,9 @@ def main():
                 generator_loss = outputs["generator_loss"] if "generator_loss" in outputs else None
                 dmd_grad_norm = outputs["dmd_grad_norm"] if "dmd_grad_norm" in outputs else None
                 diffusion_loss = outputs["diffusion_loss"] if "diffusion_loss" in outputs else None
+                depth_loss = outputs["depth_loss"] if "depth_loss" in outputs else None
+                ray_loss = outputs["ray_loss"] if "ray_loss" in outputs else None
+                pose_loss = outputs["pose_loss"] if "pose_loss" in outputs else None
 
                 # Backpropagate
                 accelerator.backward(loss.mean())
@@ -511,6 +514,12 @@ def main():
                     dmd_grad_norm = accelerator.gather(dmd_grad_norm.detach()).mean()
                 if diffusion_loss is not None:
                     diffusion_loss = accelerator.gather(diffusion_loss.detach()).mean()
+                if depth_loss is not None:
+                    depth_loss = accelerator.gather(depth_loss.detach()).mean()
+                if ray_loss is not None:
+                    ray_loss = accelerator.gather(ray_loss.detach()).mean()
+                if pose_loss is not None:
+                    pose_loss = accelerator.gather(pose_loss.detach()).mean()
 
                 logs = {
                     "loss": loss.item(),
@@ -529,6 +538,12 @@ def main():
                     logs.update({"generator": generator_loss.item()})
                 if diffusion_loss is not None:
                     logs.update({"diffusion": diffusion_loss.item()})
+                if depth_loss is not None:
+                    logs.update({"depth": depth_loss.item()})
+                if ray_loss is not None:
+                    logs.update({"ray": ray_loss.item()})
+                if pose_loss is not None:
+                    logs.update({"pose": pose_loss.item()})
 
                 progress_bar.set_postfix(**logs)
                 progress_bar.update(1)
@@ -569,6 +584,18 @@ def main():
                         if diffusion_loss is not None:
                             wandb.log({
                                 "training/diffusion_loss": diffusion_loss.item()
+                            }, step=global_update_step)
+                        if depth_loss is not None:
+                            wandb.log({
+                                "training/depth_loss": depth_loss.item()
+                            }, step=global_update_step)
+                        if ray_loss is not None:
+                            wandb.log({
+                                "training/ray_loss": ray_loss.item()
+                            }, step=global_update_step)
+                        if pose_loss is not None:
+                            wandb.log({
+                                "training/pose_loss": pose_loss.item()
                             }, step=global_update_step)
 
                 # Save checkpoint
@@ -640,6 +667,19 @@ def main():
                                     all_val_matrics.setdefault(f"psnr_{cfg_scale}", []).append(val_psnr)
                                     all_val_matrics.setdefault(f"ssim_{cfg_scale}", []).append(val_ssim)
 
+                                    if f"depth_{cfg_scale}" in val_outputs:
+                                        val_depth = val_outputs[f"depth_{cfg_scale}"]
+                                        val_depth = accelerator.gather_for_metrics(val_depth).mean()
+                                        all_val_matrics.setdefault(f"depth_{cfg_scale}", []).append(val_depth)
+                                    if f"ray_{cfg_scale}" in val_outputs:
+                                        val_ray = val_outputs[f"ray_{cfg_scale}"]
+                                        val_ray = accelerator.gather_for_metrics(val_ray).mean()
+                                        all_val_matrics.setdefault(f"ray_{cfg_scale}", []).append(val_ray)
+                                    if f"pose_{cfg_scale}" in val_outputs:
+                                        val_pose = val_outputs[f"pose_{cfg_scale}"]
+                                        val_pose = accelerator.gather_for_metrics(val_pose).mean()
+                                        all_val_matrics.setdefault(f"pose_{cfg_scale}", []).append(val_pose)
+
                             val_progress_bar.set_postfix(**val_logs)
                             val_progress_bar.update(1)
                             val_steps += 1
@@ -674,6 +714,18 @@ def main():
                                     f"validation/psnr_{cfg_scale}": all_val_matrics[f"psnr_{cfg_scale}"].item(),
                                     f"validation/ssim_{cfg_scale}": all_val_matrics[f"ssim_{cfg_scale}"].item()
                                 }, step=global_update_step)
+                                if f"depth_{cfg_scale}" in val_outputs:
+                                    wandb.log({
+                                        f"validation/depth_{cfg_scale}": all_val_matrics[f"depth_{cfg_scale}"].item()
+                                    }, step=global_update_step)
+                                if f"ray_{cfg_scale}" in val_outputs:
+                                    wandb.log({
+                                        f"validation/ray_{cfg_scale}": all_val_matrics[f"ray_{cfg_scale}"].item()
+                                    }, step=global_update_step)
+                                if f"pose_{cfg_scale}" in val_outputs:
+                                    wandb.log({
+                                        f"validation/pose_{cfg_scale}": all_val_matrics[f"pose_{cfg_scale}"].item()
+                                    }, step=global_update_step)
 
                         # Visualization
                         wandb.log({
