@@ -299,7 +299,7 @@ class Wan(nn.Module):
             pose_loss = tF.mse_loss(da3_outputs["pose_enc"], gt_pose_enc, reduction="none")  # (B, f, 9)
             outputs["pose_loss"] = pose_loss.mean()
 
-            outputs["loss"] += \
+            outputs["loss"] = outputs["diffusion_loss"] + \
                 outputs["depth_loss"] + outputs["ray_loss"] + outputs["pose_loss"]
 
         # For visualizaiton
