@@ -319,8 +319,8 @@ class Wan(nn.Module):
                 outputs["images_recon"] = (self.decode_latent(latents, vae).clamp(-1., 1.) + 1.) / 2.
 
             if self.opt.load_da3:
-                outputs["images_gt_depth"] = colorize_depth(gt_depths, batch_mode=True)
-                outputs["images_pred_depth"] = colorize_depth(da3_outputs["depth"], batch_mode=True)
+                outputs["images_gt_depth"] = colorize_depth(1./gt_depths, batch_mode=True)
+                outputs["images_pred_depth"] = colorize_depth(1./da3_outputs["depth"], batch_mode=True)
 
         return outputs
 
@@ -488,7 +488,7 @@ class Wan(nn.Module):
                     fxfycxcy[:, idxs, 1:2],  # (B, f, 1)
                     fxfycxcy[:, idxs, 0:1],  # (B, f, 1)
                 ], dim=-1).to(dtype)  # (B, f, 9)
-                outputs[f"images_gt_depth"] = colorize_depth(gt_depths, batch_mode=True)
+                outputs[f"images_gt_depth"] = colorize_depth(1./gt_depths, batch_mode=True)
 
                 ## Compute geometry losses
                     ### 1. Depth
@@ -504,7 +504,7 @@ class Wan(nn.Module):
                 outputs[f"pose_{cfg_scale}"] = pose_loss.mean()
 
                 # For visualization
-                outputs[f"images_pred_depth_{cfg_scale}"] = colorize_depth(da3_outputs["depth"], batch_mode=True)
+                outputs[f"images_pred_depth_{cfg_scale}"] = colorize_depth(1./da3_outputs["depth"], batch_mode=True)
 
         return outputs
 
