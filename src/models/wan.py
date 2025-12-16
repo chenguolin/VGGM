@@ -282,8 +282,8 @@ class Wan(nn.Module):
                 C2W[:, idxs, ...].float(), fxfycxcy[:, idxs, ...].float(), normalize_ray_d=False)
             gt_raymaps = torch.cat([ray_d, ray_o], dim=2).to(dtype)  # (B, f, 6, H/2, W/2)
             gt_pose_enc = torch.cat([
-                mat_to_quat(C2W[:, idxs, :3, :3].float()),  # (B, f, 4)
                 C2W[:, idxs, :3, 3].float(),  # (B, f, 3)
+                mat_to_quat(C2W[:, idxs, :3, :3].float()),  # (B, f, 4)
                 fxfycxcy[:, idxs, 1:2],  # (B, f, 1)
                 fxfycxcy[:, idxs, 0:1],  # (B, f, 1)
             ], dim=-1).to(dtype)  # (B, f, 9)
@@ -483,8 +483,8 @@ class Wan(nn.Module):
                     C2W[:, idxs, ...].float(), fxfycxcy[:, idxs, ...].float(), normalize_ray_d=False)
                 gt_raymaps = torch.cat([ray_d, ray_o], dim=2).to(dtype)  # (B, f, 6, H/2, W/2)
                 gt_pose_enc = torch.cat([
-                    mat_to_quat(C2W[:, idxs, :3, :3].float()),  # (B, f, 4)
                     C2W[:, idxs, :3, 3].float(),  # (B, f, 3)
+                    mat_to_quat(C2W[:, idxs, :3, :3].float()),  # (B, f, 4)
                     fxfycxcy[:, idxs, 1:2],  # (B, f, 1)
                     fxfycxcy[:, idxs, 0:1],  # (B, f, 1)
                 ], dim=-1).to(dtype)  # (B, f, 9)
