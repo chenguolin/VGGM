@@ -22,6 +22,7 @@ from src.models.networks import (
     WanDiffusionWrapper,
     WanDiffusionDA3Wrapper,
 )
+from src.models.losses import XYZLoss, DepthLoss, CameraLoss
 from src.utils import convert_to_buffer, plucker_ray, zero_init_module, colorize_depth
 
 
@@ -86,6 +87,8 @@ class Wan(nn.Module):
                 da3_use_ray_pose=opt.da3_use_ray_pose,
                 use_bicrossattn=opt.use_bicrossattn,
             )
+            self.ray_loss_fn, self.depth_loss_fn, self.pose_loss_fn = \
+                XYZLoss(opt), DepthLoss(opt), CameraLoss(opt)
         if opt.generator_path is not None:
             state_dict = torch.load(opt.generator_path, map_location="cpu", weights_only=True)
             if "generator_ema" in state_dict:
@@ -270,7 +273,6 @@ class Wan(nn.Module):
             outputs["diffusion_loss"] = diffusion_loss[:, :, 1:, ...].mean()
         else:
             outputs["diffusion_loss"] = diffusion_loss.mean()
-
         outputs["loss"] = outputs["diffusion_loss"]
 
         # (Optional) DA3 loss
@@ -284,22 +286,13 @@ class Wan(nn.Module):
             gt_pose_enc = torch.cat([
                 C2W[:, idxs, :3, 3].float(),  # (B, f, 3)
                 mat_to_quat(C2W[:, idxs, :3, :3].float()),  # (B, f, 4)
-                fxfycxcy[:, idxs, 1:2],  # (B, f, 1)
-                fxfycxcy[:, idxs, 0:1],  # (B, f, 1)
+                2. * torch.atan(1. / (2. * fxfycxcy[:, idxs, 1:2])),  # (B, f, 1); fy -> fov_h
+                2. * torch.atan(1. / (2. * fxfycxcy[:, idxs, 0:1])),  # (B, f, 1); fx -> fov_w
             ], dim=-1).to(dtype)  # (B, f, 9)
             ## Compute geometry losses
-                ### 1. Depth
-            depth_loss = tF.mse_loss(da3_outputs["depth"], gt_depths, reduction="none")  # (B, f, H, W)
-            depth_loss = da3_outputs["depth_conf"] * depth_loss - 0.2 * torch.log(da3_outputs["depth_conf"])
-            outputs["depth_loss"] = depth_loss.mean()
-                ### 2. Ray
-            ray_loss = tF.mse_loss(da3_outputs["ray"], gt_raymaps, reduction="none").mean(dim=2)  # (B, f, H/2, W/2)
-            ray_loss = da3_outputs["ray_conf"] * ray_loss - 0.2 * torch.log(da3_outputs["ray_conf"])
-            outputs["ray_loss"] = ray_loss.mean()
-                ### 3. Pose
-            pose_loss = tF.mse_loss(da3_outputs["pose_enc"], gt_pose_enc, reduction="none")  # (B, f, 9)
-            outputs["pose_loss"] = pose_loss.mean()
-
+            outputs["depth_loss"] = self.depth_loss_fn(da3_outputs["depth"], gt_depths, confs=da3_outputs["depth_conf"])  # (,)
+            outputs["ray_loss"] = self.ray_loss_fn(da3_outputs["ray"], gt_raymaps, confs=da3_outputs["ray_conf"])  # (,)
+            outputs["pose_loss"] = self.pose_loss_fn(da3_outputs["pose_enc"], gt_pose_enc)  # (,)
             outputs["loss"] = outputs["diffusion_loss"] + \
                 outputs["depth_loss"] + outputs["ray_loss"] + outputs["pose_loss"]
 
@@ -485,23 +478,15 @@ class Wan(nn.Module):
                 gt_pose_enc = torch.cat([
                     C2W[:, idxs, :3, 3].float(),  # (B, f, 3)
                     mat_to_quat(C2W[:, idxs, :3, :3].float()),  # (B, f, 4)
-                    fxfycxcy[:, idxs, 1:2],  # (B, f, 1)
-                    fxfycxcy[:, idxs, 0:1],  # (B, f, 1)
+                    2. * torch.atan(1. / (2. * fxfycxcy[:, idxs, 1:2])),  # (B, f, 1); fy -> fov_h
+                    2. * torch.atan(1. / (2. * fxfycxcy[:, idxs, 0:1])),  # (B, f, 1); fx -> fov_w
                 ], dim=-1).to(dtype)  # (B, f, 9)
                 outputs[f"images_gt_depth"] = colorize_depth(1./gt_depths, batch_mode=True)
 
                 ## Compute geometry losses
-                    ### 1. Depth
-                depth_loss = tF.mse_loss(da3_outputs["depth"], gt_depths, reduction="none")  # (B, f, H, W)
-                # depth_loss = da3_outputs["depth_conf"] * depth_loss - 0.2 * torch.log(da3_outputs["depth_conf"])
-                outputs[f"depth_{cfg_scale}"] = depth_loss.mean()
-                    ### 2. Ray
-                ray_loss = tF.mse_loss(da3_outputs["ray"], gt_raymaps, reduction="none").mean(dim=2)  # (B, f, H/2, W/2)
-                # ray_loss = da3_outputs["ray_conf"] * ray_loss - 0.2 * torch.log(da3_outputs["ray_conf"])
-                outputs[f"ray_{cfg_scale}"] = ray_loss.mean()
-                    ### 3. Pose
-                pose_loss = tF.mse_loss(da3_outputs["pose_enc"], gt_pose_enc, reduction="none")  # (B, f, 9)
-                outputs[f"pose_{cfg_scale}"] = pose_loss.mean()
+                outputs[f"depth_{cfg_scale}"] = self.depth_loss_fn(da3_outputs["depth"], gt_depths)  # (,)
+                outputs[f"ray_{cfg_scale}"] = self.ray_loss_fn(da3_outputs["ray"], gt_raymaps)  # (,)
+                outputs[f"pose_{cfg_scale}"] = self.pose_loss_fn(da3_outputs["pose_enc"], gt_pose_enc)  # (,)
 
                 # For visualization
                 outputs[f"images_pred_depth_{cfg_scale}"] = colorize_depth(1./da3_outputs["depth"], batch_mode=True)
