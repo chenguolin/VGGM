@@ -290,9 +290,9 @@ class Wan(nn.Module):
                 2. * torch.atan(1. / (2. * fxfycxcy[:, idxs, 0:1])),  # (B, f, 1); fx -> fov_w
             ], dim=-1).to(dtype)  # (B, f, 9)
             ## Compute geometry losses
-            outputs["depth_loss"] = self.depth_loss_fn(da3_outputs["depth"], gt_depths, confs=da3_outputs["depth_conf"])  # (,)
-            outputs["ray_loss"] = self.ray_loss_fn(da3_outputs["ray"], gt_raymaps, confs=da3_outputs["ray_conf"])  # (,)
-            outputs["pose_loss"] = self.pose_loss_fn(da3_outputs["pose_enc"], gt_pose_enc)  # (,)
+            outputs["depth_loss"] = self.depth_loss_fn(da3_outputs["depth"], gt_depths, confs=da3_outputs["depth_conf"]).mean()  # (,)
+            outputs["ray_loss"] = self.ray_loss_fn(da3_outputs["ray"], gt_raymaps, confs=da3_outputs["ray_conf"]).mean()  # (,)
+            outputs["pose_loss"] = self.pose_loss_fn(da3_outputs["pose_enc"], gt_pose_enc).mean()  # (,)
             outputs["loss"] = outputs["diffusion_loss"] + \
                 outputs["depth_loss"] + outputs["ray_loss"] + outputs["pose_loss"]
 
@@ -483,10 +483,10 @@ class Wan(nn.Module):
                 ], dim=-1).to(dtype)  # (B, f, 9)
                 outputs[f"images_gt_depth"] = colorize_depth(1./gt_depths, batch_mode=True)
 
-                ## Compute geometry losses
-                outputs[f"depth_{cfg_scale}"] = self.depth_loss_fn(da3_outputs["depth"], gt_depths)  # (,)
-                outputs[f"ray_{cfg_scale}"] = self.ray_loss_fn(da3_outputs["ray"], gt_raymaps)  # (,)
-                outputs[f"pose_{cfg_scale}"] = self.pose_loss_fn(da3_outputs["pose_enc"], gt_pose_enc)  # (,)
+                ## Compute geometry metrics via MSE
+                outputs[f"depth_{cfg_scale}"] = tF.mse_loss(da3_outputs["depth"], gt_depths)  # (,)
+                outputs[f"ray_{cfg_scale}"] = tF.mse_loss(da3_outputs["ray"], gt_raymaps)  # (,)
+                outputs[f"pose_{cfg_scale}"] = tF.mse_loss(da3_outputs["pose_enc"], gt_pose_enc)  # (,)
 
                 # For visualization
                 outputs[f"images_pred_depth_{cfg_scale}"] = colorize_depth(1./da3_outputs["depth"], batch_mode=True)

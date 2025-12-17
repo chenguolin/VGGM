@@ -127,7 +127,7 @@ class Options:
     # Training
         ## Losses
     conf_alpha: float = 0.2
-    filter_by_quantile: float = 0.9
+    # filter_by_quantile: float = 0.9
     gradient_loss_scale: int = 4
         ## LR scheduler
     name_lr_mult: Optional[str] = None

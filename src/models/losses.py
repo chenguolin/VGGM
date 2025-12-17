@@ -36,8 +36,8 @@ class XYZLoss(nn.Module):
         xyz_loss = tF.mse_loss(pred_xyzs, gt_xyzs, reduction="none")  # (B, N, 3)
         if self.opt.conf_alpha > 0.:
             xyz_loss = (confs.unsqueeze(-1) * xyz_loss - self.opt.conf_alpha * torch.log(confs.unsqueeze(-1)))  # (B, N, 3)
-        xyz_loss = filter_by_quantile(xyz_loss[masks], self.opt.filter_by_quantile).mean()
-        return xyz_loss  # (,)
+        xyz_loss = (xyz_loss.mean(dim=-1) * masks).sum(dim=-1) / (masks.sum(dim=-1) + 1e-6)  # (B,)
+        return xyz_loss  # (B,)
 
 
 class DepthLoss(nn.Module):
@@ -70,16 +70,16 @@ class DepthLoss(nn.Module):
         depth_loss = tF.mse_loss(pred_depths, gt_depths, reduction="none")  # (B, N)
         if self.opt.conf_alpha > 0.:
             depth_loss = (confs * depth_loss - self.opt.conf_alpha * torch.log(confs))  # (B, N)
-        depth_loss = filter_by_quantile(depth_loss[masks], self.opt.filter_by_quantile).mean()
+        depth_loss = (depth_loss * masks).sum(dim=-1) / (masks.sum(dim=-1) + 1e-6)  # (B,)
 
         # Gradient loss
         pred_depths = rearrange(pred_depths, "b (f h w) -> b f h w", f=F, h=H, w=W)
         gt_depths = rearrange(gt_depths, "b (f h w) -> b f h w", f=F, h=H, w=W)
         masks = rearrange(masks, "b (f h w) -> b f h w", f=F, h=H, w=W)
         confs = rearrange(confs, "b (f h w) -> b f h w", f=F, h=H, w=W)
-        depth_grad_loss = self.grad_loss(pred_depths, gt_depths, masks, confs).mean()  # (,)
+        depth_grad_loss = self.grad_loss(pred_depths, gt_depths, masks, confs)  # (B,)
 
-        return depth_loss + depth_grad_loss  # (,)
+        return depth_loss + depth_grad_loss  # (B,)
 
 
 class CameraLoss(nn.Module):
@@ -90,7 +90,7 @@ class CameraLoss(nn.Module):
 
     def forward(self, pred_pose_encs: Tensor, gt_pose_encs: Tensor):
         camera_loss = tF.l1_loss(pred_pose_encs, gt_pose_encs, reduction="none").mean(dim=(1, 2))  # (B,)
-        return camera_loss.mean()  # (,)
+        return camera_loss  # (B,)
 
 
 ################################ Gradient Loss ################################
