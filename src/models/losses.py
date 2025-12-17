@@ -21,23 +21,16 @@ class XYZLoss(nn.Module):
         gt_xyzs: Tensor,
         masks: Optional[Tensor] = None,
         confs: Optional[Tensor] = None,
-        norm_scale: Optional[Tensor] = None,
     ):
         if masks is None:
-            masks = torch.ones_like(pred_xyzs[:, :, 0, :, :])  # (B, F, H, W)
+            masks = torch.ones_like(pred_xyzs[:, :, 0, :, :]).to(torch.bool)  # (B, F, H, W)
         if confs is None:
             confs = torch.ones_like(pred_xyzs[:, :, 0, :, :])  # (B, F, H, W)
-        if norm_scale is None:
-            norm_scale = torch.ones_like(pred_xyzs[:, 0, 0, :, :])  # (B, 1, 1)
 
         pred_xyzs = rearrange(pred_xyzs, "b f c h w -> b (f h w) c")  # (B, N, 3)
         gt_xyzs = rearrange(gt_xyzs, "b f c h w -> b (f h w) c")  # (B, N, 3)
         masks = rearrange(masks, "b f h w -> b (f h w)")  # (B, N)
         confs = rearrange(confs, "b f h w -> b (f h w)")  # (B, N)
-
-        # Normalize ground-truth and predicted XYZ
-        gt_xyzs = gt_xyzs / (norm_scale + 1e-6)  # (B, N, 3)
-        pred_xyzs = pred_xyzs / (norm_scale + 1e-6)  # (B, N, 3)
 
         # Confidence-weighted MSE
         xyz_loss = tF.mse_loss(pred_xyzs, gt_xyzs, reduction="none")  # (B, N, 3)
@@ -60,14 +53,11 @@ class DepthLoss(nn.Module):
         gt_depths: Tensor,
         masks: Optional[Tensor] = None,
         confs: Optional[Tensor] = None,
-        norm_scale: Optional[Tensor] = None,
     ):
         if masks is None:
-            masks = torch.ones_like(pred_depths[:, :, :, :])  # (B, F, H, W)
+            masks = torch.ones_like(pred_depths[:, :, :, :]).to(torch.bool)  # (B, F, H, W)
         if confs is None:
             confs = torch.ones_like(pred_depths[:, :, :, :])  # (B, F, H, W)
-        if norm_scale is None:
-            norm_scale = torch.ones_like(pred_depths[:, 0, :, :])  # (B, 1, 1)
 
         F, H, W = masks.shape[1:]
 
@@ -75,10 +65,6 @@ class DepthLoss(nn.Module):
         gt_depths = rearrange(gt_depths, "b f h w -> b (f h w)")  # (B, N)
         masks = rearrange(masks, "b f h w -> b (f h w)")  # (B, N)
         confs = rearrange(confs, "b f h w -> b (f h w)")  # (B, N)
-
-        # Normalize ground-truth and predicted depth
-        gt_depths = gt_depths / (norm_scale + 1e-6)  # (B, N)
-        pred_depths = pred_depths / (norm_scale + 1e-6)  # (B, N)
 
         # Confidence-weighted MSE
         depth_loss = tF.mse_loss(pred_depths, gt_depths, reduction="none")  # (B, N)
@@ -103,13 +89,6 @@ class CameraLoss(nn.Module):
         self.opt = opt
 
     def forward(self, pred_pose_encs: Tensor, gt_pose_encs: Tensor):
-        if norm_scale is None:
-            norm_scale = torch.ones_like(gt_pose_encs[:, 0:1, 0:1])  # (B, 1, 1)
-
-        # Normalize ground-truth pose
-        gt_pose_encs[..., :3] = gt_pose_encs[..., :3] / (norm_scale + 1e-6)  # (B, F, 7 or 9)
-        pred_pose_encs[..., :3] = pred_pose_encs[..., :3] / (norm_scale + 1e-6)  # (B, F, 7 or 9)
-
         camera_loss = tF.l1_loss(pred_pose_encs, gt_pose_encs, reduction="none").mean(dim=(1, 2))  # (B,)
         return camera_loss.mean()  # (,)
 
