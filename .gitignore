@@ -10,6 +10,7 @@ temp*.*
 *.log
 *.npz
 *.pth
+*.csv
 *.so
 *.tar*
 *.vsix
