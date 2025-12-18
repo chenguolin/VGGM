@@ -46,6 +46,7 @@ class Options:
     da3_chunk_size: int = 8
     da3_use_ray_pose: bool = False
     load_da3: bool = False
+    only_train_da3: bool = False
     use_bicrossattn: bool = True
 
     # VAE
@@ -127,7 +128,7 @@ class Options:
     # Training
         ## Losses
     conf_alpha: float = 0.2
-    # filter_by_quantile: float = 0.9
+    filter_by_quantile: float = 0.99
     gradient_loss_scale: int = 4
         ## LR scheduler
     name_lr_mult: Optional[str] = None

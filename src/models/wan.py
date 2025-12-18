@@ -85,10 +85,16 @@ class Wan(nn.Module):
                 da3_model_name=opt.da3_model_name,
                 da3_chunk_size=opt.da3_chunk_size,
                 da3_use_ray_pose=opt.da3_use_ray_pose,
-                use_bicrossattn=opt.use_bicrossattn,
+                use_bicrossattn=opt.use_bicrossattn and not opt.only_train_da3,
             )
+            if opt.only_train_da3:
+                self.diffusion.requires_grad_(False)
+                self.diffusion.da3_adapter.requires_grad_(True)
+                self.diffusion.da3_model.requires_grad_(True)
+
             self.ray_loss_fn, self.depth_loss_fn, self.pose_loss_fn = \
                 XYZLoss(opt), DepthLoss(opt), CameraLoss(opt)
+
         if opt.generator_path is not None:
             state_dict = torch.load(opt.generator_path, map_location="cpu", weights_only=True)
             if "generator_ema" in state_dict:
@@ -290,9 +296,9 @@ class Wan(nn.Module):
                 2. * torch.atan(1. / (2. * fxfycxcy[:, idxs, 0:1])),  # (B, f, 1); fx -> fov_w
             ], dim=-1).to(dtype)  # (B, f, 9)
             ## Compute geometry losses
-            outputs["depth_loss"] = self.depth_loss_fn(da3_outputs["depth"], gt_depths, confs=da3_outputs["depth_conf"]).mean()  # (,)
-            outputs["ray_loss"] = self.ray_loss_fn(da3_outputs["ray"], gt_raymaps, confs=da3_outputs["ray_conf"]).mean()  # (,)
-            outputs["pose_loss"] = self.pose_loss_fn(da3_outputs["pose_enc"], gt_pose_enc).mean()  # (,)
+            outputs["depth_loss"] = self.depth_loss_fn(da3_outputs["depth"], gt_depths, confs=da3_outputs["depth_conf"])  # (,)
+            outputs["ray_loss"] = self.ray_loss_fn(da3_outputs["ray"], gt_raymaps, confs=da3_outputs["ray_conf"])  # (,)
+            outputs["pose_loss"] = self.pose_loss_fn(da3_outputs["pose_enc"], gt_pose_enc)  # (,)
             outputs["loss"] = outputs["diffusion_loss"] + \
                 outputs["depth_loss"] + outputs["ray_loss"] + outputs["pose_loss"]
 
