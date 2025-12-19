@@ -516,12 +516,14 @@ class WanDiffusionDA3Wrapper(nn.Module):
 
                 ### (Optional) Interaction
                 if self.use_bicrossattn:
-                    dit_x = rearrange(dit_x, "b (f h w) d -> (b f) (h w) d", f=f, h=h//2, w=w//2)  # `2`: hard-coded for patch embedding
-                    da3_x = rearrange(da3_x, "b f n d -> (b f) n d")
+                    # dit_x = rearrange(dit_x, "b (f h w) d -> (b f) (h w) d", f=f, h=h//2, w=w//2)  # `2`: hard-coded for patch embedding
+                    # da3_x = rearrange(da3_x, "b f n d -> (b f) n d")
+                    da3_x = rearrange(da3_x, "b f n d -> b (f n) d")
                     dit_x_, da3_x_ = self.dit_da3_attns[da3_i](dit_x, da3_x)
                     dit_x, da3_x = dit_x + dit_x_, da3_x + da3_x_
-                    dit_x = rearrange(dit_x, "(b f) (h w) d -> b (f h w) d", f=f, h=h//2, w=w//2)  # `2`: hard-coded for patch embedding
-                    da3_x = rearrange(da3_x, "(b f) n d -> b f n d", f=f)
+                    # dit_x = rearrange(dit_x, "(b f) (h w) d -> b (f h w) d", f=f, h=h//2, w=w//2)  # `2`: hard-coded for patch embedding
+                    # da3_x = rearrange(da3_x, "(b f) n d -> b f n d", f=f)
+                    da3_x = rearrange(da3_x, "b (f n) d -> b f n d", f=f)
 
         # Wan DiT head & unpatchify
         dit_x = self.model.head(dit_x, e.unflatten(0, (bt, seq_len)))

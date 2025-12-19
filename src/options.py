@@ -146,6 +146,7 @@ class Options:
 
         if self.load_da3:
             self.load_depth = True
+            self.extra_one_step = False
 
         # Dataset directories
         self.dataset_dir_train = {
