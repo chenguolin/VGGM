@@ -704,8 +704,9 @@ def main():
                                 f"ssim_{cfg_scale}: {all_val_matrics[f'ssim_{cfg_scale}'].item():.4f}\n"
                             )
 
-                    outputs = accelerator.gather(outputs)
-                    val_outputs = accelerator.gather_for_metrics(val_outputs)
+                    if accelerator.num_processes <= 32:  # when `num_processes` is too large, gathering may cause OOM
+                        outputs = accelerator.gather(outputs)
+                        val_outputs = accelerator.gather_for_metrics(val_outputs)
 
                     if accelerator.is_main_process:
                         if "image" in val_batch:
