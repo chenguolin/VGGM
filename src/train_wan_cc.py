@@ -730,10 +730,10 @@ def main():
 
                         # Visualization
                         wandb.log({
-                            "videos/training": vis_util.wandb_video_log(outputs, fps=8)
+                            "videos/training": vis_util.wandb_video_log(outputs, fps=16)
                         }, step=global_update_step)
                         wandb.log({
-                            "videos/validation": vis_util.wandb_video_log(val_outputs, fps=8)
+                            "videos/validation": vis_util.wandb_video_log(val_outputs, fps=16)
                         }, step=global_update_step)
 
                     torch.cuda.empty_cache()

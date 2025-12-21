@@ -99,7 +99,7 @@ def colorize_depth(
     return depths
 
 
-def wandb_video_log(outputs: Dict[str, Tensor], max_num: int = 4, max_frame: int = 256, fps: int = 4, format: str = "mp4") -> List[WandbImage]:
+def wandb_video_log(outputs: Dict[str, Tensor], max_num: int = 4, max_frame: int = 256, fps: int = 16, format: str = "mp4") -> List[WandbImage]:
     """Organize videos in Dict `outputs` for wandb logging.
 
     Only process values in Dict `outputs` that have keys containing the word "images",
