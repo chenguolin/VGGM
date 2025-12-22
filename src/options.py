@@ -81,8 +81,8 @@ class Options:
         ## DMD
     use_dmd: bool = False
     generator_train_every: int = 5
-    fake_guidance_scale: float = 1.  # `1.`: align with Self-Forcing `fake_guidance_scale=0.`
-    real_guidance_scale: float = 4.  # `4.`: align with Self-Forcing `real_guidance_scale=3.`
+    fake_guidance_scale: float = 1.
+    real_guidance_scale: float = 3.
     diffusion_loss_weight: float = 0.
     dmd_loss_weight: float = 1.
         ## Self-forcing
