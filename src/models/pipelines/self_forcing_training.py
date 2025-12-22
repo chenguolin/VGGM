@@ -9,7 +9,10 @@ from src.options import Options
 
 
 class SelfForcingTrainingPipeline:
-    def __init__(self, opt: Options, diffusion: WanDiffusionWrapper | WanDiffusionDA3Wrapper):
+    def __init__(self,
+        opt: Options,
+        diffusion: WanDiffusionWrapper | WanDiffusionDA3Wrapper,
+    ):
         super().__init__()
 
         self.opt = opt
