@@ -159,7 +159,7 @@ class CausalWanSelfAttention(nn.Module):
                 query=roped_query.transpose(2, 1),
                 key=roped_key.transpose(2, 1),
                 value=v.transpose(2, 1),
-                block_mask=block_mask
+                block_mask=block_mask,
             ).transpose(2, 1)
             if padded_length > 0:
                 x = x[:, :-padded_length, ...]

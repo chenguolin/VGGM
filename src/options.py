@@ -45,9 +45,9 @@ class Options:
     da3_model_name: str = "da3-large-1.1"
     da3_chunk_size: int = 8
     da3_use_ray_pose: bool = False
+    da3_use_bicrossattn: bool = True
     load_da3: bool = False
     only_train_da3: bool = False
-    use_bicrossattn: bool = True
 
     # VAE
     vae_path: str = f"{ROOT}/.cache/huggingface/hub/Wan-AI/Wan2.1-T2V-1.3B/Wan2.1_VAE.pth"
@@ -171,10 +171,24 @@ class Options:
             self.input_res[0] // self.compression_ratio[1] // 2 *  # `2`: patch size in DiT is hard-coded to 2
             self.input_res[1] // self.compression_ratio[2] // 2
         )
+        self.da3_max_attention_size = (
+            (self.max_window_size + self.sink_size) *
+            (
+                self.input_res[0] // self.compression_ratio[1] // 2 *  # `2`: patch size in DiT is hard-coded to 2
+                self.input_res[1] // self.compression_ratio[2] // 2 + 1  # `+1` for camera token
+            )
+        )
         self.max_kvcache_attention_size = (
             self.max_kvcache_size *
             self.input_res[0] // self.compression_ratio[1] // 2 *  # `2`: patch size in DiT is hard-coded to 2
             self.input_res[1] // self.compression_ratio[2] // 2
+        )
+        self.da3_max_kvcache_attention_size = (
+            self.max_kvcache_size *
+            (
+                self.input_res[0] // self.compression_ratio[1] // 2 *  # `2`: patch size in DiT is hard-coded to 2
+                self.input_res[1] // self.compression_ratio[2] // 2 + 1  # `+1` for camera token
+            )
         )
 
 

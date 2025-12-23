@@ -85,7 +85,8 @@ class Wan(nn.Module):
                 da3_model_name=opt.da3_model_name,
                 da3_chunk_size=opt.da3_chunk_size,
                 da3_use_ray_pose=opt.da3_use_ray_pose,
-                use_bicrossattn=opt.use_bicrossattn and not opt.only_train_da3,
+                da3_use_bicrossattn=opt.da3_use_bicrossattn and not opt.only_train_da3,
+                da3_max_attention_size=opt.da3_max_attention_size,
             )
             if opt.only_train_da3:
                 self.diffusion.requires_grad_(False)
@@ -153,6 +154,7 @@ class Wan(nn.Module):
 
         self.kv_cache_pos, self.kv_cache_neg = None, None
         self.crossattn_cache_pos, self.crossattn_cache_neg = None, None
+        self.kv_cache_pos_da3, self.kv_cache_neg_da3 = None, None
 
     def state_dict(self, destination=None, prefix="", keep_vars=False):
         state_dict = super().state_dict(destination, prefix, keep_vars)
@@ -295,6 +297,9 @@ class Wan(nn.Module):
                 2. * torch.atan(1. / (2. * fxfycxcy[:, idxs, 1:2])),  # (B, f, 1); fy -> fov_h
                 2. * torch.atan(1. / (2. * fxfycxcy[:, idxs, 0:1])),  # (B, f, 1); fx -> fov_w
             ], dim=-1).to(dtype)  # (B, f, 9)
+            if self.opt.use_teacher_forcing:
+                gt_depths, gt_raymaps, gt_pose_enc = \
+                    torch.cat([gt_depths] * 2, dim=1), torch.cat([gt_raymaps] * 2, dim=1), torch.cat([gt_pose_enc] * 2, dim=1)
             ## Compute geometry losses
             outputs["depth_loss"] = self.depth_loss_fn(da3_outputs["depth"], gt_depths, confs=da3_outputs["depth_conf"])  # (,)
             outputs["ray_loss"] = self.ray_loss_fn(da3_outputs["ray"], gt_raymaps, confs=da3_outputs["ray_conf"])  # (,)
@@ -517,6 +522,11 @@ class Wan(nn.Module):
             device = self.diffusion.model.device
             images = torch.zeros((B, F, 3, H, W), dtype=dtype, device=device)  # (B, F, 3, H, W); not really used
 
+        if self.opt.load_da3:
+            depths = data["depth"].to(dtype)  # (B, F, H, W)
+        C2W = data["C2W"].to(dtype)  # (B, F, 4, 4)
+        fxfycxcy = data["fxfycxcy"].to(dtype)  # (B, F, 4)
+
         f = 1 + (F - 1) // self.opt.compression_ratio[0]
         h = H // self.opt.compression_ratio[1]
         w = W // self.opt.compression_ratio[2]
@@ -539,9 +549,7 @@ class Wan(nn.Module):
 
         # (Optional) Plucker embeddings
         if self.opt.input_plucker:
-            C2W = data["C2W"]  # (B, F, 4, 4)
-            fxfycxcy = data["fxfycxcy"]  # (B, F, 4)
-            plucker, _ = plucker_ray(H, W, C2W, fxfycxcy)  # (B, F, 6, H, W)
+            plucker, _ = plucker_ray(H, W, C2W.float(), fxfycxcy.float())  # (B, F, 6, H, W)
             plucker = rearrange(plucker, "b f c h w -> b c f h w").to(dtype)
             plucker_embeds = self.plucker_embed(plucker)  # (B, D, f, hh, ww)
         else:
@@ -561,6 +569,7 @@ class Wan(nn.Module):
             frame_seqlen = h * w // 4  # `4`: hard-coded for 2x2 patch embedding in DiT
 
             ## Temporal denoising loop
+            all_da3_outputs = [None] * num_chunks
             for chunk_idx in tqdm(range(num_chunks), ncols=125, disable=not verbose, desc="[Chunk]"):
                 this_chunk_latents = latents[:, :, chunk_idx * self.opt.chunk_size:(chunk_idx + 1) * self.opt.chunk_size, ...]
                 this_chunk_plucker_embeds = None
@@ -583,6 +592,9 @@ class Wan(nn.Module):
                             kv_cache=self.kv_cache_pos,
                             crossattn_cache=self.crossattn_cache_pos,
                             current_start=chunk_idx * self.opt.chunk_size * frame_seqlen,
+                            #
+                            kv_cache_da3=self.kv_cache_pos_da3,
+                            current_start_da3=chunk_idx * self.opt.chunk_size * (frame_seqlen + 1),  # `+1` for camera token
                         )
                     else:
                         model_outputs = self.diffusion(
@@ -594,6 +606,9 @@ class Wan(nn.Module):
                             kv_cache=self.kv_cache_pos,
                             crossattn_cache=self.crossattn_cache_pos,
                             current_start=chunk_idx * self.opt.chunk_size * frame_seqlen,
+                            #
+                            kv_cache_da3=self.kv_cache_pos_da3,
+                            current_start_da3=chunk_idx * self.opt.chunk_size * (frame_seqlen + 1),  # `+1` for camera token
                         )
 
                     #### CFG
@@ -608,6 +623,9 @@ class Wan(nn.Module):
                                 kv_cache=self.kv_cache_neg,
                                 crossattn_cache=self.crossattn_cache_neg,
                                 current_start=chunk_idx * self.opt.chunk_size * frame_seqlen,
+                                #
+                                kv_cache_da3=self.kv_cache_neg_da3,
+                                current_start_da3=chunk_idx * self.opt.chunk_size * (frame_seqlen + 1),  # `+1` for camera token
                             )
                         else:
                             model_outputs_neg = self.diffusion(
@@ -619,8 +637,21 @@ class Wan(nn.Module):
                                 kv_cache=self.kv_cache_neg,
                                 crossattn_cache=self.crossattn_cache_neg,
                                 current_start=chunk_idx * self.opt.chunk_size * frame_seqlen,
+                                #
+                                kv_cache_da3=self.kv_cache_neg_da3,
+                                current_start_da3=chunk_idx * self.opt.chunk_size * (frame_seqlen + 1),  # `+1` for camera token
                             )
-                        model_outputs = model_outputs_neg + cfg_scale * (model_outputs - model_outputs_neg)
+                        if not self.opt.load_da3:
+                            model_outputs = model_outputs_neg + cfg_scale * (model_outputs - model_outputs_neg)
+                        else:
+                            model_outputs, da3_outputs = model_outputs
+                            model_outputs_neg, _ = model_outputs_neg
+                            model_outputs = model_outputs_neg + cfg_scale * (model_outputs - model_outputs_neg)
+                            model_outputs = (model_outputs, da3_outputs)
+
+                    model_outputs, da3_outputs = \
+                        model_outputs if self.opt.load_da3 else (model_outputs, None)
+                    all_da3_outputs[chunk_idx] = da3_outputs
 
                     if self.opt.deterministic_inference:
                         this_chunk_latents = self.diffusion.scheduler.step(
@@ -649,7 +680,7 @@ class Wan(nn.Module):
                 # Rerun with timestep zero to update KV cache
                 # TODO: add noise on KV cache, except the first chunk
                 if self.opt.extra_one_step and chunk_idx < num_chunks - 1:
-                    self.diffusion(
+                    model_outputs = self.diffusion(
                         this_chunk_latents,
                         timesteps * 0.,
                         prompt_embeds,
@@ -658,9 +689,12 @@ class Wan(nn.Module):
                         kv_cache=self.kv_cache_pos,
                         crossattn_cache=self.crossattn_cache_pos,
                         current_start=chunk_idx * self.opt.chunk_size * frame_seqlen,
+                        #
+                        kv_cache_da3=self.kv_cache_pos_da3,
+                        current_start_da3=chunk_idx * self.opt.chunk_size * (frame_seqlen + 1),  # `+1` for camera token
                     )
                     if cfg_scale > 1.:
-                        self.diffusion(
+                        model_outputs_neg = self.diffusion(
                             this_chunk_latents,
                             timesteps * 0.,
                             negative_prompt_embeds,  # torch.zeros_like(prompt_embeds)
@@ -669,7 +703,21 @@ class Wan(nn.Module):
                             kv_cache=self.kv_cache_neg,
                             crossattn_cache=self.crossattn_cache_neg,
                             current_start=chunk_idx * self.opt.chunk_size * frame_seqlen,
+                            #
+                            kv_cache_da3=self.kv_cache_neg_da3,
+                            current_start_da3=chunk_idx * self.opt.chunk_size * (frame_seqlen + 1),  # `+1` for camera token
                         )
+                        if not self.opt.load_da3:
+                            model_outputs = model_outputs_neg + cfg_scale * (model_outputs - model_outputs_neg)
+                        else:
+                            model_outputs, da3_outputs = model_outputs
+                            model_outputs_neg, _ = model_outputs_neg
+                            model_outputs = model_outputs_neg + cfg_scale * (model_outputs - model_outputs_neg)
+                            model_outputs = (model_outputs, da3_outputs)
+
+                    model_outputs, da3_outputs = \
+                        model_outputs if self.opt.load_da3 else (model_outputs, None)
+                    all_da3_outputs[chunk_idx] = da3_outputs
 
             if cond_latents is not None:
                 latents[:, :, 0:1, ...] = cond_latents
@@ -693,6 +741,36 @@ class Wan(nn.Module):
                         rearrange(images, "b f c h w -> (b f) c h w") * 2. - 1.,
                     )  # (B*F, 1, 1, 1)
                     outputs[f"lpips_{cfg_scale}"] = rearrange(outputs[f"lpips_{cfg_scale}"], "(b f) c h w -> b f c h w", b=B).mean(dim=(1, 2, 3, 4))  # (B,)
+
+            # (Optional) DA3 evaluation
+            if self.opt.load_da3:
+                assert da3_outputs is not None
+                da3_outputs = {
+                    k: torch.cat([all_da3_outputs[i][k] for i in range(num_chunks)], dim=1)
+                    for k in all_da3_outputs[0].keys()
+                }
+
+                ## Get ground-truth geometry labels
+                idxs = torch.arange(0, F, 4).to(device=device, dtype=torch.long)
+                gt_depths = depths[:, idxs, ...]  # (B, f, H, W)
+                _, (ray_o, ray_d) = plucker_ray(H//2, W//2,
+                    C2W[:, idxs, ...].float(), fxfycxcy[:, idxs, ...].float(), normalize_ray_d=False)
+                gt_raymaps = torch.cat([ray_d, ray_o], dim=2).to(dtype)  # (B, f, 6, H/2, W/2)
+                gt_pose_enc = torch.cat([
+                    C2W[:, idxs, :3, 3].float(),  # (B, f, 3)
+                    mat_to_quat(C2W[:, idxs, :3, :3].float()),  # (B, f, 4)
+                    2. * torch.atan(1. / (2. * fxfycxcy[:, idxs, 1:2])),  # (B, f, 1); fy -> fov_h
+                    2. * torch.atan(1. / (2. * fxfycxcy[:, idxs, 0:1])),  # (B, f, 1); fx -> fov_w
+                ], dim=-1).to(dtype)  # (B, f, 9)
+                outputs[f"images_gt_depth"] = colorize_depth(1./gt_depths, batch_mode=True)
+
+                ## Compute geometry metrics via MSE
+                outputs[f"depth_{cfg_scale}"] = tF.mse_loss(da3_outputs["depth"], gt_depths)  # (,)
+                outputs[f"ray_{cfg_scale}"] = tF.mse_loss(da3_outputs["ray"], gt_raymaps)  # (,)
+                outputs[f"pose_{cfg_scale}"] = tF.mse_loss(da3_outputs["pose_enc"], gt_pose_enc)  # (,)
+
+                # For visualization
+                outputs[f"images_pred_depth_{cfg_scale}"] = colorize_depth(1./da3_outputs["depth"], batch_mode=True)
 
         return outputs
 
@@ -724,6 +802,28 @@ class Wan(nn.Module):
             })
         self.kv_cache_pos = kv_cache_pos  # always store the clean cache
         self.kv_cache_neg = kv_cache_neg  # always store the clean cache
+
+        if self.opt.load_da3:
+            num_da3_blocks = len(self.diffusion.da3_model.backbone.pretrained.blocks)
+            num_heads_da3 = self.diffusion.da3_model.backbone.pretrained.num_heads
+            head_dim_da3 = self.diffusion.da3_model.backbone.pretrained.embed_dim // num_heads_da3
+
+            kv_cache_pos_da3, kv_cache_neg_da3 = [], []
+            for _ in range(num_da3_blocks):
+                kv_cache_pos_da3.append({
+                    "k": torch.zeros((batch_size, num_heads_da3, self.opt.da3_max_kvcache_attention_size, head_dim_da3), dtype=dtype, device=device),
+                    "v": torch.zeros((batch_size, num_heads_da3, self.opt.da3_max_kvcache_attention_size, head_dim_da3), dtype=dtype, device=device),
+                    "global_end_index": torch.tensor([0], dtype=torch.long, device=device),
+                    "local_end_index": torch.tensor([0], dtype=torch.long, device=device),
+                })
+                kv_cache_neg_da3.append({
+                    "k": torch.zeros((batch_size, num_heads_da3, self.opt.da3_max_kvcache_attention_size, head_dim_da3), dtype=dtype, device=device),
+                    "v": torch.zeros((batch_size, num_heads_da3, self.opt.da3_max_kvcache_attention_size, head_dim_da3), dtype=dtype, device=device),
+                    "global_end_index": torch.tensor([0], dtype=torch.long, device=device),
+                    "local_end_index": torch.tensor([0], dtype=torch.long, device=device),
+                })
+            self.kv_cache_pos_da3 = kv_cache_pos_da3  # always store the clean cache
+            self.kv_cache_neg_da3 = kv_cache_neg_da3  # always store the clean cache
 
     def _initialize_crossattn_cache(self, batch_size: int, dtype: torch.dtype, device: torch.device):
         """

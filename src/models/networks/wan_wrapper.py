@@ -143,8 +143,9 @@ class WanDiffusionWrapper(nn.Module):
         is_causal: bool = False,
         sink_size: int = 0,
         chunk_size=1,
-        max_attention_size: int = 32760,  # 121 x 480 x 832 -> 35 x 30 x 52
+        max_attention_size: int = 32760,  # 81 x 480 x 832 -> 21 x 30 x 52
         rope_outside: bool = False,
+        **kwargs,  # for compatibility
     ):
         super().__init__()
 
@@ -184,6 +185,9 @@ class WanDiffusionWrapper(nn.Module):
         kv_cache: Optional[List[Dict[str, Any]]] = None,
         crossattn_cache: Optional[List[Dict[str, Any]]] = None,
         current_start: Optional[int] = 0,
+        #
+        kv_cache_da3: Optional[List[Dict[str, Any]]] = None,  # not used; for compatibility
+        current_start_da3: Optional[int] = 0,  # not used; for compatibility
         #
         clean_x: Optional[Tensor] = None,
         aug_t: Optional[Tensor] = None,
@@ -290,13 +294,14 @@ class WanDiffusionDA3Wrapper(nn.Module):
         is_causal: bool = False,
         sink_size: int = 0,
         chunk_size=1,
-        max_attention_size: int = 32760,  # 121 x 480 x 832 -> 35 x 30 x 52
+        max_attention_size: int = 32760,  # 81 x 480 x 832 -> 21 x 30 x 52
         rope_outside: bool = False,
         #
         da3_model_name: str = "da3-large-1.1",
         da3_chunk_size: int = 8,
         da3_use_ray_pose: bool = False,
-        use_bicrossattn: bool = False,
+        da3_use_bicrossattn: bool = False,
+        da3_max_attention_size: int = 32781,  # 81 x 480 x 832 -> 21 x (30 x 52 + 1), +1 for camera token
     ):
         super().__init__()
 
@@ -339,7 +344,7 @@ class WanDiffusionDA3Wrapper(nn.Module):
 
         # Extra modules of WanDA3
         self.da3_adapter = nn.Linear(1536, 1024)  # hard-coded for Wan2.1-1.3B to DA3-large
-        if use_bicrossattn:
+        if da3_use_bicrossattn:
             self.dit_da3_attns = nn.ModuleList([
                 # `1536` and `1024` are hard-coded for Wan1.3B and DA3-large
                 BiCrossAttention(dim1=1536, dim2=1024, dim=1536, num_heads=24)
@@ -348,7 +353,11 @@ class WanDiffusionDA3Wrapper(nn.Module):
 
         self.da3_chunk_size = da3_chunk_size
         self.da3_use_ray_pose = da3_use_ray_pose
-        self.use_bicrossattn = use_bicrossattn
+        self.da3_use_bicrossattn = da3_use_bicrossattn
+        self.da3_max_attention_size = da3_max_attention_size
+
+        self.is_causal = is_causal
+        self.block_mask = None
 
     def forward(self,
         noisy_latents: Tensor,  # (B, D, f, h, w)
@@ -362,10 +371,14 @@ class WanDiffusionDA3Wrapper(nn.Module):
         crossattn_cache: Optional[List[Dict[str, Any]]] = None,
         current_start: Optional[int] = 0,
         #
+        kv_cache_da3: Optional[List[Dict[str, Any]]] = None,
+        current_start_da3: Optional[int] = 0,
+        #
         clean_x: Optional[Tensor] = None,
         aug_t: Optional[Tensor] = None,
     ):
         B, (f, h, w) = noisy_latents.shape[0], noisy_latents.shape[2:]
+        tff = 2 * f if self.is_causal and clean_x is not None else f
         if timesteps.dim() == 1:
             timesteps = timesteps.unsqueeze(1).repeat(1, f)  # (B, f)
         timesteps = timesteps[:, :, None, None].repeat(1, 1, h//2, w//2).flatten(1)  # (B, f*hh*ww); `//2`: hard-coded for patch embeddig
@@ -410,6 +423,70 @@ class WanDiffusionDA3Wrapper(nn.Module):
                 for u in prompt_embeds
             ]))
 
+        if self.is_causal:
+            # Clean inputs for teacher forcing
+            if clean_x is not None:
+                clean_x = [self.model.patch_embedding(u.unsqueeze(0)) for u in clean_x]
+                if add_embeds is not None:
+                    clean_x = [u + v for u, v in zip(clean_x, add_embeds)]
+                clean_x = [u.flatten(2).transpose(1, 2) for u in clean_x]
+                seq_lens_clean = torch.tensor([u.size(1) for u in clean_x], dtype=torch.long)
+                clean_x = torch.cat([
+                    torch.cat([u, u.new_zeros(1, seq_lens_clean.max() - u.size(1), u.size(2))],
+                            dim=1) for u in clean_x
+                ])
+
+                x = torch.cat([clean_x, x], dim=1)
+
+                if aug_t is None:
+                    aug_t = torch.zeros_like(t)
+                e_clean = self.model.time_embedding(
+                    sinusoidal_embedding_1d(self.model.freq_dim, aug_t.flatten()).type_as(x))
+                e0_clean = self.model.time_projection(e_clean).unflatten(1, (6, self.model.dim)).unflatten(0, (bt, seq_lens_clean.max()))
+                e0 = torch.cat([e0_clean, e0], dim=1)
+
+            # Construct blockwise causal attn mask
+                ## For Wan DiT
+            if self.model.block_mask is None and kv_cache is None:
+                if clean_x is not None:
+                    self.model.block_mask = self.model._prepare_teacher_forcing_mask(
+                        device,
+                        num_frames=f,
+                        frame_seqlen=h * w // (self.model.patch_size[1] * self.model.patch_size[2]),
+                        sink_size=self.model.sink_size,
+                        chunk_size=self.model.chunk_size,
+                        max_attention_size=self.model.max_attention_size,
+                    )
+                else:
+                    self.model.block_mask = self.model._prepare_blockwise_causal_attn_mask(
+                        device,
+                        num_frames=f,
+                        frame_seqlen=h * w // (self.model.patch_size[1] * self.model.patch_size[2]),
+                        sink_size=self.model.sink_size,
+                        chunk_size=self.model.chunk_size,
+                        max_attention_size=self.model.max_attention_size,
+                    )
+                ## For DA3
+            if self.block_mask is None and kv_cache_da3 is None:
+                if clean_x is not None:
+                    self.block_mask = self.model._prepare_teacher_forcing_mask(
+                        device,
+                        num_frames=f,
+                        frame_seqlen=1 + h * w // (self.model.patch_size[1] * self.model.patch_size[2]),  # `1+` for camera token
+                        sink_size=self.model.sink_size,
+                        chunk_size=self.model.chunk_size,
+                        max_attention_size=self.da3_max_attention_size,
+                    )
+                else:
+                    self.block_mask = self.model._prepare_blockwise_causal_attn_mask(
+                        device,
+                        num_frames=f,
+                        frame_seqlen=1 + h * w // (self.model.patch_size[1] * self.model.patch_size[2]),  # `1+` for camera token
+                        sink_size=self.model.sink_size,
+                        chunk_size=self.model.chunk_size,
+                        max_attention_size=self.da3_max_attention_size,
+                    )
+
         # arguments
         kwargs = dict(
             e=e0,
@@ -419,6 +496,10 @@ class WanDiffusionDA3Wrapper(nn.Module):
             context=context,
             context_lens=context_lens,
         )
+        if self.is_causal:
+            kwargs.update(
+                block_mask=self.model.block_mask,  # None if kv cache is used
+            )
 
         def create_custom_forward(module):
             def custom_forward(*inputs, **kwargs):
@@ -428,12 +509,19 @@ class WanDiffusionDA3Wrapper(nn.Module):
         dit_x, da3_x = None, None
         da3_output = []
         blocks_to_take = [11, 15, 19, 23]  # hard-coded for DA3-large
-        pos, pos_nodiff = self.da3_model.backbone.pretrained._prepare_rope(B, f, h*8, w*8, device)  # `8`: hard-coded for Wan2.1
+        pos, pos_nodiff = self.da3_model.backbone.pretrained._prepare_rope(B, tff, h*8, w*8, device)  # `8`: hard-coded for Wan2.1
 
         for i, block in enumerate(self.model.blocks):
             ## Only Wan DiT
             if i < len(self.model.blocks) - 24:  #  `24`: hard-coded for da3-large
-                if self.training and self.model.use_gradient_checkpointing_offload:
+                if torch.is_grad_enabled() and self.model.use_gradient_checkpointing_offload:
+                    if self.is_causal and kv_cache is not None:
+                        kwargs.update(
+                            {
+                                "kv_cache": kv_cache[i],
+                                "current_start": current_start,
+                            }
+                        )
                     with torch.autograd.graph.save_on_cpu():
                         x = torch.utils.checkpoint.checkpoint(
                             create_custom_forward(block),
@@ -441,7 +529,14 @@ class WanDiffusionDA3Wrapper(nn.Module):
                             **kwargs,
                             use_reentrant=False,
                         )
-                elif self.training and self.model.use_gradient_checkpointing:
+                elif torch.is_grad_enabled() and self.model.use_gradient_checkpointing:
+                    if self.is_causal and kv_cache is not None:
+                        kwargs.update(
+                            {
+                                "kv_cache": kv_cache[i],
+                                "current_start": current_start,
+                            }
+                        )
                     x = torch.utils.checkpoint.checkpoint(
                         create_custom_forward(block),
                         x,
@@ -449,13 +544,28 @@ class WanDiffusionDA3Wrapper(nn.Module):
                         use_reentrant=False,
                     )
                 else:
+                    if self.is_causal and kv_cache is not None:
+                        kwargs.update(
+                            {
+                                "kv_cache": kv_cache[i],
+                                "crossattn_cache": crossattn_cache[i],
+                                "current_start": current_start,
+                            }
+                        )
                     x = block(x, **kwargs)
 
             ## Wan DiT & DA3
             else:
                 ### Wan DiT
                 dit_x = dit_x if dit_x is not None else x
-                if self.training and self.model.use_gradient_checkpointing_offload:
+                if torch.is_grad_enabled() and self.model.use_gradient_checkpointing_offload:
+                    if self.is_causal and kv_cache is not None:
+                        kwargs.update(
+                            {
+                                "kv_cache": kv_cache[i],
+                                "current_start": current_start,
+                            }
+                        )
                     with torch.autograd.graph.save_on_cpu():
                         dit_x = torch.utils.checkpoint.checkpoint(
                             create_custom_forward(block),
@@ -463,7 +573,14 @@ class WanDiffusionDA3Wrapper(nn.Module):
                             **kwargs,
                             use_reentrant=False,
                         )
-                elif self.training and self.model.use_gradient_checkpointing:
+                elif torch.is_grad_enabled() and self.model.use_gradient_checkpointing:
+                    if self.is_causal and kv_cache is not None:
+                        kwargs.update(
+                            {
+                                "kv_cache": kv_cache[i],
+                                "current_start": current_start,
+                            }
+                        )
                     dit_x = torch.utils.checkpoint.checkpoint(
                         create_custom_forward(block),
                         dit_x,
@@ -471,6 +588,14 @@ class WanDiffusionDA3Wrapper(nn.Module):
                         use_reentrant=False,
                     )
                 else:
+                    if self.is_causal and kv_cache is not None:
+                        kwargs.update(
+                            {
+                                "kv_cache": kv_cache[i],
+                                "crossattn_cache": crossattn_cache[i],
+                                "current_start": current_start,
+                            }
+                        )
                     dit_x = block(dit_x, **kwargs)
 
                 ### DA3
@@ -480,12 +605,12 @@ class WanDiffusionDA3Wrapper(nn.Module):
 
                 if da3_i == 0:  # the first layer of DA3
                     B = da3_x.shape[0]
-                    da3_x = rearrange(da3_x, "b (f h w) d -> (b f) (h w) d", f=f, h=h//2, w=w//2)  # `2`: hard-coded for patch embedding
+                    da3_x = rearrange(da3_x, "b (f h w) d -> (b f) (h w) d", f=tff, h=h//2, w=w//2)  # `2`: hard-coded for patch embedding
                     da3_x = self.da3_adapter(da3_x)  # align dimension
-                    cls_token = self.da3_model.backbone.pretrained.prepare_cls_token(B, f)
+                    cls_token = self.da3_model.backbone.pretrained.prepare_cls_token(B, tff)
                     da3_x = torch.cat((cls_token, da3_x), dim=1)
                     da3_x = da3_x + self.da3_model.backbone.pretrained.interpolate_pos_encoding(da3_x, h*8, w*8)  # `8`: hard-coded for Wan2.1
-                    da3_x = rearrange(da3_x, "(b f) n d -> b f n d", f=f)
+                    da3_x = rearrange(da3_x, "(b f) n d -> b f n d", f=tff)
 
                 if da3_i < 8:  # `8`: hard-coded for DA3-large `self.rope_start`
                     g_pos, l_pos = None, None
@@ -494,7 +619,7 @@ class WanDiffusionDA3Wrapper(nn.Module):
 
                 if da3_i == 8:  # `8`: hard-coded for DA3-large `self.alt_start`
                     ref_token = self.da3_model.backbone.pretrained.camera_token[:, :1].expand(B, -1, -1)
-                    src_token = self.da3_model.backbone.pretrained.camera_token[:, 1:].expand(B, f - 1, -1)
+                    src_token = self.da3_model.backbone.pretrained.camera_token[:, 1:].expand(B, tff - 1, -1)
                     camera_token = torch.cat([ref_token, src_token], dim=1)
                     da3_x[:, :, 0, :] = camera_token
 
@@ -502,11 +627,22 @@ class WanDiffusionDA3Wrapper(nn.Module):
                     da3_x = self.da3_model.backbone.pretrained.process_attention(
                         da3_x, da3_block, "global", pos=g_pos,
                         gradient_checkpointing=self.training,
+                        #
+                        block_mask=self.block_mask if self.is_causal else None,
+                        kv_cache=kv_cache_da3[da3_i] if self.is_causal and kv_cache_da3 is not None else None,
+                        current_start=current_start_da3,
+                        frame_seqlen=da3_x.shape[2],  # it should be h*w//4 + 1
                     )
                 else:
                     da3_x = self.da3_model.backbone.pretrained.process_attention(
                         da3_x, da3_block, "local", pos=l_pos,
                         gradient_checkpointing=self.training,
+                        #
+                        # NOTE: no need causality for local attention
+                        # block_mask=self.block_mask if self.is_causal else None,
+                        # kv_cache=kv_cache_da3[da3_i] if self.is_causal and kv_cache_da3 is not None else None,
+                        # current_start=current_start_da3,
+                        # frame_seqlen=da3_x.shape[2],  # it should be h*w//4 + 1
                     )
                     local_da3_x = da3_x
 
@@ -515,17 +651,19 @@ class WanDiffusionDA3Wrapper(nn.Module):
                     da3_output.append((out_da3_x[:, :, 0], out_da3_x))
 
                 ### (Optional) Interaction
-                if self.use_bicrossattn:
-                    # dit_x = rearrange(dit_x, "b (f h w) d -> (b f) (h w) d", f=f, h=h//2, w=w//2)  # `2`: hard-coded for patch embedding
-                    # da3_x = rearrange(da3_x, "b f n d -> (b f) n d")
-                    da3_x = rearrange(da3_x, "b f n d -> b (f n) d")
+                if self.da3_use_bicrossattn:
+                    dit_x = rearrange(dit_x, "b (f h w) d -> (b f) (h w) d", f=tff, h=h//2, w=w//2)  # `2`: hard-coded for patch embedding
+                    da3_x = rearrange(da3_x, "b f n d -> (b f) n d")
+                    # da3_x = rearrange(da3_x, "b f n d -> b (f n) d")
                     dit_x_, da3_x_ = self.dit_da3_attns[da3_i](dit_x, da3_x)
                     dit_x, da3_x = dit_x + dit_x_, da3_x + da3_x_
-                    # dit_x = rearrange(dit_x, "(b f) (h w) d -> b (f h w) d", f=f, h=h//2, w=w//2)  # `2`: hard-coded for patch embedding
-                    # da3_x = rearrange(da3_x, "(b f) n d -> b f n d", f=f)
-                    da3_x = rearrange(da3_x, "b (f n) d -> b f n d", f=f)
+                    dit_x = rearrange(dit_x, "(b f) (h w) d -> b (f h w) d", f=tff, h=h//2, w=w//2)  # `2`: hard-coded for patch embedding
+                    da3_x = rearrange(da3_x, "(b f) n d -> b f n d", f=tff)
+                    # da3_x = rearrange(da3_x, "b (f n) d -> b f n d", f=tff)
 
         # Wan DiT head & unpatchify
+        if self.is_causal and clean_x is not None:
+            dit_x = dit_x[:, dit_x.shape[1] // 2:, :]  # remove teacher forcing part
         dit_x = self.model.head(dit_x, e.unflatten(0, (bt, seq_len)))
         dit_x = self.model.unpatchify(dit_x, grid_sizes)
         dit_x = torch.stack([u.float() for u in dit_x])
@@ -544,6 +682,8 @@ class WanDiffusionDA3Wrapper(nn.Module):
             for out in da3_output
         ]
         da3_outputs = [out[..., 1:, :] for out in da3_outputs]
+        # NOTE: keep teacher forcing part for DA3
+        # da3_outputs = [out[:, out.shape[1]//2:, :] for out in da3_outputs]  # remove teacher forcing part
         feats = tuple(zip(da3_outputs, camera_tokens))
         head_outputs = self.da3_model.head(feats, h*8, w*8, patch_start_idx=0, chunk_size=self.da3_chunk_size)  # `*8`: hard-coded for Wan2.1
         depths, depths_conf = head_outputs["depth"], head_outputs["depth_conf"]  # (B, f, H, W), (B, f, H, W)

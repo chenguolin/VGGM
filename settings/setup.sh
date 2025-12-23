@@ -23,6 +23,10 @@ if [ -z "$ROOT" ]; then
 fi
 echo "ROOT = $ROOT"
 
+# pip install torch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1
+# pip install -U xformers==0.0.29.post1
+# pip install nvidia-cublas-cu12==12.4.5.8  # https://github.com/InternLM/lmdeploy/issues/3297
+
 cd $ROOT/projects/VGGM
 pip3 install -r settings/requirements.txt && pip3 install -U peft transformers
 pip3 install flash-attn==2.7.4.post1 --no-build-isolation
