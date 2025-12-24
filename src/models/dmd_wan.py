@@ -136,7 +136,7 @@ class DMD_Wan(Wan):
             raise NotImplementedError
 
         # VAE
-        if "image" in data:
+        if "image" in data and self.prompt_list is None:
             with torch.no_grad(), torch.autocast(device_type="cuda", dtype=dtype):
                 latents = self.encode(images * 2. - 1., vae)  # (B, D, f, h, w)
                 if self.opt.first_latent_cond:
@@ -214,7 +214,7 @@ class DMD_Wan(Wan):
         # For visualizaiton
         if is_eval:
             outputs["images_predx0"] = (self.decode_latent(pred_x0, vae).clamp(-1., 1.) + 1.) / 2.
-            if "image" in data:
+            if "image" in data and self.prompt_list is None:
                 outputs["images_recon"] = (self.decode_latent(latents, vae).clamp(-1., 1.) + 1.) / 2.
 
         return outputs

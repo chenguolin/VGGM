@@ -192,10 +192,7 @@ class Wan(nn.Module):
 
         # Text encoder
         if self.text_encoder is not None:
-            if self.prompt_list is None:
-                prompts = data["prompt"]  # a list of strings
-            else:
-                prompts = np.random.choice(self.prompt_list, B, replace=False).tolist()
+            prompts = data["prompt"]  # a list of strings
             with torch.no_grad(), torch.autocast(device_type="cuda", dtype=dtype):
                 self.text_encoder.eval()
                 prompt_embeds = self.text_encoder(prompts)  # (B, N=512, D')
@@ -475,7 +472,7 @@ class Wan(nn.Module):
             outputs[f"images_pred_{cfg_scale}"] = pred_images
 
             # Evaluation metrics: PSNR, SSIM, LPIPS
-            if "image" in data:
+            if "image" in data and self.prompt_list is None:
                 outputs[f"psnr_{cfg_scale}"] = -10. * torch.log10(torch.mean((images - pred_images) ** 2, dim=(1, 2, 3, 4)))  # (B,)
                 outputs[f"ssim_{cfg_scale}"] = SSIM(
                     rearrange(pred_images, "b f c h w -> (b f) c h w"),
@@ -491,7 +488,7 @@ class Wan(nn.Module):
                     outputs[f"lpips_{cfg_scale}"] = rearrange(outputs[f"lpips_{cfg_scale}"], "(b f) c h w -> b f c h w", b=B).mean(dim=(1, 2, 3, 4))  # (B,)
 
             # (Optional) DA3 evaluation
-            if self.opt.load_da3:
+            if self.opt.load_da3 and self.prompt_list is None:
                 assert da3_outputs is not None
 
                 ## Get ground-truth geometry labels
@@ -744,7 +741,7 @@ class Wan(nn.Module):
             outputs[f"images_pred_{cfg_scale}"] = pred_images
 
             # Evaluation metrics: PSNR, SSIM, LPIPS
-            if "image" in data:
+            if "image" in data and self.prompt_list is None:
                 outputs[f"psnr_{cfg_scale}"] = -10. * torch.log10(torch.mean((images - pred_images) ** 2, dim=(1, 2, 3, 4)))  # (B,)
                 outputs[f"ssim_{cfg_scale}"] = SSIM(
                     rearrange(pred_images, "b f c h w -> (b f) c h w"),
@@ -760,7 +757,7 @@ class Wan(nn.Module):
                     outputs[f"lpips_{cfg_scale}"] = rearrange(outputs[f"lpips_{cfg_scale}"], "(b f) c h w -> b f c h w", b=B).mean(dim=(1, 2, 3, 4))  # (B,)
 
             # (Optional) DA3 evaluation
-            if self.opt.load_da3:
+            if self.opt.load_da3 and self.prompt_list is None:
                 assert da3_outputs is not None
                 da3_outputs = {
                     k: torch.cat([all_da3_outputs[i][k] for i in range(num_chunks)], dim=1)
