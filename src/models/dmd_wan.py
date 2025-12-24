@@ -2,6 +2,7 @@ from typing import *
 from torch import Tensor
 
 import os
+import numpy as np
 import torch
 import torch.nn.functional as tF
 from peft import LoraConfig, inject_adapter_in_model
@@ -123,7 +124,10 @@ class DMD_Wan(Wan):
 
         # Text encoder
         if self.text_encoder is not None:
-            prompts = data["prompt"]  # a list of strings
+            if self.prompt_list is None:
+                prompts = data["prompt"]  # a list of strings
+            else:
+                prompts = np.random.choice(self.prompt_list, B, replace=False).tolist()
             with torch.no_grad(), torch.autocast(device_type="cuda", dtype=dtype):
                 self.text_encoder.eval()
                 prompt_embeds = self.text_encoder(prompts)  # (B, N=512, D')

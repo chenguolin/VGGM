@@ -3,6 +3,7 @@ from torch import Tensor
 
 import os
 from tqdm import tqdm
+import numpy as np
 import torch
 from torch import nn
 import torch.nn.functional as tF
@@ -14,7 +15,7 @@ from lpips import LPIPS
 
 from depth_anything_3.model.utils.transform import mat_to_quat
 
-from src.options import Options
+from src.options import Options, ROOT
 from src.models.networks import (
     FeatureEmbed,
     WanTextEncoderWrapper,
@@ -34,6 +35,13 @@ class Wan(nn.Module):
         super().__init__()
 
         self.opt = opt
+
+        if opt.use_vidprom:
+            assert not opt.first_latent_cond
+            with open(f"{ROOT}/.cache/vidprom_filtered_extended.txt", encoding="utf-8") as f:
+                self.prompt_list = [line.rstrip() for line in f]
+        else:
+            self.prompt_list = None
 
         # Text encoder
         if opt.load_text_encoder:
@@ -184,7 +192,10 @@ class Wan(nn.Module):
 
         # Text encoder
         if self.text_encoder is not None:
-            prompts = data["prompt"]  # a list of strings
+            if self.prompt_list is None:
+                prompts = data["prompt"]  # a list of strings
+            else:
+                prompts = np.random.choice(self.prompt_list, B, replace=False).tolist()
             with torch.no_grad(), torch.autocast(device_type="cuda", dtype=dtype):
                 self.text_encoder.eval()
                 prompt_embeds = self.text_encoder(prompts)  # (B, N=512, D')
@@ -362,7 +373,10 @@ class Wan(nn.Module):
 
         # Text encoder
         if self.text_encoder is not None:
-            prompts = data["prompt"]  # a list of strings
+            if self.prompt_list is None:
+                prompts = data["prompt"]  # a list of strings
+            else:
+                prompts = np.random.choice(self.prompt_list, B, replace=False).tolist()
             self.text_encoder.eval()
             prompt_embeds = self.text_encoder(prompts)  # (B, N=512, D')
             negative_prompt_embeds = self.text_encoder([self.opt.negative_prompt]).repeat(B, 1, 1)  # (B, N=512, D')
@@ -533,7 +547,10 @@ class Wan(nn.Module):
 
         # Text encoder
         if self.text_encoder is not None:
-            prompts = data["prompt"]  # a list of strings
+            if self.prompt_list is None:
+                prompts = data["prompt"]  # a list of strings
+            else:
+                prompts = np.random.choice(self.prompt_list, B, replace=False).tolist()
             self.text_encoder.eval()
             prompt_embeds = self.text_encoder(prompts)  # (B, N=512, D')
             negative_prompt_embeds = self.text_encoder([self.opt.negative_prompt]).repeat(B, 1, 1)  # (B, N=512, D')

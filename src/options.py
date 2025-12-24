@@ -30,6 +30,7 @@ class Options:
     load_da3_cam: bool = True
     load_depth: bool = True
     normalize_xyz: bool = True
+    use_vidprom: bool = False
         ## Camera normalization
     camera_norm_type: Literal[
         "none",
