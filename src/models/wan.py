@@ -348,7 +348,7 @@ class Wan(nn.Module):
         self.diffusion.eval()
         self.diffusion.scheduler.set_timesteps(self.opt.num_inference_steps, training=False)
 
-        if "image" in data and self.prompt_list is None:
+        if "image" in data:
             images = data["image"].to(dtype)  # (B, F, 3, H, W)
             (B, F, _, H, W), device = images.shape, images.device
 
@@ -521,7 +521,7 @@ class Wan(nn.Module):
         self.diffusion.eval()
         self.diffusion.scheduler.set_timesteps(self.opt.num_inference_steps, training=False)
 
-        if "image" in data and self.prompt_list is None:
+        if "image" in data:
             images = data["image"].to(dtype)  # (B, F, 3, H, W)
             (B, F, _, H, W), device = images.shape, images.device
 
