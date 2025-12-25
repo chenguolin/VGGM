@@ -652,7 +652,7 @@ def main():
                             val_outputs = model(val_batch, func_name="evaluate", vae=vae)
 
                             val_logs = {}
-                            if "image" in val_batch:
+                            if "image" in val_batch and not opt.use_vidprom:
                                 for cfg_scale in opt.cfg_scale:
                                     val_psnr = val_outputs[f"psnr_{cfg_scale}"]
                                     val_ssim = val_outputs[f"ssim_{cfg_scale}"]
@@ -696,7 +696,7 @@ def main():
                     for k, v in all_val_matrics.items():
                         all_val_matrics[k] = torch.tensor(v).mean()
 
-                    if "image" in val_batch:
+                    if "image" in val_batch and not opt.use_vidprom:
                         for cfg_scale in opt.cfg_scale:
                             logger.info(
                                 f"Eval [{global_update_step:06d} / {total_updated_steps:06d}] " +
@@ -709,7 +709,7 @@ def main():
                         val_outputs = accelerator.gather_for_metrics(val_outputs)
 
                     if accelerator.is_main_process:
-                        if "image" in val_batch:
+                        if "image" in val_batch and not opt.use_vidprom:
                             for cfg_scale in opt.cfg_scale:
                                 wandb.log({
                                     f"validation/psnr_{cfg_scale}": all_val_matrics[f"psnr_{cfg_scale}"].item(),
