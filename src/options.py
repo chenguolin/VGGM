@@ -70,7 +70,7 @@ class Options:
     sink_size: int = 0
     chunk_size: int = 3
     max_window_size: int = None  # if None, then `(num_input_frames - 1) // 4 + 1`
-    max_kvcache_size: int = 21  # set to a limited number to save memory
+    max_kvcache_size: int = None  # set to a limited number to save memory
     rope_outside: bool = False
         ## Load pre-trained models
     generator_path: Optional[str] = None
@@ -165,30 +165,17 @@ class Options:
 
         if self.max_window_size is None:
             self.max_window_size = (self.num_input_frames - 1) // self.compression_ratio[0] + 1 - self.sink_size
-        self.max_attention_size = (
-            (self.max_window_size + self.sink_size) *
+        if self.max_kvcache_size is None:
+            self.max_kvcache_size = self.max_window_size + self.sink_size
+        self.frame_seqlen = (
             self.input_res[0] // self.compression_ratio[1] // 2 *  # `2`: patch size in DiT is hard-coded to 2
             self.input_res[1] // self.compression_ratio[2] // 2
         )
-        self.da3_max_attention_size = (
-            (self.max_window_size + self.sink_size) *
-            (
-                self.input_res[0] // self.compression_ratio[1] // 2 *  # `2`: patch size in DiT is hard-coded to 2
-                self.input_res[1] // self.compression_ratio[2] // 2 + 1  # `+1` for camera token
-            )
-        )
-        self.max_kvcache_attention_size = (
-            self.max_kvcache_size *
-            self.input_res[0] // self.compression_ratio[1] // 2 *  # `2`: patch size in DiT is hard-coded to 2
-            self.input_res[1] // self.compression_ratio[2] // 2
-        )
-        self.da3_max_kvcache_attention_size = (
-            self.max_kvcache_size *
-            (
-                self.input_res[0] // self.compression_ratio[1] // 2 *  # `2`: patch size in DiT is hard-coded to 2
-                self.input_res[1] // self.compression_ratio[2] // 2 + 1  # `+1` for camera token
-            )
-        )
+
+        self.max_attention_size = (self.max_window_size + self.sink_size) * self.frame_seqlen
+        self.da3_max_attention_size = (self.max_window_size + self.sink_size) * (self.frame_seqlen + 1)  # `+1` for camera token
+        self.max_kvcache_attention_size = self.max_kvcache_size * self.frame_seqlen
+        self.da3_max_kvcache_attention_size = self.max_kvcache_size * (self.frame_seqlen + 1)  # `+1` for camera token
 
 
 # Set all options for different tasks and models
