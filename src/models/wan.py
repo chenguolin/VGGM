@@ -17,14 +17,13 @@ from depth_anything_3.model.utils.transform import mat_to_quat
 
 from src.options import Options, ROOT
 from src.models.networks import (
-    FeatureEmbed,
     WanTextEncoderWrapper,
     WanVAEWrapper,
     WanDiffusionWrapper,
     WanDiffusionDA3Wrapper,
 )
 from src.models.losses import XYZLoss, DepthLoss, CameraLoss
-from src.utils import convert_to_buffer, plucker_ray, zero_init_module, colorize_depth
+from src.utils import convert_to_buffer, plucker_ray, colorize_depth
 
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -63,6 +62,9 @@ class Wan(nn.Module):
                 opt.sigma_min,
                 opt.extra_one_step,
                 #
+                opt.input_plucker,
+                2,  # hard-coded for patch embedding
+                #
                 opt.use_gradient_checkpointing,
                 opt.use_gradient_checkpointing_offload,
                 #
@@ -80,6 +82,9 @@ class Wan(nn.Module):
                 opt.shift,
                 opt.sigma_min,
                 opt.extra_one_step,
+                #
+                opt.input_plucker,
+                2,  # hard-coded for patch embedding
                 #
                 opt.use_gradient_checkpointing,
                 opt.use_gradient_checkpointing_offload,
@@ -112,20 +117,6 @@ class Wan(nn.Module):
                 self.diffusion.load_state_dict(state_dict["generator"], strict=False)
             else:
                 self.diffusion.load_state_dict(state_dict, strict=False)
-
-        # (Optional) Plucker embeddings
-        if opt.input_plucker:
-            self.plucker_embed = FeatureEmbed(
-                "causal3d",
-                input_channels=6,
-                out_channels=self.diffusion.model.dim,
-                t_ratio=opt.compression_ratio[0],
-                s_ratio=opt.compression_ratio[1] * self.diffusion.model.patch_size[1],
-            )
-            zero_init_module(self.plucker_embed)
-            if opt.plucker_embed_path is not None:
-                self.plucker_embed.load_state_dict(torch.load(opt.plucker_embed_path, map_location="cpu", weights_only=True))
-                convert_to_buffer(self.plucker_embed, persistent=False)  # no gradient & not save to checkpoint
 
         # Add LoRA in the diffusion model, will freeze all parameters except LoRA layers
         if opt.use_lora_in_wan:
@@ -185,10 +176,11 @@ class Wan(nn.Module):
             F, H, W = self.opt.num_input_frames, self.opt.input_res[0], self.opt.input_res[1]
             device = self.diffusion.model.device
 
+        idxs = torch.arange(0, F, 4).to(device=device, dtype=torch.long)
         if self.opt.load_da3:
-            depths = data["depth"].to(dtype)  # (B, F, H, W)
-        C2W = data["C2W"].to(dtype)  # (B, F, 4, 4)
-        fxfycxcy = data["fxfycxcy"].to(dtype)  # (B, F, 4)
+            gt_depths = data["depth"].to(dtype)[:, idxs, ...]  # (B, f, H, W)
+        C2W = data["C2W"].to(dtype)[:, idxs, ...]  # (B, f, 4, 4)
+        fxfycxcy = data["fxfycxcy"].to(dtype)[:, idxs, ...]  # (B, f, 4)
 
         # Text encoder
         if self.text_encoder is not None:
@@ -219,14 +211,6 @@ class Wan(nn.Module):
         f = latents.shape[2]
         cond_latents = cond_latents if torch.rand(1).item() < self.opt.random_i2v_prob else None
 
-        # (Optional) Plucker embeddings
-        if self.opt.input_plucker:
-            plucker, _ = plucker_ray(H, W, C2W.float(), fxfycxcy.float())  # (B, F, 6, H, W)
-            plucker = rearrange(plucker, "b f c h w -> b c f h w").to(dtype)
-            plucker_embeds = self.plucker_embed(plucker)  # (B, D, f, hh, ww)
-        else:
-            plucker_embeds = None
-
         # Diffusion
         self.diffusion.scheduler.set_timesteps(self.opt.num_train_timesteps, training=True)
         noises = torch.randn_like(latents)
@@ -254,16 +238,14 @@ class Wan(nn.Module):
         # # Classifier-free guidance dropout
         # if self.training:
         #     masks = (torch.rand(B, device=device) < self.opt.cfg_dropout).to(dtype)
-        #     # prompt_embeds = prompt_embeds * masks[:, None, None]# + negative_prompt_embeds * (1 - masks)[:, None, None]
-        #     # if plucker_embeds is not None:
-        #     #     plucker_embeds = plucker_embeds * masks[:, None, None, None, None]
+        #     prompt_embeds = prompt_embeds * masks[:, None, None]# + negative_prompt_embeds * (1 - masks)[:, None, None]
 
         if cond_latents is not None:
             model_outputs = self.diffusion(
                 torch.cat([cond_latents, noisy_latents[:, :, 1:, ...]], dim=2),
                 torch.cat([torch.zeros_like(timesteps[:, :1]), timesteps[:, 1:]], dim=1),
                 prompt_embeds,
-                add_embeds=plucker_embeds,
+                C2W=C2W, fxfycxcy=fxfycxcy,
                 #
                 clean_x=latents if self.opt.use_teacher_forcing else None,
             )
@@ -272,7 +254,7 @@ class Wan(nn.Module):
                 noisy_latents,
                 timesteps,
                 prompt_embeds,
-                add_embeds=plucker_embeds,
+                C2W=C2W, fxfycxcy=fxfycxcy,
                 #
                 clean_x=latents if self.opt.use_teacher_forcing else None,
             )
@@ -294,16 +276,14 @@ class Wan(nn.Module):
         # (Optional) DA3 loss
         if self.opt.load_da3:
             ## Get ground-truth geometry labels
-            idxs = torch.arange(0, F, 4).to(device=device, dtype=torch.long)
-            gt_depths = depths[:, idxs, ...]  # (B, f, H, W)
             _, (ray_o, ray_d) = plucker_ray(H//2, W//2,
-                C2W[:, idxs, ...].float(), fxfycxcy[:, idxs, ...].float(), normalize_ray_d=False)
+                C2W.float(), fxfycxcy.float(), normalize_ray_d=False)
             gt_raymaps = torch.cat([ray_d, ray_o], dim=2).to(dtype)  # (B, f, 6, H/2, W/2)
             gt_pose_enc = torch.cat([
-                C2W[:, idxs, :3, 3].float(),  # (B, f, 3)
-                mat_to_quat(C2W[:, idxs, :3, :3].float()),  # (B, f, 4)
-                2. * torch.atan(1. / (2. * fxfycxcy[:, idxs, 1:2])),  # (B, f, 1); fy -> fov_h
-                2. * torch.atan(1. / (2. * fxfycxcy[:, idxs, 0:1])),  # (B, f, 1); fx -> fov_w
+                C2W[:, :, :3, 3].float(),  # (B, f, 3)
+                mat_to_quat(C2W[:, :, :3, :3].float()),  # (B, f, 4)
+                2. * torch.atan(1. / (2. * fxfycxcy[:, :, 1:2])),  # (B, f, 1); fy -> fov_h
+                2. * torch.atan(1. / (2. * fxfycxcy[:, :, 0:1])),  # (B, f, 1); fx -> fov_w
             ], dim=-1).to(dtype)  # (B, f, 9)
             if self.opt.use_teacher_forcing:
                 gt_depths, gt_raymaps, gt_pose_enc = \
@@ -359,10 +339,11 @@ class Wan(nn.Module):
             F, H, W = self.opt.num_input_frames_test, self.opt.input_res[0], self.opt.input_res[1]
             device = self.diffusion.model.device
 
+        idxs = torch.arange(0, F, 4).to(device=device, dtype=torch.long)
         if self.opt.load_da3:
-            depths = data["depth"].to(dtype)  # (B, F, H, W)
-        C2W = data["C2W"].to(dtype)  # (B, F, 4, 4)
-        fxfycxcy = data["fxfycxcy"].to(dtype)  # (B, F, 4)
+            gt_depths = data["depth"].to(dtype)[:, idxs, ...]  # (B, f, H, W)
+        C2W = data["C2W"].to(dtype)[:, idxs, ...]  # (B, f, 4, 4)
+        fxfycxcy = data["fxfycxcy"].to(dtype)[:, idxs, ...]  # (B, f, 4)
 
         f = 1 + (F - 1) // self.opt.compression_ratio[0]
         h = H // self.opt.compression_ratio[1]
@@ -387,14 +368,6 @@ class Wan(nn.Module):
             cond_latents = None
         cond_latents = cond_latents if torch.rand(1).item() < self.opt.random_i2v_prob else None
 
-        # (Optional) Plucker embeddings
-        if self.opt.input_plucker:
-            plucker, _ = plucker_ray(H, W, C2W.float(), fxfycxcy.float())  # (B, F, 6, H, W)
-            plucker = rearrange(plucker, "b f c h w -> b c f h w").to(dtype)
-            plucker_embeds = self.plucker_embed(plucker)  # (B, D, f, hh, ww)
-        else:
-            plucker_embeds = None
-
         # Denoising
         for cfg_scale in self.opt.cfg_scale:
             latents = torch.randn(B, self.opt.latent_dim, f, h, w, device=device, dtype=dtype)
@@ -409,14 +382,14 @@ class Wan(nn.Module):
                         torch.cat([cond_latents, latents[:, :, 1:, ...]], dim=2),
                         torch.cat([torch.zeros_like(timesteps[:, :1]), timesteps[:, 1:]], dim=1),
                         prompt_embeds,
-                        add_embeds=plucker_embeds,
+                        C2W=C2W, fxfycxcy=fxfycxcy,
                     )
                 else:
                     model_outputs = self.diffusion(
                         latents,
                         timesteps,
                         prompt_embeds,
-                        add_embeds=plucker_embeds,
+                        C2W=C2W, fxfycxcy=fxfycxcy,
                     )
 
                 ## CFG
@@ -426,14 +399,14 @@ class Wan(nn.Module):
                             torch.cat([cond_latents, latents[:, :, 1:, ...]], dim=2),
                             torch.cat([torch.zeros_like(timesteps[:, :1]), timesteps[:, 1:]], dim=1),
                             negative_prompt_embeds,  # torch.zeros_like(prompt_embeds)
-                            add_embeds=plucker_embeds,  # torch.zeros_like(plucker_embeds) if plucker_embeds is not None else None,
+                            C2W=C2W, fxfycxcy=fxfycxcy,
                         )
                     else:
                         model_outputs_neg = self.diffusion(
                             latents,
                             timesteps,
                             negative_prompt_embeds,  # torch.zeros_like(prompt_embeds)
-                            add_embeds=plucker_embeds,  # torch.zeros_like(plucker_embeds) if plucker_embeds is not None else None,
+                            C2W=C2W, fxfycxcy=fxfycxcy,
                         )
                     if not self.opt.load_da3:
                         model_outputs = model_outputs_neg + cfg_scale * (model_outputs - model_outputs_neg)
@@ -492,16 +465,14 @@ class Wan(nn.Module):
                 assert da3_outputs is not None
 
                 ## Get ground-truth geometry labels
-                idxs = torch.arange(0, F, 4).to(device=device, dtype=torch.long)
-                gt_depths = depths[:, idxs, ...]  # (B, f, H, W)
                 _, (ray_o, ray_d) = plucker_ray(H//2, W//2,
-                    C2W[:, idxs, ...].float(), fxfycxcy[:, idxs, ...].float(), normalize_ray_d=False)
+                    C2W.float(), fxfycxcy.float(), normalize_ray_d=False)
                 gt_raymaps = torch.cat([ray_d, ray_o], dim=2).to(dtype)  # (B, f, 6, H/2, W/2)
                 gt_pose_enc = torch.cat([
-                    C2W[:, idxs, :3, 3].float(),  # (B, f, 3)
-                    mat_to_quat(C2W[:, idxs, :3, :3].float()),  # (B, f, 4)
-                    2. * torch.atan(1. / (2. * fxfycxcy[:, idxs, 1:2])),  # (B, f, 1); fy -> fov_h
-                    2. * torch.atan(1. / (2. * fxfycxcy[:, idxs, 0:1])),  # (B, f, 1); fx -> fov_w
+                    C2W[:, :, :3, 3].float(),  # (B, f, 3)
+                    mat_to_quat(C2W[:, :, :3, :3].float()),  # (B, f, 4)
+                    2. * torch.atan(1. / (2. * fxfycxcy[:, :, 1:2])),  # (B, f, 1); fy -> fov_h
+                    2. * torch.atan(1. / (2. * fxfycxcy[:, :, 0:1])),  # (B, f, 1); fx -> fov_w
                 ], dim=-1).to(dtype)  # (B, f, 9)
                 outputs[f"images_gt_depth"] = colorize_depth(1./gt_depths, batch_mode=True)
 
@@ -533,10 +504,11 @@ class Wan(nn.Module):
             device = self.diffusion.model.device
             images = torch.zeros((B, F, 3, H, W), dtype=dtype, device=device)  # (B, F, 3, H, W); not really used
 
+        idxs = torch.arange(0, F, 4).to(device=device, dtype=torch.long)
         if self.opt.load_da3:
-            depths = data["depth"].to(dtype)  # (B, F, H, W)
-        C2W = data["C2W"].to(dtype)  # (B, F, 4, 4)
-        fxfycxcy = data["fxfycxcy"].to(dtype)  # (B, F, 4)
+            gt_depths = data["depth"].to(dtype)[:, idxs, ...]  # (B, f, H, W)
+        C2W = data["C2W"].to(dtype)[:, idxs, ...]  # (B, f, 4, 4)
+        fxfycxcy = data["fxfycxcy"].to(dtype)[:, idxs, ...]  # (B, f, 4)
 
         f = 1 + (F - 1) // self.opt.compression_ratio[0]
         h = H // self.opt.compression_ratio[1]
@@ -561,14 +533,6 @@ class Wan(nn.Module):
             cond_latents = None
         cond_latents = cond_latents if torch.rand(1).item() < self.opt.random_i2v_prob else None
 
-        # (Optional) Plucker embeddings
-        if self.opt.input_plucker:
-            plucker, _ = plucker_ray(H, W, C2W.float(), fxfycxcy.float())  # (B, F, 6, H, W)
-            plucker = rearrange(plucker, "b f c h w -> b c f h w").to(dtype)
-            plucker_embeds = self.plucker_embed(plucker)  # (B, D, f, hh, ww)
-        else:
-            plucker_embeds = None
-
         # Denoising
         for cfg_scale in self.opt.cfg_scale:
             latents = torch.randn(B, self.opt.latent_dim, f, h, w, device=device, dtype=dtype)
@@ -586,9 +550,9 @@ class Wan(nn.Module):
             all_da3_outputs = [None] * num_chunks
             for chunk_idx in tqdm(range(num_chunks), ncols=125, disable=not verbose, desc="[Chunk]"):
                 this_chunk_latents = latents[:, :, chunk_idx * self.opt.chunk_size:(chunk_idx + 1) * self.opt.chunk_size, ...]
-                this_chunk_plucker_embeds = None
-                if plucker_embeds is not None:
-                    this_chunk_plucker_embeds = plucker_embeds[:, :, chunk_idx * self.opt.chunk_size:(chunk_idx + 1) * self.opt.chunk_size, ...]
+                if self.opt.input_plucker:
+                    this_chunk_C2W = C2W[:, chunk_idx * self.opt.chunk_size:(chunk_idx + 1) * self.opt.chunk_size, ...]
+                    this_chunk_fxfycxcy = fxfycxcy[:, chunk_idx * self.opt.chunk_size:(chunk_idx + 1) * self.opt.chunk_size, ...]
 
                 ### Spatial denoising loop
                 for i, timestep in tqdm(enumerate(self.diffusion.scheduler.timesteps),
@@ -601,7 +565,7 @@ class Wan(nn.Module):
                             torch.cat([cond_latents, this_chunk_latents[:, :, 1:, ...]], dim=2),
                             torch.cat([torch.zeros_like(timesteps[:, :1]), timesteps[:, 1:]], dim=1),
                             prompt_embeds,
-                            add_embeds=this_chunk_plucker_embeds,
+                            C2W=this_chunk_C2W, fxfycxcy=this_chunk_fxfycxcy,
                             #
                             kv_cache=self.kv_cache_pos,
                             crossattn_cache=self.crossattn_cache_pos,
@@ -615,7 +579,7 @@ class Wan(nn.Module):
                             this_chunk_latents,
                             timesteps,
                             prompt_embeds,
-                            add_embeds=this_chunk_plucker_embeds,
+                            C2W=this_chunk_C2W, fxfycxcy=this_chunk_fxfycxcy,
                             #
                             kv_cache=self.kv_cache_pos,
                             crossattn_cache=self.crossattn_cache_pos,
@@ -632,7 +596,7 @@ class Wan(nn.Module):
                                 torch.cat([cond_latents, this_chunk_latents[:, :, 1:, ...]], dim=2),
                                 torch.cat([torch.zeros_like(timesteps[:, :1]), timesteps[:, 1:]], dim=1),
                                 negative_prompt_embeds,  # torch.zeros_like(prompt_embeds)
-                                add_embeds=this_chunk_plucker_embeds,  # torch.zeros_like(this_chunk_plucker_embeds) if this_chunk_plucker_embeds is not None else None,
+                                C2W=this_chunk_C2W, fxfycxcy=this_chunk_fxfycxcy,
                                 #
                                 kv_cache=self.kv_cache_neg,
                                 crossattn_cache=self.crossattn_cache_neg,
@@ -646,7 +610,7 @@ class Wan(nn.Module):
                                 this_chunk_latents,
                                 timesteps,
                                 negative_prompt_embeds,  # torch.zeros_like(prompt_embeds)
-                                add_embeds=this_chunk_plucker_embeds,  # torch.zeros_like(this_chunk_plucker_embeds) if this_chunk_plucker_embeds is not None else None,
+                                C2W=this_chunk_C2W, fxfycxcy=this_chunk_fxfycxcy,
                                 #
                                 kv_cache=self.kv_cache_neg,
                                 crossattn_cache=self.crossattn_cache_neg,
@@ -698,7 +662,7 @@ class Wan(nn.Module):
                         this_chunk_latents,
                         timesteps * 0.,
                         prompt_embeds,
-                        add_embeds=this_chunk_plucker_embeds,
+                        C2W=this_chunk_C2W, fxfycxcy=this_chunk_fxfycxcy,
                         #
                         kv_cache=self.kv_cache_pos,
                         crossattn_cache=self.crossattn_cache_pos,
@@ -712,7 +676,7 @@ class Wan(nn.Module):
                             this_chunk_latents,
                             timesteps * 0.,
                             negative_prompt_embeds,  # torch.zeros_like(prompt_embeds)
-                            add_embeds=this_chunk_plucker_embeds,  # torch.zeros_like(this_chunk_plucker_embeds) if this_chunk_plucker_embeds is not None else None,
+                            C2W=this_chunk_C2W, fxfycxcy=this_chunk_fxfycxcy,
                             #
                             kv_cache=self.kv_cache_neg,
                             crossattn_cache=self.crossattn_cache_neg,
@@ -765,16 +729,14 @@ class Wan(nn.Module):
                 }
 
                 ## Get ground-truth geometry labels
-                idxs = torch.arange(0, F, 4).to(device=device, dtype=torch.long)
-                gt_depths = depths[:, idxs, ...]  # (B, f, H, W)
                 _, (ray_o, ray_d) = plucker_ray(H//2, W//2,
-                    C2W[:, idxs, ...].float(), fxfycxcy[:, idxs, ...].float(), normalize_ray_d=False)
+                    C2W.float(), fxfycxcy.float(), normalize_ray_d=False)
                 gt_raymaps = torch.cat([ray_d, ray_o], dim=2).to(dtype)  # (B, f, 6, H/2, W/2)
                 gt_pose_enc = torch.cat([
-                    C2W[:, idxs, :3, 3].float(),  # (B, f, 3)
-                    mat_to_quat(C2W[:, idxs, :3, :3].float()),  # (B, f, 4)
-                    2. * torch.atan(1. / (2. * fxfycxcy[:, idxs, 1:2])),  # (B, f, 1); fy -> fov_h
-                    2. * torch.atan(1. / (2. * fxfycxcy[:, idxs, 0:1])),  # (B, f, 1); fx -> fov_w
+                    C2W[:, :, :3, 3].float(),  # (B, f, 3)
+                    mat_to_quat(C2W[:, :, :3, :3].float()),  # (B, f, 4)
+                    2. * torch.atan(1. / (2. * fxfycxcy[:, :, 1:2])),  # (B, f, 1); fy -> fov_h
+                    2. * torch.atan(1. / (2. * fxfycxcy[:, :, 0:1])),  # (B, f, 1); fx -> fov_w
                 ], dim=-1).to(dtype)  # (B, f, 9)
                 outputs[f"images_gt_depth"] = colorize_depth(1./gt_depths, batch_mode=True)
 

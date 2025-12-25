@@ -19,7 +19,7 @@ from .wan_modules.causal_model import CausalWanModel
 from .scheduler import FlowMatchScheduler
 
 from .wan_modules.model import WanRMSNorm, sinusoidal_embedding_1d, attention
-from src.utils import zero_init_module
+from src.utils import zero_init_module, plucker_ray
 
 from depth_anything_3.api import DepthAnything3
 from depth_anything_3.model.utils.transform import quat_to_mat
@@ -137,6 +137,9 @@ class WanDiffusionWrapper(nn.Module):
         sigma_min: float = 0.,
         extra_one_step: bool = True,
         #
+        input_plucker: bool = False,
+        plucker_downsample: int = 2,
+        #
         use_gradient_checkpointing: bool = True,
         use_gradient_checkpointing_offload: bool = False,
         #
@@ -163,6 +166,12 @@ class WanDiffusionWrapper(nn.Module):
         self.model.use_gradient_checkpointing = use_gradient_checkpointing
         self.model.use_gradient_checkpointing_offload = use_gradient_checkpointing_offload
 
+        # (Optional) Plucker embedding
+        self.input_plucker = input_plucker
+        if input_plucker:
+            self.plucker_embed = nn.Conv2d(6, self.model.dim, kernel_size=plucker_downsample, stride=plucker_downsample)
+            zero_init_module(self.plucker_embed)
+
         self.scheduler = FlowMatchScheduler(
             num_train_timesteps=num_train_timesteps,
             num_inference_steps=num_inference_steps,
@@ -180,7 +189,9 @@ class WanDiffusionWrapper(nn.Module):
         prompt_embeds: Tensor,  # (B, N, D')
         clip_features: Optional[Tensor] = None,  # (B, N', D'')
         cond_latents: Optional[Tensor] = None,  # (B, D, f, h, w)
-        add_embeds: Optional[Tensor] = None,  # (B, D, f, h, w)
+        #
+        C2W: Optional[Tensor] = None,  # (B, f, 4, 4)
+        fxfycxcy: Optional[Tensor] = None,  # (B, f, 4)
         #
         kv_cache: Optional[List[Dict[str, Any]]] = None,
         crossattn_cache: Optional[List[Dict[str, Any]]] = None,
@@ -197,6 +208,15 @@ class WanDiffusionWrapper(nn.Module):
             timesteps = timesteps.unsqueeze(1).repeat(1, f)  # (B, f)
         timesteps = timesteps[:, :, None, None].repeat(1, 1, h//2, w//2).flatten(1)  # (B, f*hh*ww); `//2`: hard-coded for patch embeddig
 
+        # (Optional) Plucker embedding
+        if self.input_plucker:
+            plucker, _ = plucker_ray(h, w, C2W.float(), fxfycxcy.float())
+            plucker = rearrange(plucker, "b f c h w -> (b f) c h w").to(noisy_latents.dtype)
+            plucker_embeds = self.plucker_embed(plucker)
+            plucker_embeds = rearrange(plucker_embeds, "(b f) c h w -> b c f h w", f=f)  # (B, D, f, hh, ww)
+        else:
+            plucker_embeds = None
+
         if kv_cache is not None:
             model_outputs = torch.stack(self.model(
                 [noisy_latent for noisy_latent in noisy_latents],
@@ -207,7 +227,7 @@ class WanDiffusionWrapper(nn.Module):
                 clip_features,
                 [cond_latent for cond_latent in cond_latents] if cond_latents is not None else None,
                 # (Optional) Add extra embeds
-                [add_embed for add_embed in add_embeds] if add_embeds is not None else None,
+                [plucker_embed for plucker_embed in plucker_embeds] if plucker_embeds is not None else None,
                 #
                 kv_cache=kv_cache,
                 crossattn_cache=crossattn_cache,
@@ -224,7 +244,7 @@ class WanDiffusionWrapper(nn.Module):
                     clip_features,
                     [cond_latent for cond_latent in cond_latents] if cond_latents is not None else None,
                     # (Optional) Add extra embeds
-                    [add_embed for add_embed in add_embeds] if add_embeds is not None else None,
+                    [plucker_embed for plucker_embed in plucker_embeds] if plucker_embeds is not None else None,
                     #
                     clean_x=clean_x,
                     aug_t=aug_t,
@@ -239,7 +259,7 @@ class WanDiffusionWrapper(nn.Module):
                     clip_features,
                     [cond_latent for cond_latent in cond_latents] if cond_latents is not None else None,
                     # (Optional) Add extra embeds
-                    [add_embed for add_embed in add_embeds] if add_embeds is not None else None,
+                    [plucker_embed for plucker_embed in plucker_embeds] if plucker_embeds is not None else None,
                 ), dim=0)  # (B, D, f, h, w)
 
         return model_outputs
@@ -288,6 +308,9 @@ class WanDiffusionDA3Wrapper(nn.Module):
         sigma_min: float = 0.,
         extra_one_step: bool = True,
         #
+        input_plucker: bool = False,
+        plucker_downsample: int = 2,
+        #
         use_gradient_checkpointing: bool = True,
         use_gradient_checkpointing_offload: bool = False,
         #
@@ -318,6 +341,12 @@ class WanDiffusionDA3Wrapper(nn.Module):
 
         self.model.use_gradient_checkpointing = use_gradient_checkpointing
         self.model.use_gradient_checkpointing_offload = use_gradient_checkpointing_offload
+
+        # (Optional) Plucker embedding
+        self.input_plucker = input_plucker
+        if input_plucker:
+            self.plucker_embed = nn.Conv2d(6, self.model.dim, kernel_size=plucker_downsample, stride=plucker_downsample)
+            zero_init_module(self.plucker_embed)
 
         self.scheduler = FlowMatchScheduler(
             num_train_timesteps=num_train_timesteps,
@@ -365,7 +394,9 @@ class WanDiffusionDA3Wrapper(nn.Module):
         prompt_embeds: Tensor,  # (B, N, D')
         clip_features: Optional[Tensor] = None,  # (B, N', D'')
         cond_latents: Optional[Tensor] = None,  # (B, D, f, h, w)
-        add_embeds: Optional[Tensor] = None,  # (B, D, f, h, w)
+        #
+        C2W: Optional[Tensor] = None,  # (B, f, 4, 4)
+        fxfycxcy: Optional[Tensor] = None,  # (B, f, 4)
         #
         kv_cache: Optional[List[Dict[str, Any]]] = None,
         crossattn_cache: Optional[List[Dict[str, Any]]] = None,
@@ -383,6 +414,16 @@ class WanDiffusionDA3Wrapper(nn.Module):
             timesteps = timesteps.unsqueeze(1).repeat(1, f)  # (B, f)
         timesteps = timesteps[:, :, None, None].repeat(1, 1, h//2, w//2).flatten(1)  # (B, f*hh*ww); `//2`: hard-coded for patch embeddig
 
+        # (Optional) Plucker embedding
+        if self.input_plucker:
+            plucker, _ = plucker_ray(h, w, C2W.float(), fxfycxcy.float())
+            plucker = rearrange(plucker, "b f c h w -> (b f) c h w").to(noisy_latents.dtype)
+            plucker_embeds = self.plucker_embed(plucker)
+            plucker_embeds = rearrange(plucker_embeds, "(b f) c h w -> b c f h w", f=f)  # (B, D, f, hh, ww)
+            plucker_embeds = [plucker_embed for plucker_embed in plucker_embeds]
+        else:
+            plucker_embeds = None
+
         # param
         device = self.model.patch_embedding.weight.device
         if self.model.freqs.device != device:
@@ -390,8 +431,8 @@ class WanDiffusionDA3Wrapper(nn.Module):
 
         # embeddings
         x = [self.model.patch_embedding(u.unsqueeze(0)) for u in noisy_latents]
-        if add_embeds is not None:
-            x = [u + v for u, v in zip(x, add_embeds)]
+        if plucker_embeds is not None:
+            x = [u + v for u, v in zip(x, plucker_embeds)]
         grid_sizes = torch.stack(
             [torch.tensor(u.shape[2:], dtype=torch.long) for u in x])
         x = [u.flatten(2).transpose(1, 2) for u in x]
@@ -427,8 +468,8 @@ class WanDiffusionDA3Wrapper(nn.Module):
             # Clean inputs for teacher forcing
             if clean_x is not None:
                 clean_x = [self.model.patch_embedding(u.unsqueeze(0)) for u in clean_x]
-                if add_embeds is not None:
-                    clean_x = [u + v for u, v in zip(clean_x, add_embeds)]
+                if plucker_embeds is not None:
+                    clean_x = [u + v for u, v in zip(clean_x, plucker_embeds)]
                 clean_x = [u.flatten(2).transpose(1, 2) for u in clean_x]
                 seq_lens_clean = torch.tensor([u.size(1) for u in clean_x], dtype=torch.long)
                 clean_x = torch.cat([

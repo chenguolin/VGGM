@@ -51,7 +51,7 @@ class SelfForcingTrainingPipeline:
         noises: Tensor,
         prompt_embeds: Tensor,
         cond_latents: Optional[Tensor] = None,
-        plucker_embeds: Optional[Tensor] = None,
+        C2W: Optional[Tensor] = None, fxfycxcy: Optional[Tensor] = None,
     ):
         B, _, f, h, w = noises.shape
         device, dtype = noises.device, noises.dtype
@@ -72,9 +72,9 @@ class SelfForcingTrainingPipeline:
         # Temporal denoising loop
         for chunk_idx in range(num_chunks):
             this_chunk_latents = noises[:, :, chunk_idx * self.opt.chunk_size:(chunk_idx + 1) * self.opt.chunk_size, ...]
-            this_chunk_plucker_embeds = None
-            if plucker_embeds is not None:
-                this_chunk_plucker_embeds = plucker_embeds[:, :, chunk_idx * self.opt.chunk_size:(chunk_idx + 1) * self.opt.chunk_size, ...]
+            if self.opt.input_plucker:
+                this_chunk_C2W = C2W[:, chunk_idx * self.opt.chunk_size:(chunk_idx + 1) * self.opt.chunk_size, ...]
+                this_chunk_fxfycxcy = fxfycxcy[:, chunk_idx * self.opt.chunk_size:(chunk_idx + 1) * self.opt.chunk_size, ...]
 
             # Spatial denoising loop
             for i, timestep in enumerate(self.denoising_step_list):
@@ -94,7 +94,7 @@ class SelfForcingTrainingPipeline:
                                 torch.cat([cond_latents, this_chunk_latents[:, :, 1:, ...]], dim=2),
                                 torch.cat([torch.zeros_like(timesteps[:, :1]), timesteps[:, 1:]], dim=1),
                                 prompt_embeds,
-                                add_embeds=this_chunk_plucker_embeds,
+                                C2W=this_chunk_C2W, fxfycxcy=this_chunk_fxfycxcy,
                                 #
                                 kv_cache=self.kv_cache_pos,
                                 crossattn_cache=self.crossattn_cache_pos,
@@ -113,7 +113,7 @@ class SelfForcingTrainingPipeline:
                                 this_chunk_latents,
                                 timesteps,
                                 prompt_embeds,
-                                add_embeds=this_chunk_plucker_embeds,
+                                C2W=this_chunk_C2W, fxfycxcy=this_chunk_fxfycxcy,
                                 #
                                 kv_cache=self.kv_cache_pos,
                                 crossattn_cache=self.crossattn_cache_pos,
@@ -140,7 +140,7 @@ class SelfForcingTrainingPipeline:
                             torch.cat([cond_latents, this_chunk_latents[:, :, 1:, ...]], dim=2),
                             torch.cat([torch.zeros_like(timesteps[:, :1]), timesteps[:, 1:]], dim=1),
                             prompt_embeds,
-                            add_embeds=this_chunk_plucker_embeds,
+                            C2W=this_chunk_C2W, fxfycxcy=this_chunk_fxfycxcy,
                             #
                             kv_cache=self.kv_cache_pos,
                             crossattn_cache=self.crossattn_cache_pos,
@@ -159,7 +159,7 @@ class SelfForcingTrainingPipeline:
                             this_chunk_latents,
                             timesteps,
                             prompt_embeds,
-                            add_embeds=this_chunk_plucker_embeds,
+                            C2W=this_chunk_C2W, fxfycxcy=this_chunk_fxfycxcy,
                             #
                             kv_cache=self.kv_cache_pos,
                             crossattn_cache=self.crossattn_cache_pos,
@@ -195,7 +195,7 @@ class SelfForcingTrainingPipeline:
                             torch.cat([cond_latents, pred_x0[:, :, 1:, ...]], dim=2),
                             torch.cat([torch.zeros_like(context_timesteps[:, :1]), context_timesteps[:, 1:]], dim=1),
                             prompt_embeds,
-                            add_embeds=this_chunk_plucker_embeds,
+                            C2W=this_chunk_C2W, fxfycxcy=this_chunk_fxfycxcy,
                             #
                             kv_cache=self.kv_cache_pos,
                             crossattn_cache=self.crossattn_cache_pos,
@@ -206,7 +206,7 @@ class SelfForcingTrainingPipeline:
                             pred_x0,
                             context_timesteps,
                             prompt_embeds,
-                            add_embeds=this_chunk_plucker_embeds,
+                            C2W=this_chunk_C2W, fxfycxcy=this_chunk_fxfycxcy,
                             #
                             kv_cache=self.kv_cache_pos,
                             crossattn_cache=self.crossattn_cache_pos,

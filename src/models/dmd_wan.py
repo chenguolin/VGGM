@@ -31,6 +31,9 @@ class DMD_Wan(Wan):
             opt.sigma_min,
             opt.extra_one_step,
             #
+            opt.teacher_input_plucker,
+            2,  # hard-coded for patch embedding
+            #
             opt.use_gradient_checkpointing,
             opt.use_gradient_checkpointing_offload,
             #
@@ -60,6 +63,9 @@ class DMD_Wan(Wan):
             opt.shift,
             opt.sigma_min,
             opt.extra_one_step,
+            #
+            opt.teacher_input_plucker,
+            2,  # hard-coded for patch embedding
             #
             opt.use_gradient_checkpointing,
             opt.use_gradient_checkpointing_offload,
@@ -154,18 +160,9 @@ class DMD_Wan(Wan):
             cond_latents = None
         cond_latents = cond_latents if torch.rand(1).item() < self.opt.random_i2v_prob else None
 
-        # (Optional) Plucker embeddings
-        if self.opt.input_plucker:
-            C2W = data["C2W"].float()  # (B, F, 4, 4)
-            fxfycxcy = data["fxfycxcy"].float()  # (B, F, 4)
-            plucker, _ = plucker_ray(H, W, C2W, fxfycxcy)  # (B, F, 6, H, W)
-            plucker = rearrange(plucker, "b f c h w -> b c f h w").to(dtype)
-            plucker_embeds = self.plucker_embed(plucker)  # (B, D, f, hh, ww)
-            # Randomly dropout plucker embeddings
-            if self.training and torch.rand(1).item() < self.opt.cfg_dropout:
-                plucker_embeds = None
-        else:
-            plucker_embeds = None
+        idxs = torch.arange(0, F, 4).to(device=device, dtype=torch.long)
+        C2W = data["C2W"].to(dtype)[:, idxs, ...]  # (B, f, 4, 4)
+        fxfycxcy = data["fxfycxcy"].to(dtype)[:, idxs, ...]  # (B, f, 4)
 
         # DMD
         self.diffusion.scheduler.set_timesteps(self.opt.num_train_timesteps, training=True)
@@ -177,7 +174,7 @@ class DMD_Wan(Wan):
                     prompt_embeds,
                     negative_prompt_embeds,
                     cond_latents,
-                    plucker_embeds,
+                    C2W, fxfycxcy,
                 )
             outputs["generator_loss"] = generator_loss
             outputs["dmd_grad_norm"] = dmd_grad_norm
@@ -188,7 +185,7 @@ class DMD_Wan(Wan):
                     latents,
                     prompt_embeds,
                     cond_latents,
-                    plucker_embeds,
+                    C2W, fxfycxcy,
                 )
             else:
                 diffusion_loss = None
@@ -205,7 +202,7 @@ class DMD_Wan(Wan):
                 torch.randn_like(latents),
                 prompt_embeds,
                 cond_latents,
-                plucker_embeds,
+                C2W, fxfycxcy,
             )
 
         outputs["loss"] = critic_loss + self.opt.dmd_loss_weight * generator_loss + \
@@ -225,7 +222,7 @@ class DMD_Wan(Wan):
         latents: Tensor,
         prompt_embeds: Tensor,
         cond_latents: Optional[Tensor] = None,
-        plucker_embeds: Optional[Tensor] = None,
+        C2W: Optional[Tensor] = None, fxfycxcy: Optional[Tensor] = None,
     ):
         B, f = latents.shape[0], latents.shape[2]
         device, dtype = latents.device, latents.dtype
@@ -255,16 +252,14 @@ class DMD_Wan(Wan):
         # # Classifier-free guidance dropout
         # if self.training:
         #     masks = (torch.rand(B, device=device) < self.opt.cfg_dropout).to(dtype)
-        #     # prompt_embeds = prompt_embeds * masks[:, None, None]# + negative_prompt_embeds * (1 - masks)[:, None, None]
-        #     if plucker_embeds is not None:
-        #         plucker_embeds = plucker_embeds * masks[:, None, None, None, None]
+        #     prompt_embeds = prompt_embeds * masks[:, None, None]# + negative_prompt_embeds * (1 - masks)[:, None, None]
 
         if cond_latents is not None:
             model_outputs = self.diffusion(
                 torch.cat([cond_latents, noisy_latents[:, :, 1:, ...]], dim=2),
                 torch.cat([torch.zeros_like(timesteps[:, :1]), timesteps[:, 1:]], dim=1),
                 prompt_embeds,
-                add_embeds=plucker_embeds,
+                C2W=C2W, fxfycxcy=fxfycxcy,
                 #
                 clean_x=latents if self.opt.use_teacher_forcing else None,
             )
@@ -273,7 +268,7 @@ class DMD_Wan(Wan):
                 noisy_latents,
                 timesteps,
                 prompt_embeds,
-                add_embeds=plucker_embeds,
+                C2W=C2W, fxfycxcy=fxfycxcy,
                 #
                 clean_x=latents if self.opt.use_teacher_forcing else None,
             )
@@ -291,7 +286,7 @@ class DMD_Wan(Wan):
         noises: Tensor,
         prompt_embeds: Tensor,
         cond_latents: Optional[Tensor] = None,
-        plucker_embeds: Optional[Tensor] = None,
+        C2W: Optional[Tensor] = None, fxfycxcy: Optional[Tensor] = None,
     ):
         """
         Generate image/videos from noise and train the critic with generated samples.
@@ -308,7 +303,7 @@ class DMD_Wan(Wan):
                 noises,
                 prompt_embeds,
                 cond_latents,
-                plucker_embeds,
+                C2W, fxfycxcy,
             )
 
         # Step 2: Compute the fake prediction
@@ -338,14 +333,14 @@ class DMD_Wan(Wan):
                 torch.cat([cond_latents, noisy_latents[:, :, 1:, ...]], dim=2),
                 torch.cat([torch.zeros_like(timesteps[:, :1]), timesteps[:, 1:]], dim=1),
                 prompt_embeds,
-                add_embeds=plucker_embeds if self.opt.teacher_input_plucker else None,
+                C2W=C2W, fxfycxcy=fxfycxcy,
             )
         else:
             fake_model_outputs = self.fake_score(
                 noisy_latents,
                 timesteps,
                 prompt_embeds,
-                add_embeds=plucker_embeds if self.opt.teacher_input_plucker else None,
+                C2W=C2W, fxfycxcy=fxfycxcy,
             )
 
         # Step 3: Compute the denoising loss for the fake critic
@@ -363,7 +358,7 @@ class DMD_Wan(Wan):
         prompt_embeds: Tensor,
         negative_prompt_embeds: Tensor,
         cond_latents: Optional[Tensor] = None,
-        plucker_embeds: Optional[Tensor] = None,
+        C2W: Optional[Tensor] = None, fxfycxcy: Optional[Tensor] = None,
     ):
         """
         Generate image/videos from noise and compute the DMD loss.
@@ -376,7 +371,7 @@ class DMD_Wan(Wan):
             noises,
             prompt_embeds,
             cond_latents,
-            plucker_embeds,
+            C2W, fxfycxcy,
         )
 
         # Step 2: Compute the DMD loss
@@ -387,7 +382,7 @@ class DMD_Wan(Wan):
                 negative_prompt_embeds,
                 gradient_mask,
                 cond_latents,
-                plucker_embeds,
+                C2W, fxfycxcy,
             )
 
         return dmd_loss, dmd_grad_norm, pred_x0
@@ -398,7 +393,7 @@ class DMD_Wan(Wan):
         negative_prompt_embeds: Tensor,
         gradient_mask: Optional[Tensor] = None,
         cond_latents: Optional[Tensor] = None,
-        plucker_embeds: Optional[Tensor] = None,
+        C2W: Optional[Tensor] = None, fxfycxcy: Optional[Tensor] = None,
     ):
         """
         Compute the DMD loss (eq 7 in https://arxiv.org/abs/2311.18828).
@@ -435,7 +430,7 @@ class DMD_Wan(Wan):
                 prompt_embeds,
                 negative_prompt_embeds,
                 cond_latents,
-                plucker_embeds,
+                C2W, fxfycxcy,
             )
 
         # The gradient of `dmd_loss` w.r.t. `pred_x0` is `grad`
@@ -460,7 +455,7 @@ class DMD_Wan(Wan):
         prompt_embeds: Tensor,
         negative_prompt_embeds: Tensor,
         cond_latents: Optional[Tensor] = None,
-        plucker_embeds: Optional[Tensor] = None,
+        C2W: Optional[Tensor] = None, fxfycxcy: Optional[Tensor] = None,
         normalization: bool = True,
     ):
         """
@@ -472,14 +467,14 @@ class DMD_Wan(Wan):
                 torch.cat([cond_latents, noisy_latents[:, :, 1:, ...]], dim=2),
                 torch.cat([torch.zeros_like(timesteps[:, :1]), timesteps[:, 1:]], dim=1),
                 prompt_embeds,
-                add_embeds=plucker_embeds if self.opt.teacher_input_plucker else None,
+                C2W=C2W, fxfycxcy=fxfycxcy,
             )
         else:
             fake_model_outputs = self.fake_score(
                 noisy_latents,
                 timesteps,
                 prompt_embeds,
-                add_embeds=plucker_embeds if self.opt.teacher_input_plucker else None,
+                C2W=C2W, fxfycxcy=fxfycxcy,
             )
 
         if self.opt.fake_guidance_scale != 1.:
@@ -488,14 +483,14 @@ class DMD_Wan(Wan):
                     torch.cat([cond_latents, noisy_latents[:, :, 1:, ...]], dim=2),
                     torch.cat([torch.zeros_like(timesteps[:, :1]), timesteps[:, 1:]], dim=1),
                     negative_prompt_embeds,
-                    add_embeds=plucker_embeds if self.opt.teacher_input_plucker else None,
+                    C2W=C2W, fxfycxcy=fxfycxcy,
                 )
             else:
                 fake_model_outputs_uncond = self.fake_score(
                     noisy_latents,
                     timesteps,
                     negative_prompt_embeds,
-                    add_embeds=plucker_embeds if self.opt.teacher_input_plucker else None,
+                    C2W=C2W, fxfycxcy=fxfycxcy,
                 )
             fake_model_outputs = fake_model_outputs_uncond + self.opt.fake_guidance_scale * (
                 fake_model_outputs - fake_model_outputs_uncond)
@@ -511,14 +506,14 @@ class DMD_Wan(Wan):
                 torch.cat([cond_latents, noisy_latents[:, :, 1:, ...]], dim=2),
                 torch.cat([torch.zeros_like(timesteps[:, :1]), timesteps[:, 1:]], dim=1),
                 prompt_embeds,
-                add_embeds=plucker_embeds if self.opt.teacher_input_plucker else None,
+                C2W=C2W, fxfycxcy=fxfycxcy,
             )
         else:
             real_model_outputs = self.real_score(
                 noisy_latents,
                 timesteps,
                 prompt_embeds,
-                add_embeds=plucker_embeds if self.opt.teacher_input_plucker else None,
+                C2W=C2W, fxfycxcy=fxfycxcy,
             )
         if self.opt.real_guidance_scale != 1.:
             if cond_latents is not None and self.opt.teacher_first_latent_cond:
@@ -526,14 +521,14 @@ class DMD_Wan(Wan):
                     torch.cat([cond_latents, noisy_latents[:, :, 1:, ...]], dim=2),
                     torch.cat([torch.zeros_like(timesteps[:, :1]), timesteps[:, 1:]], dim=1),
                     negative_prompt_embeds,
-                    add_embeds=plucker_embeds if self.opt.teacher_input_plucker else None,
+                    C2W=C2W, fxfycxcy=fxfycxcy,
                 )
             else:
                 real_model_outputs_uncond = self.real_score(
                     noisy_latents,
                     timesteps,
                     negative_prompt_embeds,
-                    add_embeds=plucker_embeds if self.opt.teacher_input_plucker else None,
+                    C2W=C2W, fxfycxcy=fxfycxcy,
                 )
             real_model_outputs = real_model_outputs_uncond + self.opt.real_guidance_scale * (
                 real_model_outputs - real_model_outputs_uncond)
@@ -557,7 +552,7 @@ class DMD_Wan(Wan):
         noises: Tensor,
         prompt_embeds: Tensor,
         cond_latents: Optional[Tensor] = None,
-        plucker_embeds: Optional[Tensor] = None,
+        C2W: Optional[Tensor] = None, fxfycxcy: Optional[Tensor] = None,
     ):
         """
         Optionally simulate the generator's input from noise using backward simulation
@@ -569,7 +564,7 @@ class DMD_Wan(Wan):
             noises,
             prompt_embeds,
             cond_latents,
-            plucker_embeds,
+            C2W, fxfycxcy,
         )
 
         gradient_mask = None  # TODO: handle generating long videos
@@ -580,7 +575,7 @@ class DMD_Wan(Wan):
         noises: Tensor,
         prompt_embeds: Tensor,
         cond_latents: Optional[Tensor] = None,
-        plucker_embeds: Optional[Tensor] = None,
+        C2W: Optional[Tensor] = None, fxfycxcy: Optional[Tensor] = None,
     ):
         """
         Simulate the generator's input from noise to avoid training/inference mismatch.
@@ -593,7 +588,7 @@ class DMD_Wan(Wan):
             noises,
             prompt_embeds,
             cond_latents,
-            plucker_embeds,
+            C2W, fxfycxcy,
         )
 
     def _initialize_inference_pipeline(self):
