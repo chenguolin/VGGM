@@ -123,8 +123,6 @@ class Options:
     lora_rank_in_fake_score: int = 32
         ## Trainable modules except LoRA layers for DMD fake score model
     more_trainable_fake_score_params: Optional[str] = None
-        ## Post initialization (`__post_init__`)
-    max_attention_size: int = None
 
     # Training
         ## Losses
