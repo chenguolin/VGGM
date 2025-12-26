@@ -293,7 +293,12 @@ class WanDiffusionWrapper(nn.Module):
 
         timestep_id = torch.argmin(
             (timesteps.unsqueeze(0) - timestep.unsqueeze(1)).abs(), dim=1)
-        sigma_t = sigmas[timestep_id].reshape(-1, 1, 1, 1)
+        sigma_t = sigmas[timestep_id]
+
+        # NOTE: handle (B*f,) input shape and timestep=0 for I2V
+        sigma_t[timestep == 0.] = 0.
+        sigma_t = sigma_t.reshape(-1, 1, 1, 1)
+
         x0_pred = xt - sigma_t * flow_pred
         x0_pred = rearrange(x0_pred, "(b f) d h w -> b d f h w", f=f)
         return x0_pred.to(original_dtype)
@@ -800,7 +805,12 @@ class WanDiffusionDA3Wrapper(nn.Module):
 
         timestep_id = torch.argmin(
             (timesteps.unsqueeze(0) - timestep.unsqueeze(1)).abs(), dim=1)
-        sigma_t = sigmas[timestep_id].reshape(-1, 1, 1, 1)
+        sigma_t = sigmas[timestep_id]
+
+        # NOTE: handle (B*f,) input shape and timestep=0 for I2V
+        sigma_t[timestep == 0.] = 0.
+        sigma_t = sigma_t.reshape(-1, 1, 1, 1)
+
         x0_pred = xt - sigma_t * flow_pred
         x0_pred = rearrange(x0_pred, "(b f) d h w -> b d f h w", f=f)
         return x0_pred.to(original_dtype)

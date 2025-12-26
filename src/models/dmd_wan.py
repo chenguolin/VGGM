@@ -6,13 +6,12 @@ import numpy as np
 import torch
 import torch.nn.functional as tF
 from peft import LoraConfig, inject_adapter_in_model
-from einops import rearrange
 
 from src.options import Options
 from src.models.networks import WanDiffusionWrapper, WanVAEWrapper
 from src.models.wan import Wan
 from src.models.pipelines.self_forcing_training import SelfForcingTrainingPipeline
-from src.utils import plucker_ray, convert_to_buffer
+from src.utils import convert_to_buffer
 
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -28,8 +27,8 @@ class DMD_Wan(Wan):
             opt.num_train_timesteps,
             opt.num_inference_steps,
             opt.shift,
-            opt.sigma_min,
-            opt.extra_one_step,
+            0.,    # hard-coded `sigma_min`
+            True,  # hard-coded `extra_one_step`
             #
             opt.teacher_input_plucker,
             2,  # hard-coded for patch embedding
@@ -61,8 +60,8 @@ class DMD_Wan(Wan):
             opt.num_train_timesteps,
             opt.num_inference_steps,
             opt.shift,
-            opt.sigma_min,
-            opt.extra_one_step,
+            0.,    # hard-coded `sigma_min`
+            True,  # hard-coded `extra_one_step`
             #
             opt.teacher_input_plucker,
             2,  # hard-coded for patch embedding
@@ -240,6 +239,8 @@ class DMD_Wan(Wan):
             timesteps_id = torch.randint(min_t, max_t, (num_chunks,))  # (num_chunks,); each chunk in different noise level
             timesteps_id = timesteps_id.repeat_interleave(self.opt.chunk_size, dim=0).repeat(B, 1)  # (B, f); batch share the same timestep for simpler time scheduler
         timesteps = self.diffusion.scheduler.timesteps[timesteps_id].to(dtype=dtype, device=device)
+        if cond_latents is not None:
+            timesteps = torch.cat([torch.zeros_like(timesteps[:, :1]), timesteps[:, 1:]], dim=1)
 
         noises = torch.randn_like(latents)
         noisy_latents = self.diffusion.scheduler.add_noise(
@@ -254,33 +255,20 @@ class DMD_Wan(Wan):
         #     masks = (torch.rand(B, device=device) < self.opt.cfg_dropout).to(dtype)
         #     prompt_embeds = prompt_embeds * masks[:, None, None]# + negative_prompt_embeds * (1 - masks)[:, None, None]
 
-        if cond_latents is not None:
-            model_outputs = self.diffusion(
-                torch.cat([cond_latents, noisy_latents[:, :, 1:, ...]], dim=2),
-                torch.cat([torch.zeros_like(timesteps[:, :1]), timesteps[:, 1:]], dim=1),
-                prompt_embeds,
-                C2W=C2W, fxfycxcy=fxfycxcy,
-                #
-                clean_x=latents if self.opt.use_teacher_forcing else None,
-            )
-        else:
-            model_outputs = self.diffusion(
-                noisy_latents,
-                timesteps,
-                prompt_embeds,
-                C2W=C2W, fxfycxcy=fxfycxcy,
-                #
-                clean_x=latents if self.opt.use_teacher_forcing else None,
-            )
+        model_outputs = self.diffusion(
+            noisy_latents,
+            timesteps,
+            prompt_embeds,
+            C2W=C2W, fxfycxcy=fxfycxcy,
+            #
+            clean_x=latents if self.opt.use_teacher_forcing else None,
+        )
 
         diffusion_loss = tF.mse_loss(model_outputs.float(), targets.float(), reduction="none")  # (B, D, f, h, w)
         diffusion_loss = self.diffusion.scheduler.training_weight(timesteps.flatten(0, 1)).reshape(-1, 1, 1, 1) * \
             diffusion_loss.transpose(1, 2).flatten(0, 1)  # (B*f, D, h, w)
         diffusion_loss = diffusion_loss.unflatten(0, (B, f)).transpose(1, 2)  # (B, D, f, h, w)
-        if cond_latents is not None:
-            return diffusion_loss[:, :, 1:, ...].mean()
-        else:
-            return diffusion_loss.mean()
+        return diffusion_loss.mean()
 
     def critic_loss(self,
         noises: Tensor,
@@ -319,6 +307,8 @@ class DMD_Wan(Wan):
             timesteps_id = torch.randint(min_t, max_t, (num_chunks,))  # (num_chunks,); each chunk in different noise level
             timesteps_id = timesteps_id.repeat_interleave(self.opt.chunk_size, dim=0).repeat(B, 1)  # (B, f); batch share the same timestep for simpler time scheduler
         timesteps = self.diffusion.scheduler.timesteps[timesteps_id].to(dtype=dtype, device=device)
+        if cond_latents is not None and self.opt.teacher_first_latent_cond:
+            timesteps = torch.cat([torch.zeros_like(timesteps[:, :1]), timesteps[:, 1:]], dim=1)
 
         critic_noises = torch.randn_like(pred_x0)
         noisy_latents = self.diffusion.scheduler.add_noise(
@@ -328,30 +318,19 @@ class DMD_Wan(Wan):
         ).detach().unflatten(0, (B, f)).transpose(1, 2).to(dtype)  # (B, D, f, h, w)
         targets = self.diffusion.scheduler.training_target(pred_x0, critic_noises)
 
-        if cond_latents is not None and self.opt.teacher_first_latent_cond:
-            fake_model_outputs = self.fake_score(
-                torch.cat([cond_latents, noisy_latents[:, :, 1:, ...]], dim=2),
-                torch.cat([torch.zeros_like(timesteps[:, :1]), timesteps[:, 1:]], dim=1),
-                prompt_embeds,
-                C2W=C2W, fxfycxcy=fxfycxcy,
-            )
-        else:
-            fake_model_outputs = self.fake_score(
-                noisy_latents,
-                timesteps,
-                prompt_embeds,
-                C2W=C2W, fxfycxcy=fxfycxcy,
-            )
+        fake_model_outputs = self.fake_score(
+            noisy_latents,
+            timesteps,
+            prompt_embeds,
+            C2W=C2W, fxfycxcy=fxfycxcy,
+        )
 
         # Step 3: Compute the denoising loss for the fake critic
         diffusion_loss = tF.mse_loss(fake_model_outputs.float(), targets.float(), reduction="none")  # (B, D, f, h, w)
         diffusion_loss = self.diffusion.scheduler.training_weight(timesteps.flatten(0, 1)).reshape(-1, 1, 1, 1) * \
             diffusion_loss.transpose(1, 2).flatten(0, 1)  # (B*f, D, h, w)
         diffusion_loss = diffusion_loss.unflatten(0, (B, f)).transpose(1, 2)  # (B, D, f, h, w)
-        if cond_latents is not None and self.opt.teacher_first_latent_cond:
-            return diffusion_loss[:, :, 1:, ...].mean()
-        else:
-            return diffusion_loss.mean()
+        return diffusion_loss.mean()
 
     def generator_loss(self,
         noises: Tensor,
@@ -415,6 +394,8 @@ class DMD_Wan(Wan):
                 timesteps_id = torch.randint(min_t, max_t, (num_chunks,))  # (num_chunks,); each chunk in different noise level
                 timesteps_id = timesteps_id.repeat_interleave(self.opt.chunk_size, dim=0).repeat(B, 1)  # (B, f); batch share the same timestep for simpler time scheduler
             timesteps = self.diffusion.scheduler.timesteps[timesteps_id].to(dtype=dtype, device=device)
+            if cond_latents is not None and self.opt.teacher_first_latent_cond:
+                timesteps = torch.cat([torch.zeros_like(timesteps[:, :1]), timesteps[:, 1:]], dim=1)
 
             noisy_latents = self.diffusion.scheduler.add_noise(
                 pred_x0.transpose(1, 2).flatten(0, 1),  # (B*f, D, h, w)
@@ -429,7 +410,6 @@ class DMD_Wan(Wan):
                 timesteps,
                 prompt_embeds,
                 negative_prompt_embeds,
-                cond_latents,
                 C2W, fxfycxcy,
             )
 
@@ -454,7 +434,6 @@ class DMD_Wan(Wan):
         timesteps: Tensor,
         prompt_embeds: Tensor,
         negative_prompt_embeds: Tensor,
-        cond_latents: Optional[Tensor] = None,
         C2W: Optional[Tensor] = None, fxfycxcy: Optional[Tensor] = None,
         normalization: bool = True,
     ):
@@ -462,79 +441,43 @@ class DMD_Wan(Wan):
         Compute the KL grad (eq 7 in https://arxiv.org/abs/2311.18828).
         """
         # Step 1: Compute the fake score
-        if cond_latents is not None and self.opt.teacher_first_latent_cond:
-            fake_model_outputs = self.fake_score(
-                torch.cat([cond_latents, noisy_latents[:, :, 1:, ...]], dim=2),
-                torch.cat([torch.zeros_like(timesteps[:, :1]), timesteps[:, 1:]], dim=1),
-                prompt_embeds,
-                C2W=C2W, fxfycxcy=fxfycxcy,
-            )
-        else:
-            fake_model_outputs = self.fake_score(
-                noisy_latents,
-                timesteps,
-                prompt_embeds,
-                C2W=C2W, fxfycxcy=fxfycxcy,
-            )
+        fake_model_outputs = self.fake_score(
+            noisy_latents,
+            timesteps,
+            prompt_embeds,
+            C2W=C2W, fxfycxcy=fxfycxcy,
+        )
 
         if self.opt.fake_guidance_scale != 1.:
-            if cond_latents is not None and self.opt.teacher_first_latent_cond:
-                fake_model_outputs_uncond = self.fake_score(
-                    torch.cat([cond_latents, noisy_latents[:, :, 1:, ...]], dim=2),
-                    torch.cat([torch.zeros_like(timesteps[:, :1]), timesteps[:, 1:]], dim=1),
-                    negative_prompt_embeds,
-                    C2W=C2W, fxfycxcy=fxfycxcy,
-                )
-            else:
-                fake_model_outputs_uncond = self.fake_score(
-                    noisy_latents,
-                    timesteps,
-                    negative_prompt_embeds,
-                    C2W=C2W, fxfycxcy=fxfycxcy,
-                )
+            fake_model_outputs_uncond = self.fake_score(
+                noisy_latents,
+                timesteps,
+                negative_prompt_embeds,
+                C2W=C2W, fxfycxcy=fxfycxcy,
+            )
             fake_model_outputs = fake_model_outputs_uncond + self.opt.fake_guidance_scale * (
                 fake_model_outputs - fake_model_outputs_uncond)
         fake_pred_x0 = self.diffusion._convert_flow_pred_to_x0(fake_model_outputs, noisy_latents, timesteps)
-        if cond_latents is not None and self.opt.teacher_first_latent_cond:
-            fake_pred_x0 = torch.cat([cond_latents, fake_pred_x0[:, :, 1:, ...]], dim=2)
 
         # Step 2: Compute the real score
         # We compute the conditional and unconditional prediction
         # and add them together to achieve cfg (https://arxiv.org/abs/2207.12598)
-        if cond_latents is not None and self.opt.teacher_first_latent_cond:
-            real_model_outputs = self.real_score(
-                torch.cat([cond_latents, noisy_latents[:, :, 1:, ...]], dim=2),
-                torch.cat([torch.zeros_like(timesteps[:, :1]), timesteps[:, 1:]], dim=1),
-                prompt_embeds,
-                C2W=C2W, fxfycxcy=fxfycxcy,
-            )
-        else:
-            real_model_outputs = self.real_score(
+        real_model_outputs = self.real_score(
+            noisy_latents,
+            timesteps,
+            prompt_embeds,
+            C2W=C2W, fxfycxcy=fxfycxcy,
+        )
+        if self.opt.real_guidance_scale != 1.:
+            real_model_outputs_uncond = self.real_score(
                 noisy_latents,
                 timesteps,
-                prompt_embeds,
+                negative_prompt_embeds,
                 C2W=C2W, fxfycxcy=fxfycxcy,
             )
-        if self.opt.real_guidance_scale != 1.:
-            if cond_latents is not None and self.opt.teacher_first_latent_cond:
-                real_model_outputs_uncond = self.real_score(
-                    torch.cat([cond_latents, noisy_latents[:, :, 1:, ...]], dim=2),
-                    torch.cat([torch.zeros_like(timesteps[:, :1]), timesteps[:, 1:]], dim=1),
-                    negative_prompt_embeds,
-                    C2W=C2W, fxfycxcy=fxfycxcy,
-                )
-            else:
-                real_model_outputs_uncond = self.real_score(
-                    noisy_latents,
-                    timesteps,
-                    negative_prompt_embeds,
-                    C2W=C2W, fxfycxcy=fxfycxcy,
-                )
             real_model_outputs = real_model_outputs_uncond + self.opt.real_guidance_scale * (
                 real_model_outputs - real_model_outputs_uncond)
         real_pred_x0 = self.diffusion._convert_flow_pred_to_x0(real_model_outputs, noisy_latents, timesteps)
-        if cond_latents is not None and self.opt.teacher_first_latent_cond:
-            real_pred_x0 = torch.cat([cond_latents, real_pred_x0[:, :, 1:, ...]], dim=2)
 
         # Step 3: Compute the DMD gradient (DMD paper eq. 7).
         grad = (fake_pred_x0 - real_pred_x0)

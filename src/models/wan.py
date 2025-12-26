@@ -59,8 +59,8 @@ class Wan(nn.Module):
                 opt.num_train_timesteps,
                 opt.num_inference_steps,
                 opt.shift,
-                opt.sigma_min,
-                opt.extra_one_step,
+                0.,    # hard-coded `sigma_min`
+                True,  # hard-coded `extra_one_step`
                 #
                 opt.input_plucker,
                 2,  # hard-coded for patch embedding
@@ -80,8 +80,8 @@ class Wan(nn.Module):
                 opt.num_train_timesteps,
                 opt.num_inference_steps,
                 opt.shift,
-                opt.sigma_min,
-                opt.extra_one_step,
+                0.,    # hard-coded `sigma_min`
+                True,  # hard-coded `extra_one_step`
                 #
                 opt.input_plucker,
                 2,  # hard-coded for patch embedding
@@ -227,6 +227,8 @@ class Wan(nn.Module):
             timesteps_id = torch.randint(min_t, max_t, (num_chunks,))  # (num_chunks,); each chunk in different noise level
             timesteps_id = timesteps_id.repeat_interleave(self.opt.chunk_size, dim=0).repeat(B, 1)  # (B, f); batch share the same timestep for simpler time scheduler
         timesteps = self.diffusion.scheduler.timesteps[timesteps_id].to(dtype=dtype, device=device)
+        if cond_latents is not None:
+            timesteps = torch.cat([torch.zeros_like(timesteps[:, :1]), timesteps[:, 1:]], dim=1)
 
         noisy_latents = self.diffusion.scheduler.add_noise(
             latents.transpose(1, 2).flatten(0, 1),  # (B*f, D, h, w)
@@ -240,24 +242,14 @@ class Wan(nn.Module):
         #     masks = (torch.rand(B, device=device) < self.opt.cfg_dropout).to(dtype)
         #     prompt_embeds = prompt_embeds * masks[:, None, None]# + negative_prompt_embeds * (1 - masks)[:, None, None]
 
-        if cond_latents is not None:
-            model_outputs = self.diffusion(
-                torch.cat([cond_latents, noisy_latents[:, :, 1:, ...]], dim=2),
-                torch.cat([torch.zeros_like(timesteps[:, :1]), timesteps[:, 1:]], dim=1),
-                prompt_embeds,
-                C2W=C2W, fxfycxcy=fxfycxcy,
-                #
-                clean_x=latents if self.opt.use_teacher_forcing else None,
-            )
-        else:
-            model_outputs = self.diffusion(
-                noisy_latents,
-                timesteps,
-                prompt_embeds,
-                C2W=C2W, fxfycxcy=fxfycxcy,
-                #
-                clean_x=latents if self.opt.use_teacher_forcing else None,
-            )
+        model_outputs = self.diffusion(
+            noisy_latents,
+            timesteps,
+            prompt_embeds,
+            C2W=C2W, fxfycxcy=fxfycxcy,
+            #
+            clean_x=latents if self.opt.use_teacher_forcing else None,
+        )
 
         if self.opt.load_da3:
             model_outputs, da3_outputs = model_outputs
@@ -267,10 +259,7 @@ class Wan(nn.Module):
         diffusion_loss = self.diffusion.scheduler.training_weight(timesteps.flatten(0, 1)).reshape(-1, 1, 1, 1) * \
             diffusion_loss.transpose(1, 2).flatten(0, 1)  # (B*f, D, h, w)
         diffusion_loss = diffusion_loss.unflatten(0, (B, f)).transpose(1, 2)  # (B, D, f, h, w)
-        if cond_latents is not None:
-            outputs["diffusion_loss"] = diffusion_loss[:, :, 1:, ...].mean()
-        else:
-            outputs["diffusion_loss"] = diffusion_loss.mean()
+        outputs["diffusion_loss"] = diffusion_loss.mean()
         outputs["loss"] = outputs["diffusion_loss"]
 
         # (Optional) DA3 loss
@@ -297,15 +286,7 @@ class Wan(nn.Module):
 
         # For visualizaiton
         if is_eval:
-            if cond_latents is not None:
-                pred_x0 = self.diffusion._convert_flow_pred_to_x0(
-                    model_outputs,
-                    torch.cat([cond_latents, noisy_latents[:, :, 1:, ...]], dim=2),
-                    torch.cat([torch.zeros_like(timesteps[:, :1]), timesteps[:, 1:]], dim=1),
-                ).to(dtype)
-            else:
-                pred_x0 = self.diffusion._convert_flow_pred_to_x0(model_outputs, noisy_latents, timesteps).to(dtype)
-
+            pred_x0 = self.diffusion._convert_flow_pred_to_x0(model_outputs, noisy_latents, timesteps).to(dtype)
             outputs["images_predx0"] = (self.decode_latent(pred_x0, vae).clamp(-1., 1.) + 1.) / 2.
             if "image" in data:
                 outputs["images_recon"] = (self.decode_latent(latents, vae).clamp(-1., 1.) + 1.) / 2.
@@ -371,43 +352,31 @@ class Wan(nn.Module):
         # Denoising
         for cfg_scale in self.opt.cfg_scale:
             latents = torch.randn(B, self.opt.latent_dim, f, h, w, device=device, dtype=dtype)
+            if cond_latents is not None:
+                latents = torch.cat([cond_latents, latents[:, :, 1:, ...]], dim=2)
 
             for i, timestep in tqdm(enumerate(self.diffusion.scheduler.timesteps),
                 total=len(self.diffusion.scheduler.timesteps), ncols=125, disable=not verbose, desc="[Denoise]"):
                 timesteps = timestep * torch.ones(B, f).to(dtype=dtype, device=device)
+                if cond_latents is not None:
+                    timesteps = torch.cat([torch.zeros_like(timesteps[:, :1]), timesteps[:, 1:]], dim=1)
 
                 ## Diffusion model
-                if cond_latents is not None:
-                    model_outputs = self.diffusion(
-                        torch.cat([cond_latents, latents[:, :, 1:, ...]], dim=2),
-                        torch.cat([torch.zeros_like(timesteps[:, :1]), timesteps[:, 1:]], dim=1),
-                        prompt_embeds,
-                        C2W=C2W, fxfycxcy=fxfycxcy,
-                    )
-                else:
-                    model_outputs = self.diffusion(
-                        latents,
-                        timesteps,
-                        prompt_embeds,
-                        C2W=C2W, fxfycxcy=fxfycxcy,
-                    )
+                model_outputs = self.diffusion(
+                    latents,
+                    timesteps,
+                    prompt_embeds,
+                    C2W=C2W, fxfycxcy=fxfycxcy,
+                )
 
                 ## CFG
                 if cfg_scale > 1.:
-                    if cond_latents is not None:
-                        model_outputs_neg = self.diffusion(
-                            torch.cat([cond_latents, latents[:, :, 1:, ...]], dim=2),
-                            torch.cat([torch.zeros_like(timesteps[:, :1]), timesteps[:, 1:]], dim=1),
-                            negative_prompt_embeds,  # torch.zeros_like(prompt_embeds)
-                            C2W=C2W, fxfycxcy=fxfycxcy,
-                        )
-                    else:
-                        model_outputs_neg = self.diffusion(
-                            latents,
-                            timesteps,
-                            negative_prompt_embeds,  # torch.zeros_like(prompt_embeds)
-                            C2W=C2W, fxfycxcy=fxfycxcy,
-                        )
+                    model_outputs_neg = self.diffusion(
+                        latents,
+                        timesteps,
+                        negative_prompt_embeds,  # torch.zeros_like(prompt_embeds)
+                        C2W=C2W, fxfycxcy=fxfycxcy,
+                    )
                     if not self.opt.load_da3:
                         model_outputs = model_outputs_neg + cfg_scale * (model_outputs - model_outputs_neg)
                     else:
@@ -426,19 +395,19 @@ class Wan(nn.Module):
                         latents.transpose(1, 2).flatten(0, 1),
                     ).unflatten(0, (B, f)).transpose(1, 2)  # (B, D, f, h, w)
                 else:
-                    pred_x0 = self.diffusion._convert_flow_pred_to_x0(model_outputs, latents,
-                        timestep * torch.ones_like(timesteps))
+                    pred_x0 = self.diffusion._convert_flow_pred_to_x0(model_outputs, latents, timesteps)
                     if i < len(self.diffusion.scheduler.timesteps) - 1:
+                        next_timesteps = self.diffusion.scheduler.timesteps[i + 1] * torch.ones_like(timesteps)
+                        if cond_latents is not None:
+                            next_timesteps = torch.cat([torch.zeros_like(next_timesteps[:, :1]), next_timesteps[:, 1:]], dim=1)
+
                         latents = self.diffusion.scheduler.add_noise(
                             pred_x0.transpose(1, 2).flatten(0, 1),
                             torch.randn_like(pred_x0.transpose(1, 2).flatten(0, 1)),
-                            self.diffusion.scheduler.timesteps[i + 1] * torch.ones_like(timesteps).flatten(0, 1),
+                            next_timesteps.flatten(0, 1),
                         ).unflatten(0, (B, f)).transpose(1, 2).to(dtype)  # (B, D, f, h, w)
                     else:
                         latents = pred_x0
-
-            if cond_latents is not None:
-                latents[:, :, 0:1, ...] = cond_latents
 
             # Decode
             pred_images = (self.decode_latent(latents, vae).clamp(-1., 1.) + 1.) / 2.  # (B, D, f, h, w) -> (B, F, 3, H, W)
@@ -536,6 +505,8 @@ class Wan(nn.Module):
         # Denoising
         for cfg_scale in self.opt.cfg_scale:
             latents = torch.randn(B, self.opt.latent_dim, f, h, w, device=device, dtype=dtype)
+            if cond_latents is not None:
+                latents = torch.cat([cond_latents, latents[:, :, 1:, ...]], dim=2)
 
             ## Set KV cache
             self._initialize_kv_cache(B, device=device, dtype=dtype)
@@ -558,109 +529,13 @@ class Wan(nn.Module):
                 for i, timestep in tqdm(enumerate(self.diffusion.scheduler.timesteps),
                     total=len(self.diffusion.scheduler.timesteps), ncols=125, disable=not verbose, desc="[Denoise]"):
                     timesteps = timestep[None, None].repeat(B, self.opt.chunk_size).to(dtype=dtype, device=device)
+                    if chunk_idx == 0 and cond_latents is not None:
+                        timesteps = torch.cat([torch.zeros_like(timesteps[:, :1]), timesteps[:, 1:]], dim=1)
 
                     #### Diffusion model
-                    if chunk_idx == 0 and cond_latents is not None:
-                        model_outputs = self.diffusion(
-                            torch.cat([cond_latents, this_chunk_latents[:, :, 1:, ...]], dim=2),
-                            torch.cat([torch.zeros_like(timesteps[:, :1]), timesteps[:, 1:]], dim=1),
-                            prompt_embeds,
-                            C2W=this_chunk_C2W, fxfycxcy=this_chunk_fxfycxcy,
-                            #
-                            kv_cache=self.kv_cache_pos,
-                            crossattn_cache=self.crossattn_cache_pos,
-                            current_start=chunk_idx * self.opt.chunk_size * frame_seqlen,
-                            #
-                            kv_cache_da3=self.kv_cache_pos_da3,
-                            current_start_da3=chunk_idx * self.opt.chunk_size * (frame_seqlen + 1),  # `+1` for camera token
-                        )
-                    else:
-                        model_outputs = self.diffusion(
-                            this_chunk_latents,
-                            timesteps,
-                            prompt_embeds,
-                            C2W=this_chunk_C2W, fxfycxcy=this_chunk_fxfycxcy,
-                            #
-                            kv_cache=self.kv_cache_pos,
-                            crossattn_cache=self.crossattn_cache_pos,
-                            current_start=chunk_idx * self.opt.chunk_size * frame_seqlen,
-                            #
-                            kv_cache_da3=self.kv_cache_pos_da3,
-                            current_start_da3=chunk_idx * self.opt.chunk_size * (frame_seqlen + 1),  # `+1` for camera token
-                        )
-
-                    #### CFG
-                    if cfg_scale > 1.:
-                        if chunk_idx == 0 and cond_latents is not None:
-                            model_outputs_neg = self.diffusion(
-                                torch.cat([cond_latents, this_chunk_latents[:, :, 1:, ...]], dim=2),
-                                torch.cat([torch.zeros_like(timesteps[:, :1]), timesteps[:, 1:]], dim=1),
-                                negative_prompt_embeds,  # torch.zeros_like(prompt_embeds)
-                                C2W=this_chunk_C2W, fxfycxcy=this_chunk_fxfycxcy,
-                                #
-                                kv_cache=self.kv_cache_neg,
-                                crossattn_cache=self.crossattn_cache_neg,
-                                current_start=chunk_idx * self.opt.chunk_size * frame_seqlen,
-                                #
-                                kv_cache_da3=self.kv_cache_neg_da3,
-                                current_start_da3=chunk_idx * self.opt.chunk_size * (frame_seqlen + 1),  # `+1` for camera token
-                            )
-                        else:
-                            model_outputs_neg = self.diffusion(
-                                this_chunk_latents,
-                                timesteps,
-                                negative_prompt_embeds,  # torch.zeros_like(prompt_embeds)
-                                C2W=this_chunk_C2W, fxfycxcy=this_chunk_fxfycxcy,
-                                #
-                                kv_cache=self.kv_cache_neg,
-                                crossattn_cache=self.crossattn_cache_neg,
-                                current_start=chunk_idx * self.opt.chunk_size * frame_seqlen,
-                                #
-                                kv_cache_da3=self.kv_cache_neg_da3,
-                                current_start_da3=chunk_idx * self.opt.chunk_size * (frame_seqlen + 1),  # `+1` for camera token
-                            )
-                        if not self.opt.load_da3:
-                            model_outputs = model_outputs_neg + cfg_scale * (model_outputs - model_outputs_neg)
-                        else:
-                            model_outputs, da3_outputs = model_outputs
-                            model_outputs_neg, _ = model_outputs_neg
-                            model_outputs = model_outputs_neg + cfg_scale * (model_outputs - model_outputs_neg)
-                            model_outputs = (model_outputs, da3_outputs)
-
-                    model_outputs, da3_outputs = \
-                        model_outputs if self.opt.load_da3 else (model_outputs, None)
-                    all_da3_outputs[chunk_idx] = da3_outputs
-
-                    if self.opt.deterministic_inference:
-                        this_chunk_latents = self.diffusion.scheduler.step(
-                            model_outputs.transpose(1, 2).flatten(0, 1),
-                            timesteps.flatten(0, 1),
-                            this_chunk_latents.transpose(1, 2).flatten(0, 1),
-                        ).unflatten(0, (B, self.opt.chunk_size)).transpose(1, 2)  # (B, D, f_chunk, h, w)
-                    else:
-                        pred_x0 = self.diffusion._convert_flow_pred_to_x0(model_outputs, this_chunk_latents,
-                            timestep * torch.ones_like(timesteps))
-                        if i < len(self.diffusion.scheduler.timesteps) - 1:
-                            this_chunk_latents = self.diffusion.scheduler.add_noise(
-                                pred_x0.transpose(1, 2).flatten(0, 1),
-                                torch.randn_like(pred_x0.transpose(1, 2).flatten(0, 1)),
-                                self.diffusion.scheduler.timesteps[i + 1] * torch.ones_like(timesteps).flatten(0, 1),
-                            ).unflatten(0, (B, self.opt.chunk_size)).transpose(1, 2).to(dtype)  # (B, D, f_chunk, h, w)
-                        else:
-                            this_chunk_latents = pred_x0
-
-                if chunk_idx == 0 and cond_latents is not None:
-                    this_chunk_latents[:, :, 0:1, ...] = cond_latents
-
-                # Record this chunk generated latents
-                latents[:, :, chunk_idx * self.opt.chunk_size:(chunk_idx + 1) * self.opt.chunk_size, ...] = this_chunk_latents
-
-                # Rerun with timestep zero to update KV cache
-                # TODO: add noise on KV cache, except the first chunk
-                if self.opt.extra_one_step and chunk_idx < num_chunks - 1:
                     model_outputs = self.diffusion(
                         this_chunk_latents,
-                        timesteps * 0.,
+                        timesteps,
                         prompt_embeds,
                         C2W=this_chunk_C2W, fxfycxcy=this_chunk_fxfycxcy,
                         #
@@ -671,10 +546,12 @@ class Wan(nn.Module):
                         kv_cache_da3=self.kv_cache_pos_da3,
                         current_start_da3=chunk_idx * self.opt.chunk_size * (frame_seqlen + 1),  # `+1` for camera token
                     )
+
+                    #### CFG
                     if cfg_scale > 1.:
                         model_outputs_neg = self.diffusion(
                             this_chunk_latents,
-                            timesteps * 0.,
+                            timesteps,
                             negative_prompt_embeds,  # torch.zeros_like(prompt_embeds)
                             C2W=this_chunk_C2W, fxfycxcy=this_chunk_fxfycxcy,
                             #
@@ -695,10 +572,81 @@ class Wan(nn.Module):
 
                     model_outputs, da3_outputs = \
                         model_outputs if self.opt.load_da3 else (model_outputs, None)
-                    all_da3_outputs[chunk_idx] = da3_outputs
 
-            if cond_latents is not None:
-                latents[:, :, 0:1, ...] = cond_latents
+                    if self.opt.deterministic_inference:
+                        this_chunk_latents = self.diffusion.scheduler.step(
+                            model_outputs.transpose(1, 2).flatten(0, 1),
+                            timesteps.flatten(0, 1),
+                            this_chunk_latents.transpose(1, 2).flatten(0, 1),
+                        ).unflatten(0, (B, self.opt.chunk_size)).transpose(1, 2)  # (B, D, f_chunk, h, w)
+                    else:
+                        pred_x0 = self.diffusion._convert_flow_pred_to_x0(model_outputs, this_chunk_latents, timesteps)
+                        if i < len(self.diffusion.scheduler.timesteps) - 1:
+                            next_timesteps = self.diffusion.scheduler.timesteps[i + 1] * torch.ones_like(timesteps)
+                            if cond_latents is not None:
+                                next_timesteps = torch.cat([torch.zeros_like(next_timesteps[:, :1]), next_timesteps[:, 1:]], dim=1)
+
+                            this_chunk_latents = self.diffusion.scheduler.add_noise(
+                                pred_x0.transpose(1, 2).flatten(0, 1),
+                                torch.randn_like(pred_x0.transpose(1, 2).flatten(0, 1)),
+                                next_timesteps.flatten(0, 1),
+                            ).unflatten(0, (B, self.opt.chunk_size)).transpose(1, 2).to(dtype)  # (B, D, f_chunk, h, w)
+                        else:
+                            this_chunk_latents = pred_x0
+
+                # Rerun with timestep zero to update KV cache
+                # TODO: add noise on KV cache, except the first chunk
+                model_outputs = self.diffusion(
+                    this_chunk_latents,
+                    timesteps * 0.,
+                    prompt_embeds,
+                    C2W=this_chunk_C2W, fxfycxcy=this_chunk_fxfycxcy,
+                    #
+                    kv_cache=self.kv_cache_pos,
+                    crossattn_cache=self.crossattn_cache_pos,
+                    current_start=chunk_idx * self.opt.chunk_size * frame_seqlen,
+                    #
+                    kv_cache_da3=self.kv_cache_pos_da3,
+                    current_start_da3=chunk_idx * self.opt.chunk_size * (frame_seqlen + 1),  # `+1` for camera token
+                )
+                if cfg_scale > 1.:
+                    model_outputs_neg = self.diffusion(
+                        this_chunk_latents,
+                        timesteps * 0.,
+                        negative_prompt_embeds,  # torch.zeros_like(prompt_embeds)
+                        C2W=this_chunk_C2W, fxfycxcy=this_chunk_fxfycxcy,
+                        #
+                        kv_cache=self.kv_cache_neg,
+                        crossattn_cache=self.crossattn_cache_neg,
+                        current_start=chunk_idx * self.opt.chunk_size * frame_seqlen,
+                        #
+                        kv_cache_da3=self.kv_cache_neg_da3,
+                        current_start_da3=chunk_idx * self.opt.chunk_size * (frame_seqlen + 1),  # `+1` for camera token
+                    )
+                    if not self.opt.load_da3:
+                        model_outputs = model_outputs_neg + cfg_scale * (model_outputs - model_outputs_neg)
+                    else:
+                        model_outputs, da3_outputs = model_outputs
+                        model_outputs_neg, _ = model_outputs_neg
+                        model_outputs = model_outputs_neg + cfg_scale * (model_outputs - model_outputs_neg)
+                        model_outputs = (model_outputs, da3_outputs)
+
+                model_outputs, da3_outputs = \
+                    model_outputs if self.opt.load_da3 else (model_outputs, None)
+                all_da3_outputs[chunk_idx] = da3_outputs
+
+                if self.opt.deterministic_inference:
+                    this_chunk_latents = self.diffusion.scheduler.step(
+                        model_outputs.transpose(1, 2).flatten(0, 1),
+                        timesteps.flatten(0, 1) * 0.,
+                        this_chunk_latents.transpose(1, 2).flatten(0, 1),
+                    ).unflatten(0, (B, self.opt.chunk_size)).transpose(1, 2)  # (B, D, f_chunk, h, w)
+                else:
+                    pred_x0 = self.diffusion._convert_flow_pred_to_x0(model_outputs, this_chunk_latents, timesteps * 0.)
+                    this_chunk_latents = pred_x0
+
+                # Record this chunk generated latents
+                latents[:, :, chunk_idx * self.opt.chunk_size:(chunk_idx + 1) * self.opt.chunk_size, ...] = this_chunk_latents
 
             # Decode
             pred_images = (self.decode_latent(latents, vae).clamp(-1., 1.) + 1.) / 2.  # (B, D, f, h, w) -> (B, F, 3, H, W)

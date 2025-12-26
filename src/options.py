@@ -100,8 +100,6 @@ class Options:
     min_timestep_boundary: float = 0.
     max_timestep_boundary: float = 1.
     shift: float = 5.
-    sigma_min: float = 0.
-    extra_one_step: bool = True
         ## Gradient checkpointing
     use_gradient_checkpointing: bool = True
     use_gradient_checkpointing_offload: bool = False
@@ -145,7 +143,6 @@ class Options:
 
         if self.load_da3:
             self.load_depth = True
-            self.extra_one_step = False
 
         # Dataset directories
         self.dataset_dir_train = {

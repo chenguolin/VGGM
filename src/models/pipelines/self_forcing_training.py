@@ -56,6 +56,8 @@ class SelfForcingTrainingPipeline:
         B, _, f, h, w = noises.shape
         device, dtype = noises.device, noises.dtype
 
+        if cond_latents is not None:
+            noises = torch.cat([cond_latents, noises[:, :, 1:, ...]], dim=2)
         outputs = torch.zeros_like(noises)
 
         # Set KV cache
@@ -85,98 +87,52 @@ class SelfForcingTrainingPipeline:
                     exit_flag = (i == exit_flags[chunk_idx])
 
                 timesteps = timestep[None, None].repeat(B, self.opt.chunk_size).to(dtype=dtype, device=device)
+                if chunk_idx == 0 and cond_latents is not None:
+                    timesteps = torch.cat([torch.zeros_like(timesteps[:, :1]), timesteps[:, 1:]], dim=1)
 
                 # Diffusion model
                 if not exit_flag:
                     with torch.no_grad():
+                        model_outputs = self.diffusion(
+                            this_chunk_latents,
+                            timesteps,
+                            prompt_embeds,
+                            C2W=this_chunk_C2W, fxfycxcy=this_chunk_fxfycxcy,
+                            #
+                            kv_cache=self.kv_cache_pos,
+                            crossattn_cache=self.crossattn_cache_pos,
+                            current_start=chunk_idx * self.opt.chunk_size * frame_seqlen,
+                        )
+                        if self.opt.load_da3:
+                            model_outputs, da3_outputs = model_outputs
+
+                        pred_x0 = self.diffusion._convert_flow_pred_to_x0(model_outputs, this_chunk_latents, timesteps)
+                        next_timesteps = self.denoising_step_list[i + 1] * torch.ones_like(timesteps)
                         if chunk_idx == 0 and cond_latents is not None:
-                            model_outputs = self.diffusion(
-                                torch.cat([cond_latents, this_chunk_latents[:, :, 1:, ...]], dim=2),
-                                torch.cat([torch.zeros_like(timesteps[:, :1]), timesteps[:, 1:]], dim=1),
-                                prompt_embeds,
-                                C2W=this_chunk_C2W, fxfycxcy=this_chunk_fxfycxcy,
-                                #
-                                kv_cache=self.kv_cache_pos,
-                                crossattn_cache=self.crossattn_cache_pos,
-                                current_start=chunk_idx * self.opt.chunk_size * frame_seqlen,
-                            )
-                            if self.opt.load_da3:
-                                model_outputs, da3_outputs = model_outputs
+                            next_timesteps = torch.cat([torch.zeros_like(next_timesteps[:, :1]), next_timesteps[:, 1:]], dim=1)
 
-                            pred_x0 = self.diffusion._convert_flow_pred_to_x0(
-                                model_outputs,
-                                torch.cat([cond_latents, this_chunk_latents[:, :, 1:, ...]], dim=2),
-                                torch.cat([torch.zeros_like(timesteps[:, :1]), timesteps[:, 1:]], dim=1),
-                            )
-                        else:
-                            model_outputs = self.diffusion(
-                                this_chunk_latents,
-                                timesteps,
-                                prompt_embeds,
-                                C2W=this_chunk_C2W, fxfycxcy=this_chunk_fxfycxcy,
-                                #
-                                kv_cache=self.kv_cache_pos,
-                                crossattn_cache=self.crossattn_cache_pos,
-                                current_start=chunk_idx * self.opt.chunk_size * frame_seqlen,
-                            )
-                            if self.opt.load_da3:
-                                model_outputs, da3_outputs = model_outputs
-
-                            pred_x0 = self.diffusion._convert_flow_pred_to_x0(
-                                model_outputs,
-                                this_chunk_latents,
-                                timesteps,
-                            )
-                        next_timestep = self.denoising_step_list[i + 1]
                         this_chunk_latents = self.diffusion.scheduler.add_noise(
                             pred_x0.transpose(1, 2).flatten(0, 1),
                             torch.randn_like(pred_x0.transpose(1, 2).flatten(0, 1)),
-                            next_timestep[None, None].repeat(B, self.opt.chunk_size).to(dtype=dtype, device=device).flatten(0, 1),
-                        ).unflatten(0, (B, self.opt.chunk_size)).transpose(1, 2).to(dtype)
+                            next_timesteps.flatten(0, 1),
+                        ).unflatten(0, (B, self.opt.chunk_size)).transpose(1, 2).to(dtype)  # (B, D, f_chunk, h, w)
                 else:
                     # For getting real output
-                    if chunk_idx == 0 and cond_latents is not None:
-                        model_outputs = self.diffusion(
-                            torch.cat([cond_latents, this_chunk_latents[:, :, 1:, ...]], dim=2),
-                            torch.cat([torch.zeros_like(timesteps[:, :1]), timesteps[:, 1:]], dim=1),
-                            prompt_embeds,
-                            C2W=this_chunk_C2W, fxfycxcy=this_chunk_fxfycxcy,
-                            #
-                            kv_cache=self.kv_cache_pos,
-                            crossattn_cache=self.crossattn_cache_pos,
-                            current_start=chunk_idx * self.opt.chunk_size * frame_seqlen,
-                        )
-                        if self.opt.load_da3:
-                            model_outputs, da3_outputs = model_outputs
+                    model_outputs = self.diffusion(
+                        this_chunk_latents,
+                        timesteps,
+                        prompt_embeds,
+                        C2W=this_chunk_C2W, fxfycxcy=this_chunk_fxfycxcy,
+                        #
+                        kv_cache=self.kv_cache_pos,
+                        crossattn_cache=self.crossattn_cache_pos,
+                        current_start=chunk_idx * self.opt.chunk_size * frame_seqlen,
+                    )
+                    if self.opt.load_da3:
+                        model_outputs, da3_outputs = model_outputs
 
-                        pred_x0 = self.diffusion._convert_flow_pred_to_x0(
-                            model_outputs,
-                            torch.cat([cond_latents, this_chunk_latents[:, :, 1:, ...]], dim=2),
-                            torch.cat([torch.zeros_like(timesteps[:, :1]), timesteps[:, 1:]], dim=1),
-                        )
-                    else:
-                        model_outputs = self.diffusion(
-                            this_chunk_latents,
-                            timesteps,
-                            prompt_embeds,
-                            C2W=this_chunk_C2W, fxfycxcy=this_chunk_fxfycxcy,
-                            #
-                            kv_cache=self.kv_cache_pos,
-                            crossattn_cache=self.crossattn_cache_pos,
-                            current_start=chunk_idx * self.opt.chunk_size * frame_seqlen,
-                        )
-                        if self.opt.load_da3:
-                            model_outputs, da3_outputs = model_outputs
-
-                        pred_x0 = self.diffusion._convert_flow_pred_to_x0(
-                            model_outputs,
-                            this_chunk_latents,
-                            timesteps,
-                        )
+                    pred_x0 = self.diffusion._convert_flow_pred_to_x0(model_outputs, this_chunk_latents, timesteps)
                     break
-
-            if chunk_idx == 0 and cond_latents is not None:
-                pred_x0[:, :, 0:1, ...] = cond_latents
 
             # Record this chunk generated latents
             outputs[:, :, chunk_idx * self.opt.chunk_size:(chunk_idx + 1) * self.opt.chunk_size, ...] = pred_x0
@@ -184,37 +140,25 @@ class SelfForcingTrainingPipeline:
             # Rerun with timestep `context_timestep` to update KV cache
             if self.opt.is_causal:
                 context_timesteps = self.opt.context_noise * torch.ones_like(timesteps)
+                if chunk_idx == 0 and cond_latents is not None:
+                    context_timesteps = torch.cat([torch.zeros_like(context_timesteps[:, :1]), context_timesteps[:, 1:]], dim=1)
+
                 pred_x0 = self.diffusion.scheduler.add_noise(  # add context noise
                     pred_x0.transpose(1, 2).flatten(0, 1),
                     torch.randn_like(pred_x0.transpose(1, 2).flatten(0, 1)),
                     context_timesteps.flatten(0, 1),
                 ).unflatten(0, (B, self.opt.chunk_size)).transpose(1, 2).to(dtype)
                 with torch.no_grad():
-                    if chunk_idx == 0 and cond_latents is not None:
-                        self.diffusion(
-                            torch.cat([cond_latents, pred_x0[:, :, 1:, ...]], dim=2),
-                            torch.cat([torch.zeros_like(context_timesteps[:, :1]), context_timesteps[:, 1:]], dim=1),
-                            prompt_embeds,
-                            C2W=this_chunk_C2W, fxfycxcy=this_chunk_fxfycxcy,
-                            #
-                            kv_cache=self.kv_cache_pos,
-                            crossattn_cache=self.crossattn_cache_pos,
-                            current_start=chunk_idx * self.opt.chunk_size * frame_seqlen,
-                        )
-                    else:
-                        self.diffusion(
-                            pred_x0,
-                            context_timesteps,
-                            prompt_embeds,
-                            C2W=this_chunk_C2W, fxfycxcy=this_chunk_fxfycxcy,
-                            #
-                            kv_cache=self.kv_cache_pos,
-                            crossattn_cache=self.crossattn_cache_pos,
-                            current_start=chunk_idx * self.opt.chunk_size * frame_seqlen,
-                        )
-
-        if cond_latents is not None:
-            outputs[:, :, 0:1, ...] = cond_latents
+                    self.diffusion(
+                        pred_x0,
+                        context_timesteps,
+                        prompt_embeds,
+                        C2W=this_chunk_C2W, fxfycxcy=this_chunk_fxfycxcy,
+                        #
+                        kv_cache=self.kv_cache_pos,
+                        crossattn_cache=self.crossattn_cache_pos,
+                        current_start=chunk_idx * self.opt.chunk_size * frame_seqlen,
+                    )
 
         # # Return the denoised timesteps
         # if not self.opt.same_step_across_chunks:

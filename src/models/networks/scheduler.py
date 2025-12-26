@@ -1,6 +1,8 @@
 # Modificaitons:
-    ## 1. Support (N=B*f,) shape for input timesteps: `step()`, `return_to_timestep()`, `add_noise()`, `training_weight()`
-    ## 2. No need for timestep argument in `training_target()`
+    ## 1. Support (N=B*f,) shape for input timesteps: `step()`, `add_noise()`, `training_weight()`
+    ## 2. Delete `return_to_timestep()`, not used
+    ## 3. No need for timestep argument in `training_target()`
+    ## 4. Handle when timestep is 0 for I2V
 
 # Copied from https://github.com/modelscope/DiffSynth-Studio/blob/main/diffsynth/schedulers/flow_match.py
 
@@ -73,39 +75,44 @@ class FlowMatchScheduler():
     def step(self, model_output, timestep, sample, to_final=False, **kwargs):
         timestep_id = torch.argmin((self.timesteps.unsqueeze(0) - timestep.unsqueeze(1).to(self.timesteps.device)).abs(), dim=1)
         sigma = self.sigmas[timestep_id].reshape(-1, 1, 1, 1).to(sample.device)
-        if to_final or (timestep_id + 1 >= len(self.timesteps)).any():
-            sigma_ = 1 if (self.inverse_timesteps or self.reverse_sigmas) else 0
-        else:
-            sigma_ = self.sigmas[timestep_id + 1].reshape(-1, 1, 1, 1).to(sample.device)
-        prev_sample = sample + model_output * (sigma_ - sigma)
-        return prev_sample
-    
 
-    def return_to_timestep(self, timestep, sample, sample_stablized):
-        timestep_id = torch.argmin((self.timesteps.unsqueeze(0) - timestep.unsqueeze(1).to(self.timesteps.device)).abs(), dim=1)
-        sigma = self.sigmas[timestep_id].reshape(-1, 1, 1, 1).to(sample.device)
-        model_output = (sample - sample_stablized) / sigma
-        return model_output
-    
-    
+        # NOTE: handle (B*f,) input shape and timestep=0 for I2V
+        sigmas_extra_one = torch.cat([self.sigmas, torch.zeros_like(self.sigmas[-1:])])
+        sigma_ = sigmas_extra_one[timestep_id + 1].reshape(-1, 1, 1, 1).to(sample.device)
+        delta_sigma = sigma_ - sigma
+        delta_sigma[timestep == 0.] = 0.
+
+        prev_sample = sample + model_output * delta_sigma
+        return prev_sample
+
+
     def add_noise(self, original_samples, noise, timestep):
         timestep_id = torch.argmin((self.timesteps.unsqueeze(0) - timestep.unsqueeze(1).to(self.timesteps.device)).abs(), dim=1)
-        sigma = self.sigmas[timestep_id].reshape(-1, 1, 1, 1).to(original_samples.device)
+        sigma = self.sigmas[timestep_id]
+
+        # NOTE: handle (B*f,) input shape and timestep=0 for I2V
+        sigma[timestep == 0.] = 0.
+        sigma = sigma.reshape(-1, 1, 1, 1).to(original_samples.device)
+
         sample = (1 - sigma) * original_samples + sigma * noise
         return sample
-    
+
 
     def training_target(self, sample, noise):
         target = noise - sample
         return target
-    
+
 
     def training_weight(self, timestep):
         timestep_id = torch.argmin((self.timesteps.unsqueeze(0) - timestep.unsqueeze(1).to(self.timesteps.device)).abs(), dim=1)
         weights = self.linear_timesteps_weights[timestep_id].to(timestep.device)
+
+        # NOTE: handle (B*f,) input shape and timestep=0 for I2V
+        weights[timestep == 0.] = 0.
+
         return weights
-    
-    
+
+
     def calculate_shift(
         self,
         image_seq_len,
