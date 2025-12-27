@@ -719,9 +719,7 @@ class Wan(nn.Module):
         (B, _, C, f, h, w), device = noisy_latents.shape, noisy_latents.device
 
         if self.opt.input_plucker:
-            C2W = data["C2W"].to(dtype)  # (B, f, 4, 4)
-            fxfycxcy = data["fxfycxcy"].to(dtype)  # (B, f, 4)
-            plucker = plucker_ray(h*8, w*8, C2W.float(), fxfycxcy.float())[0].to(dtype)  # (B, f, 6, H, W); `8`: hard-coded for Wan2.1
+            plucker = data["plucker"].to(dtype)  # (B, f, 6, H, W)
         else:
             plucker = None
 

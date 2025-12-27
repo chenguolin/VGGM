@@ -380,8 +380,8 @@ def main():
     vae.eval()
 
     # Prepare everything with `accelerator`
-    model, optimizer, lr_scheduler, train_loader = \
-        accelerator.prepare(model, optimizer, lr_scheduler, train_loader)
+    model, optimizer, lr_scheduler, train_loader, val_loader = \
+        accelerator.prepare(model, optimizer, lr_scheduler, train_loader, val_loader)
 
     # Training configs after distribution and accumulation setup
     updated_steps_per_epoch = math.ceil(len(train_loader) / args.gradient_accumulation_steps)
