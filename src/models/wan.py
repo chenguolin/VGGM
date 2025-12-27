@@ -104,7 +104,7 @@ class Wan(nn.Module):
                 self.diffusion.da3_adapter.requires_grad_(True)
                 self.diffusion.da3_model.requires_grad_(True)
 
-            self.ray_loss_fn, self.depth_loss_fn, self.pose_loss_fn = \
+            self.ray_loss_fn, self.depth_loss_fn, self.camera_loss_fn = \
                 XYZLoss(opt), DepthLoss(opt), CameraLoss(opt)
 
         if opt.generator_path is not None:
@@ -276,12 +276,16 @@ class Wan(nn.Module):
             if self.opt.use_teacher_forcing:
                 gt_depths, gt_raymaps, gt_pose_enc = \
                     torch.cat([gt_depths] * 2, dim=1), torch.cat([gt_raymaps] * 2, dim=1), torch.cat([gt_pose_enc] * 2, dim=1)
-            ## Compute geometry losses
-            outputs["depth_loss"] = self.depth_loss_fn(da3_outputs["depth"], gt_depths, confs=da3_outputs["depth_conf"])  # (,)
-            outputs["ray_loss"] = self.ray_loss_fn(da3_outputs["ray"], gt_raymaps, confs=da3_outputs["ray_conf"])  # (,)
-            outputs["pose_loss"] = self.pose_loss_fn(da3_outputs["pose_enc"], gt_pose_enc)  # (,)
-            outputs["loss"] = outputs["diffusion_loss"] + \
-                outputs["depth_loss"] + outputs["ray_loss"] + outputs["pose_loss"]
+            ## Compute geometry losses; NOTE: weighted by diffusion scheduler weights
+            depth_loss = self.depth_loss_fn(da3_outputs["depth"], gt_depths, confs=da3_outputs["depth_conf"])  # (B, f)
+            ray_loss = self.ray_loss_fn(da3_outputs["ray"], gt_raymaps, confs=da3_outputs["ray_conf"])  # (B, f)
+            camera_loss = self.camera_loss_fn(da3_outputs["pose_enc"], gt_pose_enc)  # (B, f)
+            da3_loss = self.diffusion.scheduler.training_weight(timesteps.flatten(0, 1)) * \
+                (depth_loss + ray_loss + camera_loss).flatten(0, 1)  # (B*f,)
+            outputs["depth_loss"] = depth_loss.mean()
+            outputs["ray_loss"] = ray_loss.mean()
+            outputs["camera_loss"] = camera_loss.mean()
+            outputs["loss"] = outputs["diffusion_loss"] + da3_loss.mean()
 
         # For visualizaiton
         if is_eval:

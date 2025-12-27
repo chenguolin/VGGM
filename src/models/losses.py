@@ -1,7 +1,6 @@
 from typing import *
 from torch import Tensor, BoolTensor
 
-from math import floor, ceil
 import torch
 from torch import nn
 import torch.nn.functional as tF
@@ -22,6 +21,8 @@ class XYZLoss(nn.Module):
         masks: Optional[Tensor] = None,
         confs: Optional[Tensor] = None,
     ):
+        f, h, w = pred_xyzs.shape[1], pred_xyzs.shape[3], pred_xyzs.shape[4]
+
         if masks is None:
             masks = torch.ones_like(pred_xyzs[:, :, 0, :, :]).to(torch.bool)  # (B, F, H, W)
         if confs is None:
@@ -29,15 +30,19 @@ class XYZLoss(nn.Module):
 
         pred_xyzs = rearrange(pred_xyzs, "b f c h w -> b (f h w) c")  # (B, N, 3)
         gt_xyzs = rearrange(gt_xyzs, "b f c h w -> b (f h w) c")  # (B, N, 3)
-        masks = rearrange(masks, "b f h w -> b (f h w)")  # (B, N)
         confs = rearrange(confs, "b f h w -> b (f h w)")  # (B, N)
 
         # Confidence-weighted MSE
-        xyz_loss = tF.mse_loss(pred_xyzs, gt_xyzs, reduction="none")  # (B, N, 3)
+        xyz_loss = tF.mse_loss(pred_xyzs, gt_xyzs, reduction="none").mean(dim=-1)  # (B, N)
         if self.opt.conf_alpha > 0.:
-            xyz_loss = (confs.unsqueeze(-1) * xyz_loss - self.opt.conf_alpha * torch.log(confs.unsqueeze(-1)))  # (B, N, 3)
-        xyz_loss = filter_by_quantile(xyz_loss.mean(dim=-1)[masks], self.opt.filter_by_quantile).mean()  # (,)
-        return xyz_loss  # (,)
+            xyz_loss = (confs * xyz_loss - self.opt.conf_alpha * torch.log(confs))  # (B, N)
+
+        # Filter by masks
+        masks = rearrange(masks, "b f h w -> b f (h w)")  # (B, F, HW)
+        xyz_loss = rearrange(xyz_loss, "b (f h w) -> b f (h w)", f=f, h=h, w=w)  # (B, F, HW)
+        masks = masks.float() * (xyz_loss <= self.opt.xyz_loss_threshold).float()
+        xyz_loss = (xyz_loss * masks).sum(dim=-1) / (masks.sum(dim=-1) + 1e-6)  # (B, F)
+        return xyz_loss  # (B, F)
 
 
 class DepthLoss(nn.Module):
@@ -54,32 +59,36 @@ class DepthLoss(nn.Module):
         masks: Optional[Tensor] = None,
         confs: Optional[Tensor] = None,
     ):
+        f, h, w = pred_depths.shape[1], pred_depths.shape[2], pred_depths.shape[3]
+
         if masks is None:
             masks = torch.ones_like(pred_depths[:, :, :, :]).to(torch.bool)  # (B, F, H, W)
         if confs is None:
             confs = torch.ones_like(pred_depths[:, :, :, :])  # (B, F, H, W)
 
-        F, H, W = masks.shape[1:]
-
         pred_depths = rearrange(pred_depths, "b f h w -> b (f h w)")  # (B, N)
         gt_depths = rearrange(gt_depths, "b f h w -> b (f h w)")  # (B, N)
-        masks = rearrange(masks, "b f h w -> b (f h w)")  # (B, N)
         confs = rearrange(confs, "b f h w -> b (f h w)")  # (B, N)
 
         # Confidence-weighted MSE
         depth_loss = tF.mse_loss(pred_depths, gt_depths, reduction="none")  # (B, N)
         if self.opt.conf_alpha > 0.:
             depth_loss = (confs * depth_loss - self.opt.conf_alpha * torch.log(confs))  # (B, N)
-        depth_loss = filter_by_quantile(depth_loss[masks], self.opt.filter_by_quantile).mean()  # (,)
+
+        # Filter by masks
+        masks = rearrange(masks, "b f h w -> b f (h w)")  # (B, F, HW)
+        depth_loss = rearrange(depth_loss, "b (f h w) -> b f (h w)", f=f, h=h, w=w)  # (B, F, HW)
+        masks_ = masks.float() * (depth_loss <= self.opt.depth_loss_threshold).float()
+        depth_loss = (depth_loss * masks_).sum(dim=-1) / (masks_.sum(dim=-1) + 1e-6)  # (B, F)
 
         # Gradient loss
-        pred_depths = rearrange(pred_depths, "b (f h w) -> b f h w", f=F, h=H, w=W)
-        gt_depths = rearrange(gt_depths, "b (f h w) -> b f h w", f=F, h=H, w=W)
-        masks = rearrange(masks, "b (f h w) -> b f h w", f=F, h=H, w=W)
-        confs = rearrange(confs, "b (f h w) -> b f h w", f=F, h=H, w=W)
-        depth_grad_loss = self.grad_loss(pred_depths, gt_depths, masks, confs).mean()  # (,)
+        pred_depths = rearrange(pred_depths, "b (f h w) -> b f h w", f=f, h=h, w=w)
+        gt_depths = rearrange(gt_depths, "b (f h w) -> b f h w", f=f, h=h, w=w)
+        masks = rearrange(masks, "b f (h w) -> b f h w", f=f, h=h, w=w)
+        confs = rearrange(confs, "b (f h w) -> b f h w", f=f, h=h, w=w)
+        depth_grad_loss = self.grad_loss(pred_depths, gt_depths, masks, confs).mean()  # (B, F)
 
-        return depth_loss + depth_grad_loss  # (,)
+        return depth_loss + depth_grad_loss  # (B, F)
 
 
 class CameraLoss(nn.Module):
@@ -89,8 +98,10 @@ class CameraLoss(nn.Module):
         self.opt = opt
 
     def forward(self, pred_pose_encs: Tensor, gt_pose_encs: Tensor):
-        camera_loss = tF.l1_loss(pred_pose_encs, gt_pose_encs, reduction="none").mean(dim=(1, 2)).mean()  # (,)
-        return camera_loss  # (,)
+        camera_loss = tF.l1_loss(pred_pose_encs, gt_pose_encs, reduction="none").mean(dim=-1)  # (B, F)
+        masks = (camera_loss <= self.opt.camera_loss_threshold).float()  # (B, F)
+        camera_loss = (camera_loss * masks) / (masks + 1e-6)  # (B, F)
+        return camera_loss  # (B, F)
 
 
 ################################ Gradient Loss ################################
@@ -173,7 +184,7 @@ class GradientLoss(nn.Module):
         Returns:
             gradient loss based on reduction function
         """
-        summed_mask = torch.sum(mask, (-3, -2, -1))
+        summed_mask = torch.sum(mask, (-2, -1))
         diff = prediction - target
         diff = torch.mul(mask, diff)
 
@@ -192,122 +203,7 @@ class GradientLoss(nn.Module):
             conf_y = torch.mean(conf[:, :, 1:, :] + conf[:, :, :-1, :])
             grad_y = conf_y * grad_y - self.conf_alpha * torch.log(conf_y)
 
-        image_loss = (torch.sum(grad_x, (-3, -2, -1)) + torch.sum(grad_y, (-3, -2, -1))) / 2.
+        image_loss = (torch.sum(grad_x, (-2, -1)) + torch.sum(grad_y, (-2, -1))) / 2.
         image_loss = image_loss / (summed_mask + 1e-6)
 
-        return image_loss  # (B,)
-
-
-################################ Quantile Functions ################################
-
-
-# Copied from https://github.com/facebookresearch/vggt/blob/main/training/loss.py
-def filter_by_quantile(loss_tensor: Tensor, valid_range: float, min_elements=1000, hard_max=100) -> Tensor:
-    """
-    Filter loss tensor by keeping only values below a certain quantile threshold.
-
-    This helps remove outliers that could destabilize training.
-
-    Args:
-        loss_tensor: Tensor containing loss values
-        valid_range: Float between 0 and 1 indicating the quantile threshold
-        min_elements: Minimum number of elements required to apply filtering
-        hard_max: Maximum allowed value for any individual loss
-
-    Returns:
-        Filtered and clamped loss tensor
-    """
-    if loss_tensor.numel() <= min_elements:
-        # Too few elements, just return as-is
-        return loss_tensor
-
-    # Randomly sample if tensor is too large to avoid memory issues
-    if loss_tensor.numel() > 100000000:
-        # Flatten and randomly select 1M elements
-        indices = torch.randperm(loss_tensor.numel(), device=loss_tensor.device)[:1_000_000]
-        loss_tensor = loss_tensor.view(-1)[indices]
-
-    # First clamp individual values to prevent extreme outliers
-    loss_tensor = loss_tensor.clamp(max=hard_max)
-
-    # Compute quantile threshold
-    quantile_thresh = torch_quantile(loss_tensor.detach(), valid_range)
-    quantile_thresh = min(quantile_thresh, hard_max)
-
-    # Apply quantile filtering if enough elements remain
-    quantile_mask = loss_tensor < quantile_thresh
-    if quantile_mask.sum() > min_elements:
-        return loss_tensor[quantile_mask]
-    return loss_tensor
-
-
-def torch_quantile(
-    input: Tensor,
-    q: float,
-    dim: Optional[int] = None,
-    keepdim: bool = False,
-    *,
-    interpolation: str = "nearest",
-    out: Tensor = None,
-) -> Tensor:
-    """Better torch.quantile for one SCALAR quantile.
-
-    Using torch.kthvalue. Better than torch.quantile because:
-        - No 2**24 input size limit (pytorch/issues/67592),
-        - Much faster, at least on big input sizes.
-
-    Arguments:
-        input (torch.Tensor): See torch.quantile.
-        q (float): See torch.quantile. Supports only scalar input
-            currently.
-        dim (int | None): See torch.quantile.
-        keepdim (bool): See torch.quantile. Supports only False
-            currently.
-        interpolation: {"nearest", "lower", "higher"}
-            See torch.quantile.
-        out (torch.Tensor | None): See torch.quantile. Supports only
-            None currently.
-    """
-    # https://github.com/pytorch/pytorch/issues/64947
-    # Sanitization: q
-    try:
-        q = float(q)
-        assert 0 <= q <= 1
-    except Exception:
-        raise ValueError(f"Only scalar input 0<=q<=1 is currently supported (got {q})!")
-
-    # Handle dim=None case
-    if dim_was_none := dim is None:
-        dim = 0
-        input = input.reshape((-1,) + (1,) * (input.ndim - 1))
-
-    # Set interpolation method
-    if interpolation == "nearest":
-        inter = round
-    elif interpolation == "lower":
-        inter = floor
-    elif interpolation == "higher":
-        inter = ceil
-    else:
-        raise ValueError(
-            "Supported interpolations currently are {'nearest', 'lower', 'higher'} "
-            f"(got '{interpolation}')!"
-        )
-
-    # Validate out parameter
-    if out is not None:
-        raise ValueError(f"Only None value is currently supported for out (got {out})!")
-
-    # Compute k-th value
-    k = inter(q * (input.shape[dim] - 1)) + 1
-    out = torch.kthvalue(input, k, dim, keepdim=True, out=out)[0]
-
-    # Handle keepdim and dim=None cases
-    if keepdim:
-        return out
-    if dim_was_none:
-        return out.squeeze()
-    else:
-        return out.squeeze(dim)
-
-    return out
+        return image_loss  # (B, F)

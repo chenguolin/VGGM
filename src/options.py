@@ -124,8 +124,10 @@ class Options:
     # Training
         ## Losses
     conf_alpha: float = 0.2
-    filter_by_quantile: float = 0.99
     gradient_loss_scale: int = 4
+    xyz_loss_threshold: float = 1.
+    depth_loss_threshold: float = 1.
+    camera_loss_threshold: float = 1.
         ## LR scheduler
     name_lr_mult: Optional[str] = None
     exclude_name_lr_mult: Optional[str] = None
