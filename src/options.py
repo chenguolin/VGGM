@@ -75,7 +75,6 @@ class Options:
         ## Load pre-trained models
     generator_path: Optional[str] = None
     teacher_path: Optional[str] = None
-    plucker_embed_path: Optional[str] = None
     is_teacher_causal: bool = False
     teacher_input_plucker: bool = False
     teacher_first_latent_cond: bool = False

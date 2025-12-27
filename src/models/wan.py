@@ -696,6 +696,58 @@ class Wan(nn.Module):
 
         return outputs
 
+    def compute_loss_ode(self, data: Dict[str, Any], dtype: torch.dtype = torch.float32, is_eval: bool = False, vae: Optional[WanVAEWrapper] = None):
+        outputs = {}
+
+        self.diffusion.scheduler.set_timesteps(4, training=False)  # `4`: hard-coded here to align with ODE sampling steps
+
+        noisy_latents = data["noisy_latents"].to(dtype)  # (B, T+1, C, f, h, w)
+        prompt_embeds = data["prompt_embeds"].to(dtype)  # (B, N, D')
+        C2W = data["C2W"].to(dtype)  # (B, f, 4, 4)
+        fxfycxcy = data["fxfycxcy"].to(dtype)  # (B, f, 4)
+        if "cond_latents" in data:
+            cond_latents = data["cond_latents"].to(dtype)  # (B, C, 1, h, w)
+        else:
+            cond_latents = None
+
+        (B, _, C, f, h, w), device = noisy_latents.shape, noisy_latents.device
+
+        if not self.opt.is_causal:
+            timesteps_id = torch.randint(0, 4, (1,))  # (1,); batch share the same timestep for simpler time scheduler
+            timesteps_id = timesteps_id.unsqueeze(1).repeat(B, f)  # (B, f)
+        else:  # teacher / diffusion forcing
+            assert f % self.opt.chunk_size == 0
+            num_chunks = f // self.opt.chunk_size
+
+            timesteps_id = torch.randint(0, 4, (num_chunks,))  # (num_chunks,); each chunk in different noise level
+            timesteps_id = timesteps_id.repeat_interleave(self.opt.chunk_size, dim=0).repeat(B, 1)  # (B, f); batch share the same timestep for simpler time scheduler
+        timesteps = self.diffusion.scheduler.timesteps[timesteps_id].to(dtype=dtype, device=device)
+
+        noisy_inputs = torch.gather(
+            noisy_latents, dim=1,
+            index=timesteps_id.reshape(B, 1, 1, f, 1, 1).expand(-1, -1, C, -1, h, w).to(device),
+        ).squeeze(1)  # (B, C, f, h, w)
+
+        target_latents = noisy_latents[:, -1, ...]  # (B, C, f, h, w)
+
+        if cond_latents is not None:
+            noisy_inputs = torch.cat([cond_latents, noisy_inputs[:, :, 1:, ...]], dim=2)
+            timesteps = torch.cat([torch.zeros_like(timesteps[:, :1]), timesteps[:, 1:]], dim=1)
+
+        model_outputs = self.diffusion(
+            noisy_inputs,
+            timesteps,
+            prompt_embeds,
+            C2W=C2W, fxfycxcy=fxfycxcy,
+        )
+        pred_x0 = self.diffusion._convert_flow_pred_to_x0(model_outputs, noisy_inputs, timesteps).to(dtype)
+
+        outputs["images_predx0"] = (self.decode_latent(pred_x0, vae).clamp(-1., 1.) + 1.) / 2.
+        outputs["images_target"] = (self.decode_latent(target_latents, vae).clamp(-1., 1.) + 1.) / 2.
+        outputs["loss"] = tF.mse_loss(pred_x0, target_latents)
+
+        return outputs
+
 
     ################################ Helper functions ################################
 

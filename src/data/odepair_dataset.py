@@ -22,11 +22,12 @@ class OdepairDataset(Dataset):
 
     def __getitem__(self, idx):
         file_path = self.file_paths[idx]
-        ode_pair = torch.load(file_path, weights_only=False)  # 'noisy_latents', 'prompt_embeds', 'plucker_embeds', (optional) 'cond_latents'
+        ode_pair = torch.load(file_path, weights_only=False)
         return ode_pair
         # {
         #     "noisy_latents"   # (T+1, C, f, h, w)
         #     "prompt_embeds"   # (N, D')
-        #     "plucker_embeds"  # (D, f, hh, ww)
+        #     "C2W"             # (f, 4, 4)
+        #     "fxfycxcy"        # (f, 4)
         #     "cond_latents"    # (C, 1, h, w); only for I2V
         # }
