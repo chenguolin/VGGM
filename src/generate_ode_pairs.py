@@ -12,7 +12,7 @@ from src.models import Wan
 from src.utils import plucker_ray
 
 
-BATCH_SIZE_PER_DEVICE = 8
+BATCH_SIZE_PER_DEVICE = 2
 NUM_ITERS = 20
 
 

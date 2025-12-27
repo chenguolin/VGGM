@@ -82,7 +82,7 @@ class Options:
     use_dmd: bool = False
     generator_train_every: int = 5
     fake_guidance_scale: float = 1.
-    real_guidance_scale: float = 3.
+    real_guidance_scale: float = 4.
     dmd_loss_weight: float = 1.
         ## Self-forcing
     denoising_step_list: Tuple[int, ...] = (1000, 750, 500, 250)
@@ -207,4 +207,54 @@ opt_dict["sf_rep"] = Options(
     deterministic_inference=False,
     name_lr_mult="fake_score",
     lr_mult=0.2,
+)
+
+# ODE Distillation
+opt_dict["wan2.1_t2v_1.3b_ode"] = Options(
+    input_plucker=True,
+    #
+    is_causal=True,
+    use_teacher_forcing=False,
+    #
+    sink_size=0,
+    chunk_size=3,
+    max_window_size=21,
+    rope_outside=False,
+    #
+    generator_path=f"{ROOT}/projects/VGGM/.pth",
+    #
+    num_inference_steps=4,
+    deterministic_inference=True,
+)
+
+# Self-Forcing DMD
+opt_dict["wan2.1_t2v_1.3b_dmd"] = Options(
+    first_latent_cond=False,
+    input_plucker=True,
+    #
+    is_causal=True,
+    use_teacher_forcing=False,
+    #
+    sink_size=0,
+    chunk_size=3,
+    max_window_size=21,
+    rope_outside=False,
+    #
+    generator_path=f"{ROOT}/projects/VGGM/.pth",
+    teacher_path=f"{ROOT}/projects/VGGM/.pth",
+    is_teacher_causal=False,
+    teacher_input_plucker=True,
+    teacher_first_latent_cond=False,
+    #
+    use_dmd=True,
+    real_guidance_scale=4.,
+    last_step_only=False,
+    context_noise=0,
+    same_step_across_chunks=True,
+    #
+    name_lr_mult="fake_score",
+    lr_mult=0.2,
+    #
+    num_inference_steps=4,
+    deterministic_inference=False,
 )

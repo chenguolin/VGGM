@@ -1,19 +1,18 @@
-opt_type: "wan2.1_t2v_1.3b"
+opt_type: "wan2.1_t2v_1.3b_dmd"
 
 optimizer:
   name: "adamw"
-  lr: 0.0001
+  lr: 0.000002
   betas:
-    - 0.9
+    - 0.
     - 0.999
   weight_decay: 0.01
 
 lr_scheduler:
-  name: "cosine_warmup"
-  num_warmup_steps: 1000
+  name: "constant"
 
 train:
-  batch_size_per_gpu: 2
+  batch_size_per_gpu: 1
   gradient_accumulation_steps: 1
   use_deepspeed: true
   zero_stage: 2
@@ -21,7 +20,7 @@ train:
   log_freq: 1
   early_eval_freq: 100
   early_eval: 1000
-  eval_freq: 500
+  eval_freq: 100
   save_freq: 2000
   eval_freq_epoch: 5
   save_freq_epoch: 10
