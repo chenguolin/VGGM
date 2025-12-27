@@ -160,7 +160,7 @@ class DMD_Wan(Wan):
         idxs = torch.arange(0, F, 4).to(device=device, dtype=torch.long)
         C2W = data["C2W"].to(dtype)[:, idxs, ...]  # (B, f, 4, 4)
         fxfycxcy = data["fxfycxcy"].to(dtype)[:, idxs, ...]  # (B, f, 4)
-        plucker, _ = plucker_ray(H, W, C2W, fxfycxcy)  # (B, f, 6, H, W)
+        plucker = plucker_ray(H, W, C2W.float(), fxfycxcy.float())[0].to(dtype)  # (B, f, 6, H, W)
 
         # DMD
         self.diffusion.scheduler.set_timesteps(self.opt.num_train_timesteps, training=True)
@@ -176,24 +176,8 @@ class DMD_Wan(Wan):
                 )
             outputs["generator_loss"] = generator_loss
             outputs["dmd_grad_norm"] = dmd_grad_norm
-
-            # (Optional) Denoising loss for the generator
-            if self.opt.diffusion_loss_weight > 0.:
-                diffusion_loss = self.diffusion_loss(
-                    latents,
-                    prompt_embeds,
-                    cond_latents,
-                    plucker,
-                )
-            else:
-                diffusion_loss = None
-
-            if diffusion_loss is not None:
-                outputs["diffusion_loss"] = diffusion_loss
-            else:
-                diffusion_loss = 0.
         else:
-            generator_loss, diffusion_loss = 0., 0.
+            generator_loss = 0.
 
         outputs["critic_loss"] = critic_loss = \
             self.critic_loss(
@@ -203,8 +187,7 @@ class DMD_Wan(Wan):
                 plucker,
             )
 
-        outputs["loss"] = critic_loss + self.opt.dmd_loss_weight * generator_loss + \
-            self.opt.diffusion_loss_weight * diffusion_loss  # optional
+        outputs["loss"] = critic_loss + self.opt.dmd_loss_weight * generator_loss
 
         # For visualizaiton
         if is_eval:
@@ -215,59 +198,6 @@ class DMD_Wan(Wan):
         return outputs
 
     ################################ Helper functions ################################
-
-    def diffusion_loss(self,
-        latents: Tensor,
-        prompt_embeds: Tensor,
-        cond_latents: Optional[Tensor] = None,
-        plucker: Optional[Tensor] = None,
-    ):
-        B, f = latents.shape[0], latents.shape[2]
-        device, dtype = latents.device, latents.dtype
-
-        min_t, max_t = int(self.opt.min_timestep_boundary * self.opt.num_train_timesteps), \
-            int(self.opt.max_timestep_boundary * self.opt.num_train_timesteps)
-        if not self.opt.is_causal:
-            num_chunks = 1
-            timesteps_id = torch.randint(min_t, max_t, (1,))  # (1,); batch share the same timestep for simpler time scheduler
-            timesteps_id = timesteps_id.unsqueeze(1).repeat(B, f)  # (B, f)
-        else:  # teacher / diffusion forcing
-            assert f % self.opt.chunk_size == 0
-            num_chunks = f // self.opt.chunk_size
-
-            timesteps_id = torch.randint(min_t, max_t, (num_chunks,))  # (num_chunks,); each chunk in different noise level
-            timesteps_id = timesteps_id.repeat_interleave(self.opt.chunk_size, dim=0).repeat(B, 1)  # (B, f); batch share the same timestep for simpler time scheduler
-        timesteps = self.diffusion.scheduler.timesteps[timesteps_id].to(dtype=dtype, device=device)
-        if cond_latents is not None:
-            timesteps = torch.cat([torch.zeros_like(timesteps[:, :1]), timesteps[:, 1:]], dim=1)
-
-        noises = torch.randn_like(latents)
-        noisy_latents = self.diffusion.scheduler.add_noise(
-            latents.transpose(1, 2).flatten(0, 1),  # (B*f, D, h, w)
-            noises.transpose(1, 2).flatten(0, 1),   # (B*f, D, h, w)
-            timesteps.flatten(0, 1),                # (B*f,)
-        ).detach().unflatten(0, (B, f)).transpose(1, 2).to(dtype)  # (B, D, f, h, w)
-        targets = self.diffusion.scheduler.training_target(latents, noises)
-
-        # # Classifier-free guidance dropout
-        # if self.training:
-        #     masks = (torch.rand(B, device=device) < self.opt.cfg_dropout).to(dtype)
-        #     prompt_embeds = prompt_embeds * masks[:, None, None]# + negative_prompt_embeds * (1 - masks)[:, None, None]
-
-        model_outputs = self.diffusion(
-            noisy_latents,
-            timesteps,
-            prompt_embeds,
-            plucker=plucker,
-            #
-            clean_x=latents if self.opt.use_teacher_forcing else None,
-        )
-
-        diffusion_loss = tF.mse_loss(model_outputs.float(), targets.float(), reduction="none")  # (B, D, f, h, w)
-        diffusion_loss = self.diffusion.scheduler.training_weight(timesteps.flatten(0, 1)).reshape(-1, 1, 1, 1) * \
-            diffusion_loss.transpose(1, 2).flatten(0, 1)  # (B*f, D, h, w)
-        diffusion_loss = diffusion_loss.unflatten(0, (B, f)).transpose(1, 2)  # (B, D, f, h, w)
-        return diffusion_loss.mean()
 
     def critic_loss(self,
         noises: Tensor,

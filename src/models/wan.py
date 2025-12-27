@@ -179,7 +179,7 @@ class Wan(nn.Module):
             gt_depths = data["depth"].to(dtype)[:, idxs, ...]  # (B, f, H, W)
         C2W = data["C2W"].to(dtype)[:, idxs, ...]  # (B, f, 4, 4)
         fxfycxcy = data["fxfycxcy"].to(dtype)[:, idxs, ...]  # (B, f, 4)
-        plucker, _ = plucker_ray(H, W, C2W.float(), fxfycxcy.float()).to(dtype)  # (B, f, 6, H, W)
+        plucker = plucker_ray(H, W, C2W.float(), fxfycxcy.float())[0].to(dtype)  # (B, f, 6, H, W)
 
         # Text encoder
         if self.text_encoder is not None:
@@ -328,7 +328,7 @@ class Wan(nn.Module):
             gt_depths = data["depth"].to(dtype)[:, idxs, ...]  # (B, f, H, W)
         C2W = data["C2W"].to(dtype)[:, idxs, ...]  # (B, f, 4, 4)
         fxfycxcy = data["fxfycxcy"].to(dtype)[:, idxs, ...]  # (B, f, 4)
-        plucker, _ = plucker_ray(H, W, C2W.float(), fxfycxcy.float()).to(dtype)  # (B, f, 6, H, W)
+        plucker = plucker_ray(H, W, C2W.float(), fxfycxcy.float())[0].to(dtype)  # (B, f, 6, H, W)
 
         f = 1 + (F - 1) // self.opt.compression_ratio[0]
         h = H // self.opt.compression_ratio[1]
@@ -482,7 +482,7 @@ class Wan(nn.Module):
             gt_depths = data["depth"].to(dtype)[:, idxs, ...]  # (B, f, H, W)
         C2W = data["C2W"].to(dtype)[:, idxs, ...]  # (B, f, 4, 4)
         fxfycxcy = data["fxfycxcy"].to(dtype)[:, idxs, ...]  # (B, f, 4)
-        plucker, _ = plucker_ray(H, W, C2W.float(), fxfycxcy.float()).to(dtype)  # (B, f, 6, H, W)
+        plucker = plucker_ray(H, W, C2W.float(), fxfycxcy.float())[0].to(dtype)  # (B, f, 6, H, W)
 
         f = 1 + (F - 1) // self.opt.compression_ratio[0]
         h = H // self.opt.compression_ratio[1]
@@ -721,7 +721,7 @@ class Wan(nn.Module):
         if self.opt.input_plucker:
             C2W = data["C2W"].to(dtype)  # (B, f, 4, 4)
             fxfycxcy = data["fxfycxcy"].to(dtype)  # (B, f, 4)
-            plucker, _ = plucker_ray(h*8, w*8, C2W.float(), fxfycxcy.float()).to(dtype)  # (B, f, 6, H, W); `8`: hard-coded for Wan2.1
+            plucker = plucker_ray(h*8, w*8, C2W.float(), fxfycxcy.float())[0].to(dtype)  # (B, f, 6, H, W); `8`: hard-coded for Wan2.1
         else:
             plucker = None
 

@@ -83,7 +83,6 @@ class Options:
     generator_train_every: int = 5
     fake_guidance_scale: float = 1.
     real_guidance_scale: float = 3.
-    diffusion_loss_weight: float = 0.
     dmd_loss_weight: float = 1.
         ## Self-forcing
     denoising_step_list: Tuple[int, ...] = (1000, 750, 500, 250)

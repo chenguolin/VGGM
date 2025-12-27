@@ -23,7 +23,7 @@ if [ -z "$ROOT" ]; then
 fi
 echo "ROOT = $ROOT"
 
-cd $ROOT/projects/VGGM/VGGM
+cd $ROOT/projects/VGGM
 
 SETUP_FLAG=/tmp/.setup_done
 if [ ! -f "$SETUP_FLAG" ]; then

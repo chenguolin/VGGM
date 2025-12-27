@@ -9,6 +9,7 @@ from src.options import opt_dict, ROOT
 from src.data import *  # import all dataset classes and `yield_forever`
 from src.models.networks import WanVAEWrapper
 from src.models import Wan
+from src.utils import plucker_ray
 
 
 BATCH_SIZE_PER_DEVICE = 8
@@ -63,6 +64,7 @@ def main():
         idxs = torch.arange(0, F, 4).to(device=accelerator.device, dtype=torch.long)
         C2W = data["C2W"][:, idxs, ...]  # (B, f, 4, 4)
         fxfycxcy = data["fxfycxcy"][:, idxs, ...]  # (B, f, 4)
+        plucker = plucker_ray(H, W, C2W.float(), fxfycxcy.float())[0].to(images.dtype)  # (B, f, 6, H, W)
 
         f = 1 + (F - 1) // opt.compression_ratio[0]
         h = H // opt.compression_ratio[1]
@@ -94,13 +96,13 @@ def main():
                 latents,
                 timesteps,
                 prompt_embeds,
-                C2W=C2W, fxfycxcy=fxfycxcy,
+                plucker=plucker,
             )
             model_outputs_neg = accelerator.unwrap_model(model).diffusion(
                 latents,
                 timesteps,
                 negative_prompt_embeds,
-                C2W=C2W, fxfycxcy=fxfycxcy,
+                plucker=plucker,
             )
             model_outputs = model_outputs_neg + opt.cfg_scale[0] * (model_outputs - model_outputs_neg)
 
@@ -126,15 +128,13 @@ def main():
                     "noisy_latents": noisy_latents[bi].to("cpu").squeeze(0),  # (T+1, D, f, h, w)
                     "cond_latents": cond_latents[bi].to("cpu"),  # (D, 1, h, w)
                     "prompt_embeds": prompt_embeds[bi].to("cpu"),  # (N, D)
-                    "C2W": C2W[bi].to("cpu"),  # (f, 4, 4)
-                    "fxfycxcy": fxfycxcy[bi].to("cpu"),  # (f, 4)
+                    "plucker": plucker[bi].to("cpu"),  # (f, 6, H, W)
                 }
             else:
                 ode_pairs = {
                     "noisy_latents": noisy_latents[bi].to("cpu")[0].squeeze(0),  # (T+1, D, f, h, w)
                     "prompt_embeds": prompt_embeds[bi].to("cpu"),  # (N, D)
-                    "C2W": C2W[bi].to("cpu"),  # (f, 4, 4)
-                    "fxfycxcy": fxfycxcy[bi].to("cpu"),  # (f, 4)
+                    "plucker": plucker[bi].to("cpu"),  # (f, 6, H, W)
                 }
 
             idx = num_iters * B * accelerator.num_processes + accelerator.process_index * B + bi

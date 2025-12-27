@@ -485,7 +485,6 @@ def main():
                 critic_loss = outputs["critic_loss"] if "critic_loss" in outputs else None
                 generator_loss = outputs["generator_loss"] if "generator_loss" in outputs else None
                 dmd_grad_norm = outputs["dmd_grad_norm"] if "dmd_grad_norm" in outputs else None
-                diffusion_loss = outputs["diffusion_loss"] if "diffusion_loss" in outputs else None
                 depth_loss = outputs["depth_loss"] if "depth_loss" in outputs else None
                 ray_loss = outputs["ray_loss"] if "ray_loss" in outputs else None
                 camera_loss = outputs["camera_loss"] if "camera_loss" in outputs else None
@@ -512,8 +511,6 @@ def main():
                     generator_loss = accelerator.gather(generator_loss.detach()).mean()
                 if dmd_grad_norm is not None:
                     dmd_grad_norm = accelerator.gather(dmd_grad_norm.detach()).mean()
-                if diffusion_loss is not None:
-                    diffusion_loss = accelerator.gather(diffusion_loss.detach()).mean()
                 if depth_loss is not None:
                     depth_loss = accelerator.gather(depth_loss.detach()).mean()
                 if ray_loss is not None:
@@ -536,8 +533,6 @@ def main():
                     logs.update({"critic": critic_loss.item()})
                 if generator_loss is not None:
                     logs.update({"generator": generator_loss.item()})
-                if diffusion_loss is not None:
-                    logs.update({"diffusion": diffusion_loss.item()})
                 if depth_loss is not None:
                     logs.update({"depth": depth_loss.item()})
                 if ray_loss is not None:
@@ -553,7 +548,6 @@ def main():
                     f"loss: {logs['loss']:.4f}, lr: {logs['lr']:.2e}" +
                     f", critic: {logs['critic']:.4f}" if critic_loss is not None else "" +
                     f", generator: {logs['generator']:.4f}" if generator_loss is not None else "" +
-                    f", diffusion: {logs['diffusion']:.4f}" if diffusion_loss is not None else "" +
                     f", ema: {logs['ema']:.4f}" if args.use_ema else ""
                 )
 
@@ -580,10 +574,6 @@ def main():
                         if dmd_grad_norm is not None:
                             wandb.log({
                                 "training/dmd_grad_norm": dmd_grad_norm.item()
-                            }, step=global_update_step)
-                        if diffusion_loss is not None:
-                            wandb.log({
-                                "training/diffusion_loss": diffusion_loss.item()
                             }, step=global_update_step)
                         if depth_loss is not None:
                             wandb.log({
