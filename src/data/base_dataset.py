@@ -2,7 +2,6 @@ from typing import *
 from torch import Tensor
 
 import os
-from copy import deepcopy
 import numpy as np
 import torch
 import torchvision.transforms as tvT

@@ -31,7 +31,6 @@ class DMD_Wan(Wan):
             True,  # hard-coded `extra_one_step`
             #
             opt.teacher_input_plucker,
-            2,  # hard-coded for patch embedding
             #
             opt.use_gradient_checkpointing,
             opt.use_gradient_checkpointing_offload,
@@ -64,7 +63,6 @@ class DMD_Wan(Wan):
             True,  # hard-coded `extra_one_step`
             #
             opt.teacher_input_plucker,
-            2,  # hard-coded for patch embedding
             #
             opt.use_gradient_checkpointing,
             opt.use_gradient_checkpointing_offload,

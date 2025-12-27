@@ -1,5 +1,5 @@
-from src.models.networks.taehv import TAEHV
-from src.models.networks.wan_wrapper import (
+from .taehv import TAEHV
+from .wan_wrapper import (
     WanCLIPEncoderWrapper,
     WanTextEncoderWrapper,
     WanVAEWrapper,

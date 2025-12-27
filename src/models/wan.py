@@ -63,7 +63,6 @@ class Wan(nn.Module):
                 True,  # hard-coded `extra_one_step`
                 #
                 opt.input_plucker,
-                2,  # hard-coded for patch embedding
                 #
                 opt.use_gradient_checkpointing,
                 opt.use_gradient_checkpointing_offload,
@@ -84,7 +83,6 @@ class Wan(nn.Module):
                 True,  # hard-coded `extra_one_step`
                 #
                 opt.input_plucker,
-                2,  # hard-coded for patch embedding
                 #
                 opt.use_gradient_checkpointing,
                 opt.use_gradient_checkpointing_offload,

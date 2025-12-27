@@ -138,7 +138,6 @@ class WanDiffusionWrapper(nn.Module):
         extra_one_step: bool = True,
         #
         input_plucker: bool = False,
-        plucker_downsample: int = 2,
         #
         use_gradient_checkpointing: bool = True,
         use_gradient_checkpointing_offload: bool = False,
@@ -169,7 +168,7 @@ class WanDiffusionWrapper(nn.Module):
         # (Optional) Plucker embedding
         self.input_plucker = input_plucker
         if input_plucker:
-            self.plucker_embed = nn.Conv2d(6, self.model.dim, kernel_size=plucker_downsample, stride=plucker_downsample)
+            self.plucker_embed = nn.Conv2d(6, self.model.dim, kernel_size=16, stride=16)  # `16`: hard-coded for Wan2.1
             zero_init_module(self.plucker_embed)
 
         self.scheduler = FlowMatchScheduler(
@@ -210,7 +209,7 @@ class WanDiffusionWrapper(nn.Module):
 
         # (Optional) Plucker embedding
         if self.input_plucker:
-            plucker, _ = plucker_ray(h, w, C2W.float(), fxfycxcy.float())
+            plucker, _ = plucker_ray(h*8, w*8, C2W.float(), fxfycxcy.float())  # `8`: hard-coded for Wan2.1
             plucker = rearrange(plucker, "b f c h w -> (b f) c h w").to(noisy_latents.dtype)
             plucker_embeds = self.plucker_embed(plucker)
             plucker_embeds = rearrange(plucker_embeds, "(b f) c h w -> b c f h w", f=f)  # (B, D, f, hh, ww)
@@ -314,7 +313,6 @@ class WanDiffusionDA3Wrapper(nn.Module):
         extra_one_step: bool = True,
         #
         input_plucker: bool = False,
-        plucker_downsample: int = 2,
         #
         use_gradient_checkpointing: bool = True,
         use_gradient_checkpointing_offload: bool = False,
@@ -350,7 +348,7 @@ class WanDiffusionDA3Wrapper(nn.Module):
         # (Optional) Plucker embedding
         self.input_plucker = input_plucker
         if input_plucker:
-            self.plucker_embed = nn.Conv2d(6, self.model.dim, kernel_size=plucker_downsample, stride=plucker_downsample)
+            self.plucker_embed = nn.Conv2d(6, self.model.dim, kernel_size=16, stride=16)  # `16`: hard-coded for Wan2.1
             zero_init_module(self.plucker_embed)
 
         self.scheduler = FlowMatchScheduler(
@@ -421,7 +419,7 @@ class WanDiffusionDA3Wrapper(nn.Module):
 
         # (Optional) Plucker embedding
         if self.input_plucker:
-            plucker, _ = plucker_ray(h, w, C2W.float(), fxfycxcy.float())
+            plucker, _ = plucker_ray(h*8, w*8, C2W.float(), fxfycxcy.float())  # `8`: hard-coded for Wan2.1
             plucker = rearrange(plucker, "b f c h w -> (b f) c h w").to(noisy_latents.dtype)
             plucker_embeds = self.plucker_embed(plucker)
             plucker_embeds = rearrange(plucker_embeds, "(b f) c h w -> b c f h w", f=f)  # (B, D, f, hh, ww)
