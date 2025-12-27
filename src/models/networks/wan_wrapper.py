@@ -189,8 +189,7 @@ class WanDiffusionWrapper(nn.Module):
         clip_features: Optional[Tensor] = None,  # (B, N', D'')
         cond_latents: Optional[Tensor] = None,  # (B, D, f, h, w)
         #
-        C2W: Optional[Tensor] = None,  # (B, f, 4, 4)
-        fxfycxcy: Optional[Tensor] = None,  # (B, f, 4)
+        plucker: Optional[Tensor] = None,  # (B, f, 6, H, W)
         #
         kv_cache: Optional[List[Dict[str, Any]]] = None,
         crossattn_cache: Optional[List[Dict[str, Any]]] = None,
@@ -209,7 +208,6 @@ class WanDiffusionWrapper(nn.Module):
 
         # (Optional) Plucker embedding
         if self.input_plucker:
-            plucker, _ = plucker_ray(h*8, w*8, C2W.float(), fxfycxcy.float())  # `8`: hard-coded for Wan2.1
             plucker = rearrange(plucker, "b f c h w -> (b f) c h w").to(noisy_latents.dtype)
             plucker_embeds = self.plucker_embed(plucker)
             plucker_embeds = rearrange(plucker_embeds, "(b f) c h w -> b c f h w", f=f)  # (B, D, f, hh, ww)
@@ -398,8 +396,7 @@ class WanDiffusionDA3Wrapper(nn.Module):
         clip_features: Optional[Tensor] = None,  # (B, N', D'')
         cond_latents: Optional[Tensor] = None,  # (B, D, f, h, w)
         #
-        C2W: Optional[Tensor] = None,  # (B, f, 4, 4)
-        fxfycxcy: Optional[Tensor] = None,  # (B, f, 4)
+        plucker: Optional[Tensor] = None,  # (B, f, 6, H, W)
         #
         kv_cache: Optional[List[Dict[str, Any]]] = None,
         crossattn_cache: Optional[List[Dict[str, Any]]] = None,
@@ -419,7 +416,6 @@ class WanDiffusionDA3Wrapper(nn.Module):
 
         # (Optional) Plucker embedding
         if self.input_plucker:
-            plucker, _ = plucker_ray(h*8, w*8, C2W.float(), fxfycxcy.float())  # `8`: hard-coded for Wan2.1
             plucker = rearrange(plucker, "b f c h w -> (b f) c h w").to(noisy_latents.dtype)
             plucker_embeds = self.plucker_embed(plucker)
             plucker_embeds = rearrange(plucker_embeds, "(b f) c h w -> b c f h w", f=f)  # (B, D, f, hh, ww)

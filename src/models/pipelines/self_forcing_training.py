@@ -51,7 +51,7 @@ class SelfForcingTrainingPipeline:
         noises: Tensor,
         prompt_embeds: Tensor,
         cond_latents: Optional[Tensor] = None,
-        C2W: Optional[Tensor] = None, fxfycxcy: Optional[Tensor] = None,
+        plucker: Optional[Tensor] = None,
     ):
         B, _, f, h, w = noises.shape
         device, dtype = noises.device, noises.dtype
@@ -75,8 +75,7 @@ class SelfForcingTrainingPipeline:
         for chunk_idx in range(num_chunks):
             this_chunk_latents = noises[:, :, chunk_idx * self.opt.chunk_size:(chunk_idx + 1) * self.opt.chunk_size, ...]
             if self.opt.input_plucker:
-                this_chunk_C2W = C2W[:, chunk_idx * self.opt.chunk_size:(chunk_idx + 1) * self.opt.chunk_size, ...]
-                this_chunk_fxfycxcy = fxfycxcy[:, chunk_idx * self.opt.chunk_size:(chunk_idx + 1) * self.opt.chunk_size, ...]
+                this_chunk_plucker = plucker[:, chunk_idx * self.opt.chunk_size:(chunk_idx + 1) * self.opt.chunk_size, ...]
 
             # Spatial denoising loop
             for i, timestep in enumerate(self.denoising_step_list):
@@ -97,7 +96,7 @@ class SelfForcingTrainingPipeline:
                             this_chunk_latents,
                             timesteps,
                             prompt_embeds,
-                            C2W=this_chunk_C2W, fxfycxcy=this_chunk_fxfycxcy,
+                            plucker=this_chunk_plucker,
                             #
                             kv_cache=self.kv_cache_pos,
                             crossattn_cache=self.crossattn_cache_pos,
@@ -122,7 +121,7 @@ class SelfForcingTrainingPipeline:
                         this_chunk_latents,
                         timesteps,
                         prompt_embeds,
-                        C2W=this_chunk_C2W, fxfycxcy=this_chunk_fxfycxcy,
+                        plucker=this_chunk_plucker,
                         #
                         kv_cache=self.kv_cache_pos,
                         crossattn_cache=self.crossattn_cache_pos,
@@ -153,7 +152,7 @@ class SelfForcingTrainingPipeline:
                         pred_x0,
                         context_timesteps,
                         prompt_embeds,
-                        C2W=this_chunk_C2W, fxfycxcy=this_chunk_fxfycxcy,
+                        plucker=this_chunk_plucker,
                         #
                         kv_cache=self.kv_cache_pos,
                         crossattn_cache=self.crossattn_cache_pos,

@@ -179,6 +179,7 @@ class Wan(nn.Module):
             gt_depths = data["depth"].to(dtype)[:, idxs, ...]  # (B, f, H, W)
         C2W = data["C2W"].to(dtype)[:, idxs, ...]  # (B, f, 4, 4)
         fxfycxcy = data["fxfycxcy"].to(dtype)[:, idxs, ...]  # (B, f, 4)
+        plucker, _ = plucker_ray(H, W, C2W.float(), fxfycxcy.float()).to(dtype)  # (B, f, 6, H, W)
 
         # Text encoder
         if self.text_encoder is not None:
@@ -244,7 +245,7 @@ class Wan(nn.Module):
             noisy_latents,
             timesteps,
             prompt_embeds,
-            C2W=C2W, fxfycxcy=fxfycxcy,
+            plucker=plucker if self.opt.input_plucker else None,
             #
             clean_x=latents if self.opt.use_teacher_forcing else None,
         )
@@ -323,6 +324,7 @@ class Wan(nn.Module):
             gt_depths = data["depth"].to(dtype)[:, idxs, ...]  # (B, f, H, W)
         C2W = data["C2W"].to(dtype)[:, idxs, ...]  # (B, f, 4, 4)
         fxfycxcy = data["fxfycxcy"].to(dtype)[:, idxs, ...]  # (B, f, 4)
+        plucker, _ = plucker_ray(H, W, C2W.float(), fxfycxcy.float()).to(dtype)  # (B, f, 6, H, W)
 
         f = 1 + (F - 1) // self.opt.compression_ratio[0]
         h = H // self.opt.compression_ratio[1]
@@ -364,7 +366,7 @@ class Wan(nn.Module):
                     latents,
                     timesteps,
                     prompt_embeds,
-                    C2W=C2W, fxfycxcy=fxfycxcy,
+                    plucker=plucker if self.opt.input_plucker else None,
                 )
 
                 ## CFG
@@ -373,7 +375,7 @@ class Wan(nn.Module):
                         latents,
                         timesteps,
                         negative_prompt_embeds,  # torch.zeros_like(prompt_embeds)
-                        C2W=C2W, fxfycxcy=fxfycxcy,
+                        plucker=plucker if self.opt.input_plucker else None,
                     )
                     if not self.opt.load_da3:
                         model_outputs = model_outputs_neg + cfg_scale * (model_outputs - model_outputs_neg)
@@ -476,6 +478,7 @@ class Wan(nn.Module):
             gt_depths = data["depth"].to(dtype)[:, idxs, ...]  # (B, f, H, W)
         C2W = data["C2W"].to(dtype)[:, idxs, ...]  # (B, f, 4, 4)
         fxfycxcy = data["fxfycxcy"].to(dtype)[:, idxs, ...]  # (B, f, 4)
+        plucker, _ = plucker_ray(H, W, C2W.float(), fxfycxcy.float()).to(dtype)  # (B, f, 6, H, W)
 
         f = 1 + (F - 1) // self.opt.compression_ratio[0]
         h = H // self.opt.compression_ratio[1]
@@ -520,8 +523,9 @@ class Wan(nn.Module):
             for chunk_idx in tqdm(range(num_chunks), ncols=125, disable=not verbose, desc="[Chunk]"):
                 this_chunk_latents = latents[:, :, chunk_idx * self.opt.chunk_size:(chunk_idx + 1) * self.opt.chunk_size, ...]
                 if self.opt.input_plucker:
-                    this_chunk_C2W = C2W[:, chunk_idx * self.opt.chunk_size:(chunk_idx + 1) * self.opt.chunk_size, ...]
-                    this_chunk_fxfycxcy = fxfycxcy[:, chunk_idx * self.opt.chunk_size:(chunk_idx + 1) * self.opt.chunk_size, ...]
+                    this_chunk_plucker = plucker[:, chunk_idx * self.opt.chunk_size:(chunk_idx + 1) * self.opt.chunk_size, ...]
+                else:
+                    this_chunk_plucker = None
 
                 ### Spatial denoising loop
                 for i, timestep in tqdm(enumerate(self.diffusion.scheduler.timesteps),
@@ -535,7 +539,7 @@ class Wan(nn.Module):
                         this_chunk_latents,
                         timesteps,
                         prompt_embeds,
-                        C2W=this_chunk_C2W, fxfycxcy=this_chunk_fxfycxcy,
+                        plucker=this_chunk_plucker,
                         #
                         kv_cache=self.kv_cache_pos,
                         crossattn_cache=self.crossattn_cache_pos,
@@ -551,7 +555,7 @@ class Wan(nn.Module):
                             this_chunk_latents,
                             timesteps,
                             negative_prompt_embeds,  # torch.zeros_like(prompt_embeds)
-                            C2W=this_chunk_C2W, fxfycxcy=this_chunk_fxfycxcy,
+                            plucker=this_chunk_plucker,
                             #
                             kv_cache=self.kv_cache_neg,
                             crossattn_cache=self.crossattn_cache_neg,
@@ -598,7 +602,7 @@ class Wan(nn.Module):
                     this_chunk_latents,
                     timesteps * 0.,
                     prompt_embeds,
-                    C2W=this_chunk_C2W, fxfycxcy=this_chunk_fxfycxcy,
+                    plucker=this_chunk_plucker,
                     #
                     kv_cache=self.kv_cache_pos,
                     crossattn_cache=self.crossattn_cache_pos,
@@ -612,7 +616,7 @@ class Wan(nn.Module):
                         this_chunk_latents,
                         timesteps * 0.,
                         negative_prompt_embeds,  # torch.zeros_like(prompt_embeds)
-                        C2W=this_chunk_C2W, fxfycxcy=this_chunk_fxfycxcy,
+                        plucker=this_chunk_plucker,
                         #
                         kv_cache=self.kv_cache_neg,
                         crossattn_cache=self.crossattn_cache_neg,
@@ -703,14 +707,19 @@ class Wan(nn.Module):
 
         noisy_latents = data["noisy_latents"].to(dtype)  # (B, T+1, C, f, h, w)
         prompt_embeds = data["prompt_embeds"].to(dtype)  # (B, N, D')
-        C2W = data["C2W"].to(dtype)  # (B, f, 4, 4)
-        fxfycxcy = data["fxfycxcy"].to(dtype)  # (B, f, 4)
         if "cond_latents" in data:
             cond_latents = data["cond_latents"].to(dtype)  # (B, C, 1, h, w)
         else:
             cond_latents = None
 
         (B, _, C, f, h, w), device = noisy_latents.shape, noisy_latents.device
+
+        if self.opt.input_plucker:
+            C2W = data["C2W"].to(dtype)  # (B, f, 4, 4)
+            fxfycxcy = data["fxfycxcy"].to(dtype)  # (B, f, 4)
+            plucker, _ = plucker_ray(h*8, w*8, C2W.float(), fxfycxcy.float()).to(dtype)  # (B, f, 6, H, W); `8`: hard-coded for Wan2.1
+        else:
+            plucker = None
 
         if not self.opt.is_causal:
             timesteps_id = torch.randint(0, 4, (1,))  # (1,); batch share the same timestep for simpler time scheduler
@@ -738,7 +747,7 @@ class Wan(nn.Module):
             noisy_inputs,
             timesteps,
             prompt_embeds,
-            C2W=C2W, fxfycxcy=fxfycxcy,
+            plucker=plucker,
         )
         pred_x0 = self.diffusion._convert_flow_pred_to_x0(model_outputs, noisy_inputs, timesteps).to(dtype)
 
