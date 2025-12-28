@@ -589,7 +589,7 @@ class Wan(nn.Module):
                         pred_x0 = self.diffusion._convert_flow_pred_to_x0(model_outputs, this_chunk_latents, timesteps)
                         if i < len(self.diffusion.scheduler.timesteps) - 1:
                             next_timesteps = self.diffusion.scheduler.timesteps[i + 1] * torch.ones_like(timesteps)
-                            if cond_latents is not None:
+                            if chunk_idx == 0 and cond_latents is not None:
                                 next_timesteps = torch.cat([torch.zeros_like(next_timesteps[:, :1]), next_timesteps[:, 1:]], dim=1)
 
                             this_chunk_latents = self.diffusion.scheduler.add_noise(
