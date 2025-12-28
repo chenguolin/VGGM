@@ -750,6 +750,8 @@ class Wan(nn.Module):
             timesteps,
             prompt_embeds,
             plucker=plucker,
+            #
+            clean_x=target_latents if self.opt.use_teacher_forcing else None,
         )
         pred_x0 = self.diffusion._convert_flow_pred_to_x0(model_outputs, noisy_inputs, timesteps).to(dtype)
 
