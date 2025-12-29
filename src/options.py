@@ -192,10 +192,11 @@ opt_dict["wan2.1_t2v_1.3b_i2v"] = Options(
 opt_dict["wan2.1_t2v_1.3b_i2v_causal"] = Options(
     first_latent_cond=True,
     input_plucker=True,
-    name_lr_mult="diffusion.model",
     #
     is_causal=True,
     use_teacher_forcing=True,
+    #
+    generator_path=f"{ROOT}/projects/VGGM/.pth",
 )
 
 # Self-Forcing reproduction
