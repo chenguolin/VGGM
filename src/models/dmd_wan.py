@@ -440,6 +440,9 @@ class DMD_Wan(Wan):
         )
 
         gradient_mask = None  # TODO: handle generating long videos
+        if self.opt.first_latent_cond:
+            gradient_mask = torch.ones_like(pred_x0, dtype=torch.bool)
+            gradient_mask[:, :, 0:1, :, :] = False  # do not compute gradient on the first latent frame
 
         return pred_x0, gradient_mask
 
