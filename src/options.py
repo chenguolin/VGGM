@@ -85,6 +85,7 @@ class Options:
     real_guidance_scale: float = 4.
     dmd_loss_weight: float = 1.
         ## Self-forcing
+    self_forcing: bool = True
     denoising_step_list: Tuple[int, ...] = (1000, 750, 500, 250)
     warp_denoising_step: bool = True
     last_step_only: bool = False

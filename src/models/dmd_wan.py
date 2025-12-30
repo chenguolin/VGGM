@@ -173,6 +173,8 @@ class DMD_Wan(Wan):
                     negative_prompt_embeds,
                     cond_latents,
                     plucker,
+                    #
+                    clean_latents=latents,
                 )
             outputs["generator_loss"] = generator_loss
             outputs["dmd_grad_norm"] = dmd_grad_norm
@@ -185,6 +187,8 @@ class DMD_Wan(Wan):
                 prompt_embeds,
                 cond_latents,
                 plucker,
+                #
+                clean_latents=latents,
             )
 
         outputs["loss"] = critic_loss + self.opt.dmd_loss_weight * generator_loss
@@ -204,6 +208,8 @@ class DMD_Wan(Wan):
         prompt_embeds: Tensor,
         cond_latents: Optional[Tensor] = None,
         plucker: Optional[Tensor] = None,
+        #
+        clean_latents: Optional[Tensor] = None,
     ):
         """
         Generate image/videos from noise and train the critic with generated samples.
@@ -221,6 +227,8 @@ class DMD_Wan(Wan):
                 prompt_embeds,
                 cond_latents,
                 plucker,
+                #
+                clean_latents,
             )
 
         # Step 2: Compute the fake prediction
@@ -267,6 +275,8 @@ class DMD_Wan(Wan):
         negative_prompt_embeds: Tensor,
         cond_latents: Optional[Tensor] = None,
         plucker: Optional[Tensor] = None,
+        #
+        clean_latents: Optional[Tensor] = None,
     ):
         """
         Generate image/videos from noise and compute the DMD loss.
@@ -280,6 +290,8 @@ class DMD_Wan(Wan):
             prompt_embeds,
             cond_latents,
             plucker,
+            #
+            clean_latents,
         )
 
         # Step 2: Compute the DMD loss
@@ -425,6 +437,8 @@ class DMD_Wan(Wan):
         prompt_embeds: Tensor,
         cond_latents: Optional[Tensor] = None,
         plucker: Optional[Tensor] = None,
+        #
+        clean_latents: Optional[Tensor] = None,
     ):
         """
         Optionally simulate the generator's input from noise using backward simulation
@@ -432,12 +446,50 @@ class DMD_Wan(Wan):
         """
         # TODO: handle generating long videos
 
-        pred_x0 = self._consistency_backward_simulation(
-            noises,
-            prompt_embeds,
-            cond_latents,
-            plucker,
-        )
+        if self.opt.self_forcing:
+            pred_x0 = self._consistency_backward_simulation(
+                noises,
+                prompt_embeds,
+                cond_latents,
+                plucker,
+            )
+        else:
+            assert clean_latents is not None
+
+            B, f = noises.shape[0], noises.shape[2]
+            device, dtype = noises.device, noises.dtype
+
+            denoising_step_list = torch.tensor(self.opt.denoising_step_list, dtype=torch.long)
+            if self.opt.warp_denoising_step:
+                timesteps = torch.cat((self.diffusion.scheduler.timesteps.cpu(), torch.tensor([0], dtype=torch.float32)))
+                denoising_step_list = timesteps[self.opt.num_train_timesteps - denoising_step_list]
+
+            if not self.opt.is_causal:
+                timesteps_id = torch.randint(0, len(denoising_step_list), (1,))  # (1,); batch share the same timestep for simpler time scheduler
+                timesteps_id = timesteps_id.unsqueeze(1).repeat(B, f)  # (B, f)
+            else:  # teacher / diffusion forcing
+                assert f % self.opt.chunk_size == 0
+                num_chunks = f // self.opt.chunk_size
+
+                timesteps_id = torch.randint(0, len(denoising_step_list), (num_chunks,))  # (num_chunks,); each chunk in different noise level
+                timesteps_id = timesteps_id.repeat_interleave(self.opt.chunk_size, dim=0).repeat(B, 1)  # (B, f); batch share the same timestep for simpler time scheduler
+            timesteps = denoising_step_list[timesteps_id].to(dtype=dtype, device=device)
+            if cond_latents is not None and self.opt.teacher_first_latent_cond:
+                timesteps = torch.cat([torch.zeros_like(timesteps[:, :1]), timesteps[:, 1:]], dim=1)
+
+            noisy_latents = self.diffusion.scheduler.add_noise(
+                clean_latents.transpose(1, 2).flatten(0, 1),  # (B*f, D, h, w)
+                noises.transpose(1, 2).flatten(0, 1),        # (B*f, D, h, w)
+                timesteps.flatten(0, 1),                 # (B*f,)
+            ).unflatten(0, (B, f)).transpose(1, 2).to(dtype)  # (B, D, f, h, w)
+
+            model_outputs = self.diffusion.model(
+                noisy_latents,
+                timesteps,
+                prompt_embeds,
+                plucker=plucker,
+            )
+            pred_x0 = self.diffusion._convert_flow_pred_to_x0(model_outputs, noisy_latents, timesteps)
 
         gradient_mask = None  # TODO: handle generating long videos
         if self.opt.first_latent_cond:
