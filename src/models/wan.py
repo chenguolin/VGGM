@@ -711,7 +711,7 @@ class Wan(nn.Module):
 
         noisy_latents = data["noisy_latents"].to(dtype)  # (B, T+1, C, f, h, w)
         prompt_embeds = data["prompt_embeds"].to(dtype)  # (B, N, D')
-        if "cond_latents" in data:
+        if self.opt.first_latent_cond and "cond_latents" in data:
             cond_latents = data["cond_latents"].to(dtype)  # (B, C, 1, h, w)
         else:
             cond_latents = None
