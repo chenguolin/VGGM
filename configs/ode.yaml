@@ -24,7 +24,7 @@ train:
   save_freq: 2000
   eval_freq_epoch: 50
   save_freq_epoch: 100
-  use_ema: false
+  use_ema: true
   ema_kwargs:
     decay: 0.9999
     use_ema_warmup: true
