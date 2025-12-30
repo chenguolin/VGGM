@@ -38,6 +38,7 @@ class Options:
     ] = "canonical"
     camera_norm_unit: float = 1.
     root: str = f"{ROOT}/data"
+    ode_pairs_dir: Optional[str] = None
         ## Post initialization (`__post_init__`)
     dataset_dir_train: str = None
     dataset_dir_test: str = None

@@ -253,7 +253,7 @@ def main():
     if args.allow_tf32:
         torch.backends.cuda.matmul.allow_tf32 = True
 
-    train_dataset = OdepairDataset(f"{ROOT}/data/ode_pairs_t2v")
+    train_dataset = OdepairDataset(opt.ode_pairs_dir)
     train_loader = DataLoader(
         train_dataset,
         batch_size=configs["train"]["batch_size_per_gpu"],
