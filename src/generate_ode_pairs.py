@@ -24,14 +24,16 @@ def main():
     torch.backends.cudnn.allow_tf32 = True
     accelerate.utils.set_seed(0)
 
-    os.makedirs(f"{ROOT}/data/ode_pairs_t2v", exist_ok=True)
-
     opt = opt_dict["wan2.1_t2v_1.3b"]
+    opt.first_latent_cond = False
     opt.generator_path = f"{ROOT}/projects/VGGM/.pth"
 
     opt.input_res = (288, 512)
     opt.num_inference_steps = 48
     opt.cfg_scale = (5.,)
+
+    dir_name = "ode_pairs_t2v" if not opt.first_latent_cond else "ode_pairs_i2v"
+    os.makedirs(f"{ROOT}/data/{dir_name}", exist_ok=True)
 
     accelerator = Accelerator()
 
@@ -138,7 +140,7 @@ def main():
                 }
 
             idx = num_iters * B * accelerator.num_processes + accelerator.process_index * B + bi
-            torch.save(ode_pairs, f"{ROOT}/data/ode_pairs_t2v/temp_{idx:06d}.pt")
+            torch.save(ode_pairs, f"{ROOT}/data/{dir_name}/{idx:06d}.pt")
 
         accelerator.wait_for_everyone()
         if num_iters == NUM_ITERS-1:
