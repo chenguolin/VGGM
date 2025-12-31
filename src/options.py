@@ -225,6 +225,7 @@ opt_dict["wan2.1_t2v_1.3b_ode"] = Options(
     rope_outside=False,
     #
     generator_path=f"{ROOT}/projects/VGGM/.pth",
+    ode_pairs_dir=f"{ROOT}/data/ode_pairs_t2v",
     #
     num_inference_steps=4,
     deterministic_inference=True,
@@ -232,6 +233,7 @@ opt_dict["wan2.1_t2v_1.3b_ode"] = Options(
 
 # Self-Forcing DMD
 opt_dict["wan2.1_t2v_1.3b_dmd"] = Options(
+    use_vidprom=False,
     first_latent_cond=False,
     input_plucker=True,
     #
