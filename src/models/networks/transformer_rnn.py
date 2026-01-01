@@ -3,8 +3,8 @@ from torch import Tensor
 
 import torch
 from torch import nn
+from torch.nn.functional import scaled_dot_product_attention
 from einops import rearrange
-from flash_attn import flash_attn_func
 
 
 class TransformerRNN(nn.Module):
@@ -19,6 +19,7 @@ class TransformerRNN(nn.Module):
 
         self.proj_q = nn.Linear(q_dim, dim)
         self.init_state = nn.Embedding(num_state_tokens, dim)
+        self.init_state.weight.data.normal_(0., 0.02)
 
         self.state, self.num_state_tokens = None, num_state_tokens
 
@@ -30,17 +31,27 @@ class TransformerRNN(nn.Module):
         state = self.init_state(torch.arange(self.num_state_tokens, device=context.device))
         return state.expand(B, -1, -1)
 
-    def forward(self, q: Tensor):
+    def read(self, q: Tensor):
         x = self.proj_q(q)
 
         if self.state is None:
             self.state = self.get_initial_state(q)
 
-        for w, r in zip(self.write_layers, self.read_layers):
-            self.state = w(self.state, x)
+        for r in self.read_layers:
             x = r(x, self.state)
 
         return x
+
+    def write(self, q: Tensor):
+        x = self.proj_q(q)
+
+        if self.state is None:
+            self.state = self.get_initial_state(q)
+
+        for w in self.write_layers:
+            self.state = w(self.state, x)
+
+        return self.state
 
 
 class Block(nn.Module):
@@ -94,9 +105,9 @@ class CrossAttention(nn.Module):
             nn.init.zeros_(self.to_o.bias)
 
     def forward(self, x: Tensor, context: Tensor) -> Tensor:
-        q = rearrange(self.to_q(x), "b n (h hd) -> b n h hd", h=self.num_heads)
-        k = rearrange(self.to_k(context), "b m (h hd) -> b m h hd", h=self.num_heads)
-        v = rearrange(self.to_v(context), "b m (h hd) -> b m h hd", h=self.num_heads)
+        q = rearrange(self.to_q(x), "b n (h hd) -> b h n hd", h=self.num_heads)
+        k = rearrange(self.to_k(context), "b m (h hd) -> b h m hd", h=self.num_heads)
+        v = rearrange(self.to_v(context), "b m (h hd) -> b h m hd", h=self.num_heads)
 
-        o = rearrange(flash_attn_func(q, k, v), "b n h hd -> b n (h hd)")
+        o = rearrange(scaled_dot_product_attention(q, k, v), "b h n hd -> b n (h hd)").contiguous()
         return self.to_o(o)

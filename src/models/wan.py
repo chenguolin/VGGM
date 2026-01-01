@@ -21,6 +21,7 @@ from src.models.networks import (
     WanVAEWrapper,
     WanDiffusionWrapper,
     WanDiffusionDA3Wrapper,
+    TransformerRNN,
 )
 from src.models.losses import XYZLoss, DepthLoss, CameraLoss
 from src.utils import convert_to_buffer, plucker_ray, colorize_depth
@@ -115,6 +116,16 @@ class Wan(nn.Module):
                 self.diffusion.load_state_dict(state_dict["generator"], strict=False)
             else:
                 self.diffusion.load_state_dict(state_dict, strict=False)
+
+        if opt.memory_num_tokens > 0:
+            assert opt.num_memory_blocks > 0
+            self.memory = TransformerRNN(
+                q_dim=self.diffusion.model.in_dim,  # same as `self.diffusion.model.out_dim`
+                dim=opt.memory_dim,
+                num_heads=opt.memory_num_heads,
+                num_state_tokens=opt.memory_num_tokens,
+                num_blocks=opt.memory_num_blocks,
+            )
 
         # Add LoRA in the diffusion model, will freeze all parameters except LoRA layers
         if opt.use_lora_in_wan:
