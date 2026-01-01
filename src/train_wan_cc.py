@@ -482,6 +482,7 @@ def main():
                 loss = outputs["loss"]
 
                 # Some extra outputs for logging
+                diffusion_loss = outputs["diffusion_loss"] if "diffusion_loss" in outputs else None
                 critic_loss = outputs["critic_loss"] if "critic_loss" in outputs else None
                 generator_loss = outputs["generator_loss"] if "generator_loss" in outputs else None
                 dmd_grad_norm = outputs["dmd_grad_norm"] if "dmd_grad_norm" in outputs else None
@@ -505,6 +506,8 @@ def main():
                 # Gather the losses across all processes for logging (if we use distributed training)
                 loss = accelerator.gather(loss.detach()).mean()
 
+                if diffusion_loss is not None:
+                    diffusion_loss = accelerator.gather(diffusion_loss.detach()).mean()
                 if critic_loss is not None:
                     critic_loss = accelerator.gather(critic_loss.detach()).mean()
                 if generator_loss is not None:
@@ -529,6 +532,8 @@ def main():
                         ema_states.step(model.parameters() if not opt.use_dmd else model.diffusion.parameters())
                     logs.update({"ema": ema_states.cur_decay_value})
 
+                if diffusion_loss is not None:
+                    logs.update({"diffusion": diffusion_loss.item()})
                 if critic_loss is not None:
                     logs.update({"critic": critic_loss.item()})
                 if generator_loss is not None:
@@ -562,6 +567,10 @@ def main():
                         if args.use_ema:
                             wandb.log({
                                 "training/ema": ema_states.cur_decay_value
+                            }, step=global_update_step)
+                        if diffusion_loss is not None:
+                            wandb.log({
+                                "training/diffusion_loss": diffusion_loss.item()
                             }, step=global_update_step)
                         if critic_loss is not None:
                             wandb.log({
