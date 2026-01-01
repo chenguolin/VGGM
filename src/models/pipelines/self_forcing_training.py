@@ -26,6 +26,7 @@ class SelfForcingTrainingPipeline:
 
         self.kv_cache_pos = None
         self.crossattn_cache_pos = None
+        self.kv_cache_pos_da3 = None
 
     def generate_and_sync_list(self, num_chunks: int, num_denoising_steps: int, device: torch.device):
         rank = dist.get_rank() if dist.is_initialized() else 0
@@ -191,6 +192,21 @@ class SelfForcingTrainingPipeline:
                 "local_end_index": torch.tensor([0], dtype=torch.long, device=device),
             })
         self.kv_cache_pos = kv_cache_pos  # always store the clean cache
+
+        if self.opt.load_da3:
+            num_da3_blocks = len(self.diffusion.da3_model.backbone.pretrained.blocks)
+            num_heads_da3 = self.diffusion.da3_model.backbone.pretrained.num_heads
+            head_dim_da3 = self.diffusion.da3_model.backbone.pretrained.embed_dim // num_heads_da3
+
+            kv_cache_pos_da3 = []
+            for _ in range(num_da3_blocks):
+                kv_cache_pos_da3.append({
+                    "k": torch.zeros((batch_size, num_heads_da3, self.opt.da3_max_kvcache_attention_size, head_dim_da3), dtype=dtype, device=device),
+                    "v": torch.zeros((batch_size, num_heads_da3, self.opt.da3_max_kvcache_attention_size, head_dim_da3), dtype=dtype, device=device),
+                    "global_end_index": torch.tensor([0], dtype=torch.long, device=device),
+                    "local_end_index": torch.tensor([0], dtype=torch.long, device=device),
+                })
+            self.kv_cache_pos_da3 = kv_cache_pos_da3  # always store the clean cache
 
     def _initialize_crossattn_cache(self, batch_size: int, dtype: torch.dtype, device: torch.device):
         """
