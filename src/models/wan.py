@@ -236,6 +236,8 @@ class Wan(nn.Module):
             timesteps_id = torch.randint(min_t, max_t, (num_chunks,))  # (num_chunks,); each chunk in different noise level
             timesteps_id = timesteps_id.repeat_interleave(self.opt.chunk_size, dim=0).repeat(B, 1)  # (B, f); batch share the same timestep for simpler time scheduler
         timesteps = self.diffusion.scheduler.timesteps[timesteps_id].to(dtype=dtype, device=device)
+        if self.opt.no_noise_for_da3:  # to train da3 in clean latents
+            timesteps = torch.zeros_like(timesteps)
         if cond_latents is not None:
             timesteps = torch.cat([torch.zeros_like(timesteps[:, :1]), timesteps[:, 1:]], dim=1)
 
@@ -290,8 +292,11 @@ class Wan(nn.Module):
             depth_loss = self.depth_loss_fn(da3_outputs["depth"], gt_depths, confs=da3_outputs["depth_conf"])  # (B, f)
             ray_loss = self.ray_loss_fn(da3_outputs["ray"], gt_raymaps, confs=da3_outputs["ray_conf"])  # (B, f)
             camera_loss = self.camera_loss_fn(da3_outputs["pose_enc"], gt_pose_enc)  # (B, f)
-            da3_loss = self.diffusion.scheduler.training_weight(timesteps.flatten(0, 1)) * \
-                (depth_loss + ray_loss + camera_loss).flatten(0, 1)  # (B*f,)
+            if self.opt.no_noise_for_da3:
+                da3_loss = (depth_loss + ray_loss + camera_loss).flatten(0, 1)  # (B*f,)
+            else:  # weighted by noise level
+                da3_loss = self.diffusion.scheduler.training_weight(timesteps.flatten(0, 1)) * \
+                    (depth_loss + ray_loss + camera_loss).flatten(0, 1)  # (B*f,)
             outputs["depth_loss"] = depth_loss.mean()
             outputs["ray_loss"] = ray_loss.mean()
             outputs["camera_loss"] = camera_loss.mean()
