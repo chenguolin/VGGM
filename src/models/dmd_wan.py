@@ -116,10 +116,6 @@ class DMD_Wan(Wan):
                 if not _flag:
                     param.requires_grad_(False)
 
-        # Freeze the plucker embedding layers
-        self.diffusion.plucker_embed.requires_grad_(False)
-        self.fake_score.plucker_embed.requires_grad_(False)
-
     def state_dict(self, destination=None, prefix="", keep_vars=False):
         state_dict = super().state_dict(destination, prefix, keep_vars)
         if self.text_encoder is not None and "text_encoder" in state_dict:
@@ -131,7 +127,7 @@ class DMD_Wan(Wan):
     def compute_loss(self, data: Dict[str, Any], dtype: torch.dtype = torch.float32, train_generator: bool = True, is_eval: bool = False, vae: Optional[WanVAEWrapper] = None):
         outputs = {}
 
-        if "image" in data and (self.opt.first_latent_cond or self.opt.teacher_first_latent_cond):
+        if "image" in data and (not self.opt.self_forcing or self.opt.first_latent_cond or self.opt.teacher_first_latent_cond):
             images = data["image"].to(dtype)  # (B, F, 3, H, W)
             (B, F, _, H, W), device = images.shape, images.device
         else:
@@ -153,7 +149,7 @@ class DMD_Wan(Wan):
             raise NotImplementedError
 
         # VAE
-        if "image" in data and self.prompt_list is None and (self.opt.first_latent_cond or self.opt.teacher_first_latent_cond):
+        if "image" in data and self.prompt_list is None and (not self.opt.self_forcing or self.opt.first_latent_cond or self.opt.teacher_first_latent_cond):
             with torch.no_grad(), torch.autocast(device_type="cuda", dtype=dtype):
                 latents = self.encode(images * 2. - 1., vae)  # (B, D, f, h, w)
                 if self.opt.first_latent_cond:
