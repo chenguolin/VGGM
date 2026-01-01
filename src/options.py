@@ -44,12 +44,12 @@ class Options:
     dataset_dir_test: str = None
 
     # DA3
+    load_da3: bool = False
     da3_model_name: str = "da3-large-1.1"
+    only_train_da3: bool = False
+    da3_use_bicrossattn: bool = False
     da3_chunk_size: int = 8  # DPT head chunk size, not for causality
     da3_use_ray_pose: bool = False
-    da3_use_bicrossattn: bool = True
-    load_da3: bool = False
-    only_train_da3: bool = False
 
     # VAE
     vae_path: str = f"{ROOT}/.cache/huggingface/hub/Wan-AI/Wan2.1-T2V-1.3B/Wan2.1_VAE.pth"
@@ -196,8 +196,8 @@ opt_dict["wan2.1_t2v_1.3b_i2v"] = Options(
     input_plucker=True,
     name_lr_mult="diffusion.model",
 )
-opt_dict["wan2.1_t2v_1.3b_i2v_causal"] = Options(
-    first_latent_cond=True,
+opt_dict["wan2.1_t2v_1.3b_causal"] = Options(
+    first_latent_cond=False,
     input_plucker=True,
     #
     is_causal=True,
