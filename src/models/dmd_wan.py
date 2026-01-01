@@ -106,6 +106,10 @@ class DMD_Wan(Wan):
                 if not _flag:
                     param.requires_grad_(False)
 
+        # Freeze the plucker embedding layers
+        self.diffusion.plucker_embed.requires_grad_(False)
+        self.fake_score.plucker_embed.requires_grad_(False)
+
     def state_dict(self, destination=None, prefix="", keep_vars=False):
         state_dict = super().state_dict(destination, prefix, keep_vars)
         if self.text_encoder is not None and "text_encoder" in state_dict:
@@ -483,13 +487,13 @@ class DMD_Wan(Wan):
                 timesteps.flatten(0, 1),                 # (B*f,)
             ).unflatten(0, (B, f)).transpose(1, 2).to(dtype)  # (B, D, f, h, w)
 
-            model_outputs = self.diffusion.model(
+            model_outputs = self.diffusion(
                 noisy_latents,
                 timesteps,
                 prompt_embeds,
                 plucker=plucker,
             )
-            pred_x0 = self.diffusion._convert_flow_pred_to_x0(model_outputs, noisy_latents, timesteps)
+            pred_x0 = self.diffusion._convert_flow_pred_to_x0(model_outputs, noisy_latents, timesteps).to(dtype)
 
         gradient_mask = None  # TODO: handle generating long videos
         if self.opt.first_latent_cond:
