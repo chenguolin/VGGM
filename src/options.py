@@ -37,6 +37,7 @@ class Options:
         "canonical",
     ] = "canonical"
     camera_norm_unit: float = 1.
+        ## Path
     root: str = f"{ROOT}/data"
     ode_pairs_dir: Optional[str] = None
         ## Post initialization (`__post_init__`)
