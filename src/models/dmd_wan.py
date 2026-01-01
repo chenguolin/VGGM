@@ -32,6 +32,11 @@ class DMD_Wan(Wan):
             #
             opt.teacher_input_plucker,
             #
+            0,  # hard-coded `memory_num_tokens`
+            opt.memory_num_blocks,
+            opt.memory_dim,
+            opt.memory_num_heads,
+            #
             opt.use_gradient_checkpointing,
             opt.use_gradient_checkpointing_offload,
             #
@@ -63,6 +68,11 @@ class DMD_Wan(Wan):
             True,  # hard-coded `extra_one_step`
             #
             opt.teacher_input_plucker,
+            #
+            0,  # hard-coded `memory_num_tokens`
+            opt.memory_num_blocks,
+            opt.memory_dim,
+            opt.memory_num_heads,
             #
             opt.use_gradient_checkpointing,
             opt.use_gradient_checkpointing_offload,
@@ -201,7 +211,7 @@ class DMD_Wan(Wan):
         if is_eval:
             outputs["images_predx0"] = (self.decode_latent(pred_x0, vae).clamp(-1., 1.) + 1.) / 2.
             if "image" in data:
-                outputs["images_recon"] = (self.decode_latent(latents, vae).clamp(-1., 1.) + 1.) / 2.
+                outputs["images_input"] = data["image"]
 
         return outputs
 

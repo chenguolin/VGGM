@@ -19,6 +19,7 @@ from .wan_modules.causal_model import CausalWanModel
 from .scheduler import FlowMatchScheduler
 
 from .wan_modules.model import WanRMSNorm, sinusoidal_embedding_1d, attention
+from .transformer_rnn import TransformerRNN
 from src.utils import zero_init_module, plucker_ray
 
 from depth_anything_3.api import DepthAnything3
@@ -139,6 +140,11 @@ class WanDiffusionWrapper(nn.Module):
         #
         input_plucker: bool = False,
         #
+        memory_num_tokens: int = 0,
+        memory_num_blocks: int = 8,
+        memory_dim: int = 1024,
+        memory_num_heads: int = 8,
+        #
         use_gradient_checkpointing: bool = True,
         use_gradient_checkpointing_offload: bool = False,
         #
@@ -170,6 +176,17 @@ class WanDiffusionWrapper(nn.Module):
         if input_plucker:
             self.plucker_embed = nn.Conv2d(6, self.model.dim, kernel_size=16, stride=16)  # `16`: hard-coded for Wan2.1
             zero_init_module(self.plucker_embed)
+
+        # (Optional) Memory module
+        if memory_num_tokens > 0:
+            self.memory = TransformerRNN(
+                q_dim=self.model.in_dim,  # same as `self.model.out_dim`
+                dim=memory_dim,
+                num_heads=memory_num_heads,
+                num_state_tokens=memory_num_tokens,
+                num_blocks=memory_num_blocks,
+            )
+            zero_init_module(self.memory.proj_o)
 
         self.scheduler = FlowMatchScheduler(
             num_train_timesteps=num_train_timesteps,
@@ -312,6 +329,11 @@ class WanDiffusionDA3Wrapper(nn.Module):
         #
         input_plucker: bool = False,
         #
+        memory_num_tokens: int = 0,
+        memory_num_blocks: int = 8,
+        memory_dim: int = 1024,
+        memory_num_heads: int = 8,
+        #
         use_gradient_checkpointing: bool = True,
         use_gradient_checkpointing_offload: bool = False,
         #
@@ -348,6 +370,17 @@ class WanDiffusionDA3Wrapper(nn.Module):
         if input_plucker:
             self.plucker_embed = nn.Conv2d(6, self.model.dim, kernel_size=16, stride=16)  # `16`: hard-coded for Wan2.1
             zero_init_module(self.plucker_embed)
+
+        # (Optional) Memory module
+        if memory_num_tokens > 0:
+            self.memory = TransformerRNN(
+                q_dim=self.model.in_dim,  # same as `self.model.out_dim`
+                dim=memory_dim,
+                num_heads=memory_num_heads,
+                num_state_tokens=memory_num_tokens,
+                num_blocks=memory_num_blocks,
+            )
+            zero_init_module(self.memory.proj_o)
 
         self.scheduler = FlowMatchScheduler(
             num_train_timesteps=num_train_timesteps,

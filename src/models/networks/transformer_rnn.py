@@ -26,6 +26,8 @@ class TransformerRNN(nn.Module):
         self.write_layers = nn.ModuleList([Block(dim, num_heads) for _ in range(num_blocks)])
         self.read_layers = nn.ModuleList([Block(dim, num_heads) for _ in range(num_blocks)])
 
+        self.proj_o = nn.Linear(dim, q_dim)
+
     def get_initial_state(self, context: Tensor):
         B = context.shape[0]
         state = self.init_state(torch.arange(self.num_state_tokens, device=context.device))
@@ -40,7 +42,7 @@ class TransformerRNN(nn.Module):
         for r in self.read_layers:
             x = r(x, self.state)
 
-        return x
+        return self.proj_o(x)
 
     def write(self, q: Tensor):
         x = self.proj_q(q)

@@ -106,18 +106,20 @@ class SelfForcingTrainingPipeline:
                         if self.opt.load_da3:
                             model_outputs, da3_outputs = model_outputs
 
+                        next_timesteps = self.denoising_step_list[i + 1] * torch.ones_like(timesteps)
+                        if chunk_idx == 0 and cond_latents is not None:
+                            next_timesteps = torch.cat([torch.zeros_like(next_timesteps[:, :1]), next_timesteps[:, 1:]], dim=1)
+
                         if self.opt.deterministic_inference:
-                            this_chunk_latents = self.diffusion.scheduler.step(
-                                model_outputs.transpose(1, 2).flatten(0, 1),
-                                timesteps.flatten(0, 1),
-                                this_chunk_latents.transpose(1, 2).flatten(0, 1),
+                            this_chunk_latents = (
+                                this_chunk_latents.transpose(1, 2).flatten(0, 1) +
+                                (
+                                    model_outputs.transpose(1, 2).flatten(0, 1) *
+                                    (next_timesteps - timesteps).flatten(0, 1).reshape(-1, 1, 1, 1) / self.opt.num_train_timesteps
+                                )
                             ).unflatten(0, (B, self.opt.chunk_size)).transpose(1, 2).to(dtype)  # (B, D, f_chunk, h, w)
                         else:
                             pred_x0 = self.diffusion._convert_flow_pred_to_x0(model_outputs, this_chunk_latents, timesteps).to(dtype)
-                            next_timesteps = self.denoising_step_list[i + 1] * torch.ones_like(timesteps)
-                            if chunk_idx == 0 and cond_latents is not None:
-                                next_timesteps = torch.cat([torch.zeros_like(next_timesteps[:, :1]), next_timesteps[:, 1:]], dim=1)
-
                             this_chunk_latents = self.diffusion.scheduler.add_noise(
                                 pred_x0.transpose(1, 2).flatten(0, 1),
                                 torch.randn_like(pred_x0.transpose(1, 2).flatten(0, 1)),
@@ -138,14 +140,7 @@ class SelfForcingTrainingPipeline:
                     if self.opt.load_da3:
                         model_outputs, da3_outputs = model_outputs
 
-                    if self.opt.deterministic_inference:
-                        pred_x0 = self.diffusion.scheduler.step(
-                            model_outputs.transpose(1, 2).flatten(0, 1),
-                            timesteps.flatten(0, 1),
-                            this_chunk_latents.transpose(1, 2).flatten(0, 1),
-                        ).unflatten(0, (B, self.opt.chunk_size)).transpose(1, 2).to(dtype)  # (B, D, f_chunk, h, w)
-                    else:
-                        pred_x0 = self.diffusion._convert_flow_pred_to_x0(model_outputs, this_chunk_latents, timesteps).to(dtype)
+                    pred_x0 = self.diffusion._convert_flow_pred_to_x0(model_outputs, this_chunk_latents, timesteps).to(dtype)
                     break
 
             # Record this chunk generated latents

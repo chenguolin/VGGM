@@ -45,7 +45,7 @@ class Options:
 
     # DA3
     da3_model_name: str = "da3-large-1.1"
-    da3_chunk_size: int = 8
+    da3_chunk_size: int = 8  # DPT head chunk size, not for causality
     da3_use_ray_pose: bool = False
     da3_use_bicrossattn: bool = True
     load_da3: bool = False
