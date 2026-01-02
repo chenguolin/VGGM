@@ -457,7 +457,7 @@ class Wan(nn.Module):
                     outputs[f"lpips_{cfg_scale}"] = rearrange(outputs[f"lpips_{cfg_scale}"], "(b f) c h w -> b f c h w", b=B).mean(dim=(1, 2, 3, 4))  # (B,)
 
             # (Optional) DA3 evaluation
-            if self.opt.load_da3 and self.prompt_list is None:
+            if self.opt.load_da3:
                 assert da3_outputs is not None
 
                 if depths is not None:
@@ -702,7 +702,7 @@ class Wan(nn.Module):
                     outputs[f"lpips_{cfg_scale}"] = rearrange(outputs[f"lpips_{cfg_scale}"], "(b f) c h w -> b f c h w", b=B).mean(dim=(1, 2, 3, 4))  # (B,)
 
             # (Optional) DA3 evaluation
-            if self.opt.load_da3 and self.prompt_list is None:
+            if self.opt.load_da3:
                 assert da3_outputs is not None
                 da3_outputs = {
                     k: torch.cat([all_da3_outputs[i][k] for i in range(num_chunks)], dim=1)
