@@ -441,7 +441,7 @@ class Wan(nn.Module):
             outputs[f"images_pred_{cfg_scale}"] = pred_images
 
             # Evaluation metrics: PSNR, SSIM, LPIPS
-            if "image" in data and self.prompt_list is None:
+            if "image" in data:
                 outputs[f"psnr_{cfg_scale}"] = -10. * torch.log10(torch.mean((images - pred_images) ** 2, dim=(1, 2, 3, 4)))  # (B,)
                 outputs[f"ssim_{cfg_scale}"] = SSIM(
                     rearrange(pred_images, "b f c h w -> (b f) c h w"),
@@ -686,7 +686,7 @@ class Wan(nn.Module):
             outputs[f"images_pred_{cfg_scale}"] = pred_images
 
             # Evaluation metrics: PSNR, SSIM, LPIPS
-            if "image" in data and self.prompt_list is None:
+            if "image" in data:
                 outputs[f"psnr_{cfg_scale}"] = -10. * torch.log10(torch.mean((images - pred_images) ** 2, dim=(1, 2, 3, 4)))  # (B,)
                 outputs[f"ssim_{cfg_scale}"] = SSIM(
                     rearrange(pred_images, "b f c h w -> (b f) c h w"),

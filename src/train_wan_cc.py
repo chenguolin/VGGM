@@ -651,33 +651,27 @@ def main():
                             val_outputs = model(val_batch, func_name="evaluate", vae=vae)
 
                             val_logs = {}
-                            if "image" in val_batch and not opt.use_vidprom:
-                                for cfg_scale in opt.cfg_scale:
+                            for cfg_scale in opt.cfg_scale:
+                                if f"psnr_{cfg_scale}" in val_outputs:
                                     val_psnr = val_outputs[f"psnr_{cfg_scale}"]
-                                    val_ssim = val_outputs[f"ssim_{cfg_scale}"]
-
                                     val_psnr = accelerator.gather_for_metrics(val_psnr).mean()
-                                    val_ssim = accelerator.gather_for_metrics(val_ssim).mean()
-
-                                    val_logs.update({
-                                        f"psnr_{cfg_scale}": val_psnr.item(),
-                                        f"ssim_{cfg_scale}": val_ssim.item()
-                                    })
                                     all_val_matrics.setdefault(f"psnr_{cfg_scale}", []).append(val_psnr)
+                                if f"ssim_{cfg_scale}" in val_outputs:
+                                    val_ssim = val_outputs[f"ssim_{cfg_scale}"]
+                                    val_ssim = accelerator.gather_for_metrics(val_ssim).mean()
                                     all_val_matrics.setdefault(f"ssim_{cfg_scale}", []).append(val_ssim)
-
-                                    if f"depth_{cfg_scale}" in val_outputs:
-                                        val_depth = val_outputs[f"depth_{cfg_scale}"]
-                                        val_depth = accelerator.gather_for_metrics(val_depth).mean()
-                                        all_val_matrics.setdefault(f"depth_{cfg_scale}", []).append(val_depth)
-                                    if f"ray_{cfg_scale}" in val_outputs:
-                                        val_ray = val_outputs[f"ray_{cfg_scale}"]
-                                        val_ray = accelerator.gather_for_metrics(val_ray).mean()
-                                        all_val_matrics.setdefault(f"ray_{cfg_scale}", []).append(val_ray)
-                                    if f"pose_{cfg_scale}" in val_outputs:
-                                        val_pose = val_outputs[f"pose_{cfg_scale}"]
-                                        val_pose = accelerator.gather_for_metrics(val_pose).mean()
-                                        all_val_matrics.setdefault(f"pose_{cfg_scale}", []).append(val_pose)
+                                if f"depth_{cfg_scale}" in val_outputs:
+                                    val_depth = val_outputs[f"depth_{cfg_scale}"]
+                                    val_depth = accelerator.gather_for_metrics(val_depth).mean()
+                                    all_val_matrics.setdefault(f"depth_{cfg_scale}", []).append(val_depth)
+                                if f"ray_{cfg_scale}" in val_outputs:
+                                    val_ray = val_outputs[f"ray_{cfg_scale}"]
+                                    val_ray = accelerator.gather_for_metrics(val_ray).mean()
+                                    all_val_matrics.setdefault(f"ray_{cfg_scale}", []).append(val_ray)
+                                if f"pose_{cfg_scale}" in val_outputs:
+                                    val_pose = val_outputs[f"pose_{cfg_scale}"]
+                                    val_pose = accelerator.gather_for_metrics(val_pose).mean()
+                                    all_val_matrics.setdefault(f"pose_{cfg_scale}", []).append(val_pose)
 
                             val_progress_bar.set_postfix(**val_logs)
                             val_progress_bar.update(1)
@@ -695,8 +689,8 @@ def main():
                     for k, v in all_val_matrics.items():
                         all_val_matrics[k] = torch.tensor(v).mean()
 
-                    if "image" in val_batch and not opt.use_vidprom:
-                        for cfg_scale in opt.cfg_scale:
+                    for cfg_scale in opt.cfg_scale:
+                        if f"psnr_{cfg_scale}" in val_outputs and f"ssim_{cfg_scale}" in val_outputs:
                             logger.info(
                                 f"Eval [{global_update_step:06d} / {total_updated_steps:06d}] " +
                                 f"psnr_{cfg_scale}: {all_val_matrics[f'psnr_{cfg_scale}'].item():.4f}, " +
@@ -708,24 +702,27 @@ def main():
                         val_outputs = accelerator.gather_for_metrics(val_outputs)
 
                     if accelerator.is_main_process:
-                        if "image" in val_batch and not opt.use_vidprom:
-                            for cfg_scale in opt.cfg_scale:
+                        for cfg_scale in opt.cfg_scale:
+                            if f"psnr_{cfg_scale}" in val_outputs:
                                 wandb.log({
                                     f"validation/psnr_{cfg_scale}": all_val_matrics[f"psnr_{cfg_scale}"].item(),
-                                    f"validation/ssim_{cfg_scale}": all_val_matrics[f"ssim_{cfg_scale}"].item()
                                 }, step=global_update_step)
-                                if f"depth_{cfg_scale}" in val_outputs:
-                                    wandb.log({
-                                        f"validation/depth_{cfg_scale}": all_val_matrics[f"depth_{cfg_scale}"].item()
-                                    }, step=global_update_step)
-                                if f"ray_{cfg_scale}" in val_outputs:
-                                    wandb.log({
-                                        f"validation/ray_{cfg_scale}": all_val_matrics[f"ray_{cfg_scale}"].item()
-                                    }, step=global_update_step)
-                                if f"pose_{cfg_scale}" in val_outputs:
-                                    wandb.log({
-                                        f"validation/pose_{cfg_scale}": all_val_matrics[f"pose_{cfg_scale}"].item()
-                                    }, step=global_update_step)
+                            if f"ssim_{cfg_scale}" in val_outputs:
+                                wandb.log({
+                                    f"validation/ssim_{cfg_scale}": all_val_matrics[f"ssim_{cfg_scale}"].item(),
+                                }, step=global_update_step)
+                            if f"depth_{cfg_scale}" in val_outputs:
+                                wandb.log({
+                                    f"validation/depth_{cfg_scale}": all_val_matrics[f"depth_{cfg_scale}"].item()
+                                }, step=global_update_step)
+                            if f"ray_{cfg_scale}" in val_outputs:
+                                wandb.log({
+                                    f"validation/ray_{cfg_scale}": all_val_matrics[f"ray_{cfg_scale}"].item()
+                                }, step=global_update_step)
+                            if f"pose_{cfg_scale}" in val_outputs:
+                                wandb.log({
+                                    f"validation/pose_{cfg_scale}": all_val_matrics[f"pose_{cfg_scale}"].item()
+                                }, step=global_update_step)
 
                         # Visualization
                         wandb.log({
