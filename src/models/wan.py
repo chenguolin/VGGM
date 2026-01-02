@@ -116,7 +116,7 @@ class Wan(nn.Module):
             if opt.only_train_resdit:
                 self.diffusion.requires_grad_(False)
                 for i, block in enumerate(self.diffusion.model.blocks):
-                    if i >= len(self.model.blocks) - 24:  #  `24`: hard-coded for da3-large
+                    if i >= len(self.diffusion.model.blocks) - 24:  #  `24`: hard-coded for da3-large
                         block.requires_grad_(True)
 
             self.ray_loss_fn, self.depth_loss_fn, self.camera_loss_fn = \

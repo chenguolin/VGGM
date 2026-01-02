@@ -204,11 +204,15 @@ class DMD_Wan(Wan):
             outputs["dmd_grad_norm"] = dmd_grad_norm
 
             if da3_outputs is not None:
-                outputs["depth_loss"] = da3_outputs["depth_loss"]
-                outputs["ray_loss"] = da3_outputs["ray_loss"]
-                outputs["camera_loss"] = da3_outputs["camera_loss"]
-                generator_loss = generator_loss + \
-                    da3_outputs["depth_loss"] + da3_outputs["ray_loss"] + da3_outputs["camera_loss"]
+                if "depth_loss" in da3_outputs:
+                    outputs["depth_loss"] = da3_outputs["depth_loss"]
+                    generator_loss = generator_loss + da3_outputs["depth_loss"]
+                if "ray_loss" in da3_outputs:
+                    outputs["ray_loss"] = da3_outputs["ray_loss"]
+                    generator_loss = generator_loss + da3_outputs["ray_loss"]
+                if "camera_loss" in da3_outputs:
+                    outputs["camera_loss"] = da3_outputs["camera_loss"]
+                    generator_loss = generator_loss + da3_outputs["camera_loss"]
 
         else:
             generator_loss = 0.
@@ -231,7 +235,8 @@ class DMD_Wan(Wan):
             if "image" in data:
                 outputs["images_input"] = data["image"]
             if da3_outputs is not None:
-                outputs["images_pred_depth"] = colorize_depth(1./da3_outputs["depth"], batch_mode=True)
+                if "depth" in da3_outputs:
+                    outputs["images_pred_depth"] = colorize_depth(1./da3_outputs["depth"], batch_mode=True)
 
         return outputs
 
@@ -510,10 +515,8 @@ class DMD_Wan(Wan):
         """
         # TODO: handle generating long videos
 
-        da3_outputs = None
-
         if self.opt.self_forcing:
-            pred_x0 = self._consistency_backward_simulation(
+            pred_x0, da3_outputs = self._consistency_backward_simulation(
                 noises,
                 prompt_embeds,
                 cond_latents,
@@ -555,8 +558,8 @@ class DMD_Wan(Wan):
                 prompt_embeds,
                 plucker=plucker,
             )
-            if self.opt.load_da3:
-                model_outputs, da3_outputs = model_outputs
+            model_outputs, da3_outputs = \
+                model_outputs if self.opt.load_da3 else (model_outputs, None)
             pred_x0 = self.diffusion._convert_flow_pred_to_x0(model_outputs, noisy_latents, timesteps).to(dtype)
 
         gradient_mask = None  # TODO: handle generating long videos

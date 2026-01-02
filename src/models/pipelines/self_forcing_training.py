@@ -73,10 +73,13 @@ class SelfForcingTrainingPipeline:
         exit_flags = self.generate_and_sync_list(num_chunks, len(self.denoising_step_list), device)
 
         # Temporal denoising loop
+        all_da3_outputs = [None] * num_chunks
         for chunk_idx in range(num_chunks):
             this_chunk_latents = noises[:, :, chunk_idx * self.opt.chunk_size:(chunk_idx + 1) * self.opt.chunk_size, ...]
             if self.opt.input_plucker:
                 this_chunk_plucker = plucker[:, chunk_idx * self.opt.chunk_size:(chunk_idx + 1) * self.opt.chunk_size, ...]
+            else:
+                this_chunk_plucker = None
 
             # Spatial denoising loop
             for i, timestep in enumerate(self.denoising_step_list):
@@ -102,9 +105,12 @@ class SelfForcingTrainingPipeline:
                             kv_cache=self.kv_cache_pos,
                             crossattn_cache=self.crossattn_cache_pos,
                             current_start=chunk_idx * self.opt.chunk_size * frame_seqlen,
+                            #
+                            kv_cache_da3=self.kv_cache_pos_da3,
+                            current_start_da3=chunk_idx * self.opt.chunk_size * (frame_seqlen + 1),  # `+1` for camera token
                         )
-                        if self.opt.load_da3:
-                            model_outputs, da3_outputs = model_outputs
+                        model_outputs, da3_outputs = \
+                            model_outputs if self.opt.load_da3 else (model_outputs, None)
 
                         next_timesteps = self.denoising_step_list[i + 1] * torch.ones_like(timesteps)
                         if chunk_idx == 0 and cond_latents is not None:
@@ -136,15 +142,19 @@ class SelfForcingTrainingPipeline:
                         kv_cache=self.kv_cache_pos,
                         crossattn_cache=self.crossattn_cache_pos,
                         current_start=chunk_idx * self.opt.chunk_size * frame_seqlen,
+                        #
+                        kv_cache_da3=self.kv_cache_pos_da3,
+                        current_start_da3=chunk_idx * self.opt.chunk_size * (frame_seqlen + 1),  # `+1` for camera token
                     )
-                    if self.opt.load_da3:
-                        model_outputs, da3_outputs = model_outputs
+                    model_outputs, da3_outputs = \
+                        model_outputs if self.opt.load_da3 else (model_outputs, None)
 
                     pred_x0 = self.diffusion._convert_flow_pred_to_x0(model_outputs, this_chunk_latents, timesteps).to(dtype)
                     break
 
             # Record this chunk generated latents
             outputs[:, :, chunk_idx * self.opt.chunk_size:(chunk_idx + 1) * self.opt.chunk_size, ...] = pred_x0
+            all_da3_outputs[chunk_idx] = da3_outputs
 
             # Rerun with timestep `context_timestep` to update KV cache
             if self.opt.is_causal:
@@ -167,7 +177,17 @@ class SelfForcingTrainingPipeline:
                         kv_cache=self.kv_cache_pos,
                         crossattn_cache=self.crossattn_cache_pos,
                         current_start=chunk_idx * self.opt.chunk_size * frame_seqlen,
+                        #
+                        kv_cache_da3=self.kv_cache_pos_da3,
+                        current_start_da3=chunk_idx * self.opt.chunk_size * (frame_seqlen + 1),  # `+1` for camera token
                     )
+
+        if self.opt.load_da3:
+            assert da3_outputs is not None
+            da3_outputs = {
+                k: torch.cat([all_da3_outputs[i][k] for i in range(num_chunks)], dim=1)
+                for k in all_da3_outputs[0].keys()
+            }
 
         # # Return the denoised timesteps
         # if not self.opt.same_step_across_chunks:
@@ -182,7 +202,7 @@ class SelfForcingTrainingPipeline:
         #     denoised_timestep_from = 1000 - torch.argmin(
         #         (self.diffusion.scheduler.timesteps - self.denoising_step_list[exit_flags[0]]).abs(), dim=0).item()
 
-        return outputs
+        return outputs, da3_outputs
 
     def _initialize_kv_cache(self, batch_size: int, dtype: torch.dtype, device: torch.device):
         """
