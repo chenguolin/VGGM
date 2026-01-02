@@ -397,8 +397,8 @@ class WanDiffusionDA3Wrapper(nn.Module):
         assert da3_model_name == "da3-large-1.1", "By now, only `da3-large-1.1` is supported"
         _da3 = DepthAnything3.from_pretrained(f"depth-anything/{(da3_model_name.upper())}")
         self.da3_model: DepthAnything3Net = _da3.model
-        self.da3_model.backbone.pretrained.patch_size = 16  # hard-coded for Wan2.1: 8 VAE x 2 PE
-        self.da3_model.head.patch_size = 16  # hard-coded for Wan2.1: 8 VAE x 2 PE
+        self.da3_model.backbone.pretrained.patch_size = 16  # hard-coded for Wan2.1
+        self.da3_model.head.patch_size = 16  # hard-coded for Wan2.1
             ## Remove not used modules
         self.da3_model.cam_enc = None
         self.da3_model.backbone.pretrained.patch_embed = None
@@ -728,8 +728,8 @@ class WanDiffusionDA3Wrapper(nn.Module):
                     dit_x = rearrange(dit_x, "b (f h w) d -> (b f) (h w) d", f=tff, h=h//2, w=w//2)  # `2`: hard-coded for patch embedding
                     da3_x = rearrange(da3_x, "b f n d -> (b f) n d")
                     # da3_x = rearrange(da3_x, "b f n d -> b (f n) d")
-                    dit_x_, da3_x_ = self.dit_da3_attns[da3_i](dit_x, da3_x)
-                    dit_x, da3_x = dit_x + dit_x_, da3_x + da3_x_
+                    dit_x_res, da3_x_res = self.dit_da3_attns[da3_i](dit_x, da3_x)
+                    dit_x, da3_x = dit_x + dit_x_res, da3_x + da3_x_res
                     dit_x = rearrange(dit_x, "(b f) (h w) d -> b (f h w) d", f=tff, h=h//2, w=w//2)  # `2`: hard-coded for patch embedding
                     da3_x = rearrange(da3_x, "(b f) n d -> b f n d", f=tff)
                     # da3_x = rearrange(da3_x, "b (f n) d -> b f n d", f=tff)
@@ -855,29 +855,43 @@ class BiCrossAttention(nn.Module):
         self.eps = eps
 
         # layers
-        self.q1, self.q2 = nn.Linear(dim1, dim), nn.Linear(dim2, dim)
-        self.k1, self.k2 = nn.Linear(dim1, dim), nn.Linear(dim2, dim)
-        self.v1, self.v2 = nn.Linear(dim1, dim), nn.Linear(dim2, dim)
-        self.o1, self.o2 = nn.Linear(dim, dim1), nn.Linear(dim, dim2)
-        if qk_norm:
-            self.norm_q1, self.norm_q2 = WanRMSNorm(self.head_dim, eps), WanRMSNorm(self.head_dim, eps)
-            self.norm_k1, self.norm_k2 = WanRMSNorm(self.head_dim, eps), WanRMSNorm(self.head_dim, eps)
-        else:
-            self.norm_q1, self.norm_q2 = nn.Identity(), nn.Identity()
-            self.norm_k1, self.norm_k2 = nn.Identity(), nn.Identity()
+        # self.q1, self.q2 = nn.Linear(dim1, dim), nn.Linear(dim2, dim)
+        # self.k1, self.k2 = nn.Linear(dim1, dim), nn.Linear(dim2, dim)
+        # self.v1, self.v2 = nn.Linear(dim1, dim), nn.Linear(dim2, dim)
+        # self.o1, self.o2 = nn.Linear(dim, dim1), nn.Linear(dim, dim2)
+        # if qk_norm:
+        #     self.norm_q1, self.norm_q2 = WanRMSNorm(self.head_dim, eps), WanRMSNorm(self.head_dim, eps)
+        #     self.norm_k1, self.norm_k2 = WanRMSNorm(self.head_dim, eps), WanRMSNorm(self.head_dim, eps)
+        # else:
+        #     self.norm_q1, self.norm_q2 = nn.Identity(), nn.Identity()
+        #     self.norm_k1, self.norm_k2 = nn.Identity(), nn.Identity()
+        self.o1 = nn.Sequential(
+            nn.Linear(dim1+dim2, dim),
+            nn.GELU(approximate="tanh"),
+            nn.Linear(dim, dim1),
+        )
+        self.o2 = nn.Sequential(
+            nn.Linear(dim1+dim2, dim),
+            nn.GELU(approximate="tanh"),
+            nn.Linear(dim, dim2),
+        )
 
         zero_init_module(self.o1)
         zero_init_module(self.o2)
 
     def forward(self, x1: Tensor, x2: Tensor) -> Tuple[Tensor, Tensor]:
-        reshape_fn = lambda x: rearrange(x, "b n (h hd) -> b n h hd", h=self.num_heads)
+        # reshape_fn = lambda x: rearrange(x, "b n (h hd) -> b n h hd", h=self.num_heads)
 
-        q1, k1, v1 = reshape_fn(self.q1(x1)), reshape_fn(self.k1(x1)), reshape_fn(self.v1(x1))
-        q1, k1 = self.norm_q1(q1), self.norm_k1(k1)
+        # q1, k1, v1 = reshape_fn(self.q1(x1)), reshape_fn(self.k1(x1)), reshape_fn(self.v1(x1))
+        # q1, k1 = self.norm_q1(q1), self.norm_k1(k1)
 
-        q2, k2, v2 = reshape_fn(self.q2(x2)), reshape_fn(self.k2(x2)), reshape_fn(self.v2(x2))
-        q2, k2 = self.norm_q2(q2), self.norm_k2(k2)
+        # q2, k2, v2 = reshape_fn(self.q2(x2)), reshape_fn(self.k2(x2)), reshape_fn(self.v2(x2))
+        # q2, k2 = self.norm_q2(q2), self.norm_k2(k2)
 
-        o1 = self.o1(attention(q1, k2, v2).flatten(2))
-        o2 = self.o2(attention(q2, k1, v1).flatten(2))
+        # o1 = self.o1(attention(q1, k2, v2).flatten(2))
+        # o2 = self.o2(attention(q2, k1, v1).flatten(2))
+
+        o1 = self.o1(torch.cat([x1, x2], dim=-1))
+        o2 = self.o2(torch.cat([x1, x2], dim=-1))
+
         return o1, o2

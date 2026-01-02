@@ -7,11 +7,13 @@ import torch
 import torch.nn.functional as tF
 from peft import LoraConfig, inject_adapter_in_model
 
+from depth_anything_3.model.utils.transform import mat_to_quat
+
 from src.options import Options
 from src.models.networks import WanDiffusionWrapper, WanVAEWrapper
 from src.models.wan import Wan
 from src.models.pipelines.self_forcing_training import SelfForcingTrainingPipeline
-from src.utils import convert_to_buffer, plucker_ray
+from src.utils import convert_to_buffer, plucker_ray, colorize_depth
 
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -167,16 +169,24 @@ class DMD_Wan(Wan):
             cond_latents = None
         cond_latents = cond_latents if torch.rand(1).item() < self.opt.random_i2v_prob else None
 
+        # (Optional) Camera & depth
         idxs = torch.arange(0, F, 4).to(device=device, dtype=torch.long)
-        C2W = data["C2W"].to(dtype)[:, idxs, ...]  # (B, f, 4, 4)
-        fxfycxcy = data["fxfycxcy"].to(dtype)[:, idxs, ...]  # (B, f, 4)
-        plucker = plucker_ray(H, W, C2W.float(), fxfycxcy.float())[0].to(dtype)  # (B, f, 6, H, W)
+        if "C2W" in data and "fxfycxcy" in data:
+            C2W = data["C2W"].to(dtype)[:, idxs, ...]  # (B, f, 4, 4)
+            fxfycxcy = data["fxfycxcy"].to(dtype)[:, idxs, ...]  # (B, f, 4)
+            plucker = plucker_ray(H, W, C2W.float(), fxfycxcy.float())[0].to(dtype)  # (B, f, 6, H, W)
+        else:
+            plucker = None
+        if "depth" in data:
+            depths = data["depth"].to(dtype)[:, idxs, ...]  # (B, f, H, W)
+        else:
+            depths = None
 
         # DMD
         self.diffusion.scheduler.set_timesteps(self.opt.num_train_timesteps, training=True)
 
         if train_generator:
-            generator_loss, dmd_grad_norm, pred_x0 = \
+            generator_loss, dmd_grad_norm, pred_x0, da3_outputs = \
                 self.generator_loss(
                     torch.randn_like(latents),
                     prompt_embeds,
@@ -185,9 +195,21 @@ class DMD_Wan(Wan):
                     plucker,
                     #
                     clean_latents=latents if not self.opt.self_forcing else None,
+                    #
+                    C2W=C2W,
+                    fxfycxcy=fxfycxcy,
+                    depths=depths,
                 )
             outputs["generator_loss"] = generator_loss
             outputs["dmd_grad_norm"] = dmd_grad_norm
+
+            if da3_outputs is not None:
+                outputs["depth_loss"] = da3_outputs["depth_loss"]
+                outputs["ray_loss"] = da3_outputs["ray_loss"]
+                outputs["camera_loss"] = da3_outputs["camera_loss"]
+                generator_loss = generator_loss + \
+                    da3_outputs["depth_loss"] + da3_outputs["ray_loss"] + da3_outputs["camera_loss"]
+
         else:
             generator_loss = 0.
 
@@ -208,6 +230,8 @@ class DMD_Wan(Wan):
             outputs["images_predx0"] = (self.decode_latent(pred_x0, vae).clamp(-1., 1.) + 1.) / 2.
             if "image" in data:
                 outputs["images_input"] = data["image"]
+            if da3_outputs is not None:
+                outputs["images_pred_depth"] = colorize_depth(1./da3_outputs["depth"], batch_mode=True)
 
         return outputs
 
@@ -232,7 +256,7 @@ class DMD_Wan(Wan):
 
         # Step 1: Run generator on backward simulated noisy inputs
         with torch.no_grad():
-            pred_x0, _ = self._run_generator(
+            pred_x0, _, _ = self._run_generator(
                 noises,
                 prompt_embeds,
                 cond_latents,
@@ -287,6 +311,10 @@ class DMD_Wan(Wan):
         plucker: Optional[Tensor] = None,
         #
         clean_latents: Optional[Tensor] = None,
+        #
+        C2W: Optional[Tensor] = None,
+        fxfycxcy: Optional[Tensor] = None,
+        depths: Optional[Tensor] = None,
     ):
         """
         Generate image/videos from noise and compute the DMD loss.
@@ -295,7 +323,7 @@ class DMD_Wan(Wan):
         See Sec 4.5 of the DMD2 paper (https://arxiv.org/abs/2405.14867) for details.
         """
         # Step 1: Unroll generator to obtain fake videos
-        pred_x0, gradient_mask = self._run_generator(
+        pred_x0, gradient_mask, da3_outputs = self._run_generator(
             noises,
             prompt_embeds,
             cond_latents,
@@ -315,7 +343,33 @@ class DMD_Wan(Wan):
                 plucker,
             )
 
-        return dmd_loss, dmd_grad_norm, pred_x0
+        if da3_outputs is None:
+            return dmd_loss, dmd_grad_norm, pred_x0, None
+
+        # (Optional) Step 3: DA3 outputs
+            ## Get ground-truth geometry labels
+        H, W = noises.shape[-2] * 8, noises.shape[-1] * 8  # `8`: hard-coded for Wan2.1
+        _, (ray_o, ray_d) = plucker_ray(H//2, W//2,
+            C2W.float(), fxfycxcy.float(), normalize_ray_d=False)
+        gt_raymaps = torch.cat([ray_d, ray_o], dim=2).to(noises.dtype)  # (B, f, 6, H/2, W/2)
+        gt_pose_enc = torch.cat([
+            C2W[:, :, :3, 3].float(),  # (B, f, 3)
+            mat_to_quat(C2W[:, :, :3, :3].float()),  # (B, f, 4)
+            2. * torch.atan(1. / (2. * fxfycxcy[:, :, 1:2])),  # (B, f, 1); fy -> fov_h
+            2. * torch.atan(1. / (2. * fxfycxcy[:, :, 0:1])),  # (B, f, 1); fx -> fov_w
+        ], dim=-1).to(noises.dtype)  # (B, f, 9)
+            ## Compute geometry losses
+        depth_loss = self.depth_loss_fn(da3_outputs["depth"], depths, confs=da3_outputs["depth_conf"])  # (B, f)
+        ray_loss = self.ray_loss_fn(da3_outputs["ray"], gt_raymaps, confs=da3_outputs["ray_conf"])  # (B, f)
+        camera_loss = self.camera_loss_fn(da3_outputs["pose_enc"], gt_pose_enc)  # (B, f)
+
+        return dmd_loss, dmd_grad_norm, pred_x0, \
+            {
+                "depth_loss": depth_loss.mean(),
+                "ray_loss": ray_loss.mean(),
+                "camera_loss": camera_loss.mean(),
+                "depth": da3_outputs["depth"],
+            }
 
     def _compute_distribution_matching_loss(self,
         pred_x0: Tensor,
@@ -456,6 +510,8 @@ class DMD_Wan(Wan):
         """
         # TODO: handle generating long videos
 
+        da3_outputs = None
+
         if self.opt.self_forcing:
             pred_x0 = self._consistency_backward_simulation(
                 noises,
@@ -499,6 +555,8 @@ class DMD_Wan(Wan):
                 prompt_embeds,
                 plucker=plucker,
             )
+            if self.opt.load_da3:
+                model_outputs, da3_outputs = model_outputs
             pred_x0 = self.diffusion._convert_flow_pred_to_x0(model_outputs, noisy_latents, timesteps).to(dtype)
 
         gradient_mask = None  # TODO: handle generating long videos
@@ -506,7 +564,7 @@ class DMD_Wan(Wan):
             gradient_mask = torch.ones_like(pred_x0, dtype=torch.bool)
             gradient_mask[:, :, 0:1, :, :] = False  # do not compute gradient on the first latent frame
 
-        return pred_x0, gradient_mask
+        return pred_x0, gradient_mask, da3_outputs
 
     def _consistency_backward_simulation(self,
         noises: Tensor,
