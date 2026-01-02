@@ -94,7 +94,7 @@ class Options:
     real_guidance_scale: float = 4.
     dmd_loss_weight: float = 1.
         ## Self-forcing
-    self_forcing: bool = True
+    self_forcing_prob: float = 1.
     denoising_step_list: Tuple[int, ...] = (1000, 750, 500, 250)
     warp_denoising_step: bool = True
     last_step_only: bool = False
@@ -260,7 +260,7 @@ opt_dict["wan2.1_t2v_1.3b_dmd"] = Options(
     teacher_first_latent_cond=False,
     #
     use_dmd=True,
-    self_forcing=True,
+    self_forcing_prob=1.,
     real_guidance_scale=4.,
     last_step_only=False,
     context_noise=0,

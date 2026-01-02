@@ -129,7 +129,10 @@ class DMD_Wan(Wan):
     def compute_loss(self, data: Dict[str, Any], dtype: torch.dtype = torch.float32, train_generator: bool = True, is_eval: bool = False, vae: Optional[WanVAEWrapper] = None):
         outputs = {}
 
-        if "image" in data and (not self.opt.self_forcing or self.opt.first_latent_cond or self.opt.teacher_first_latent_cond):
+        # CausVid or Self-Forcing
+        self.use_self_forcing = use_self_forcing = np.random.rand() <= self.opt.self_forcing_prob
+
+        if "image" in data and (not use_self_forcing or self.opt.first_latent_cond or self.opt.teacher_first_latent_cond):
             images = data["image"].to(dtype)  # (B, F, 3, H, W)
             (B, F, _, H, W), device = images.shape, images.device
         else:
@@ -151,7 +154,7 @@ class DMD_Wan(Wan):
             raise NotImplementedError
 
         # VAE
-        if "image" in data and self.prompt_list is None and (not self.opt.self_forcing or self.opt.first_latent_cond or self.opt.teacher_first_latent_cond):
+        if "image" in data and self.prompt_list is None and (not use_self_forcing or self.opt.first_latent_cond or self.opt.teacher_first_latent_cond):
             with torch.no_grad(), torch.autocast(device_type="cuda", dtype=dtype):
                 latents = self.encode(images * 2. - 1., vae)  # (B, D, f, h, w)
                 if self.opt.first_latent_cond:
@@ -194,7 +197,7 @@ class DMD_Wan(Wan):
                     cond_latents,
                     plucker,
                     #
-                    clean_latents=latents if not self.opt.self_forcing else None,
+                    clean_latents=latents if not use_self_forcing else None,
                     #
                     C2W=C2W,
                     fxfycxcy=fxfycxcy,
@@ -224,7 +227,7 @@ class DMD_Wan(Wan):
                 cond_latents,
                 plucker,
                 #
-                clean_latents=latents if not self.opt.self_forcing else None,
+                clean_latents=latents if not use_self_forcing else None,
             )
 
         outputs["loss"] = critic_loss + self.opt.dmd_loss_weight * generator_loss
@@ -351,7 +354,7 @@ class DMD_Wan(Wan):
         # (Optional) Step 3: DA3 outputs
         if da3_outputs is not None:
             da3_outputs = {"depth": da3_outputs["depth"]}
-            if not self.opt.self_forcing:
+            if not self.use_self_forcing:
                 if "depth_loss" not in da3_outputs:
                     assert depths is not None
                     depth_loss = self.depth_loss_fn(da3_outputs["depth"], depths, confs=da3_outputs["depth_conf"])  # (B, f)
@@ -515,7 +518,7 @@ class DMD_Wan(Wan):
         """
         # TODO: handle generating long videos
 
-        if self.opt.self_forcing:
+        if self.use_self_forcing:
             pred_x0, da3_outputs = self._consistency_backward_simulation(
                 noises,
                 prompt_embeds,
