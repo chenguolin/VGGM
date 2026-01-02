@@ -184,7 +184,7 @@ class DMD_Wan(Wan):
                     cond_latents,
                     plucker,
                     #
-                    clean_latents=latents,
+                    clean_latents=latents if not self.opt.self_forcing else None,
                 )
             outputs["generator_loss"] = generator_loss
             outputs["dmd_grad_norm"] = dmd_grad_norm
@@ -198,7 +198,7 @@ class DMD_Wan(Wan):
                 cond_latents,
                 plucker,
                 #
-                clean_latents=latents,
+                clean_latents=latents if not self.opt.self_forcing else None,
             )
 
         outputs["loss"] = critic_loss + self.opt.dmd_loss_weight * generator_loss
