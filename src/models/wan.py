@@ -191,6 +191,7 @@ class Wan(nn.Module):
 
         idxs = torch.arange(0, F, 4).to(device=device, dtype=torch.long)
         if self.opt.load_da3:
+            assert "depth" in data
             gt_depths = data["depth"].to(dtype)[:, idxs, ...]  # (B, f, H, W)
         C2W = data["C2W"].to(dtype)[:, idxs, ...]  # (B, f, 4, 4)
         fxfycxcy = data["fxfycxcy"].to(dtype)[:, idxs, ...]  # (B, f, 4)
@@ -344,11 +345,13 @@ class Wan(nn.Module):
             device = self.diffusion.model.device
 
         idxs = torch.arange(0, F, 4).to(device=device, dtype=torch.long)
-        if self.opt.load_da3:
-            gt_depths = data["depth"].to(dtype)[:, idxs, ...]  # (B, f, H, W)
         C2W = data["C2W"].to(dtype)[:, idxs, ...]  # (B, f, 4, 4)
         fxfycxcy = data["fxfycxcy"].to(dtype)[:, idxs, ...]  # (B, f, 4)
         plucker = plucker_ray(H, W, C2W.float(), fxfycxcy.float())[0].to(dtype)  # (B, f, 6, H, W)
+        if "depth" in data:
+            depths = data["depth"].to(dtype)[:, idxs, ...]  # (B, f, H, W)
+        else:
+            depths = None
 
         f = 1 + (F - 1) // self.opt.compression_ratio[0]
         h = H // self.opt.compression_ratio[1]
@@ -457,6 +460,10 @@ class Wan(nn.Module):
             if self.opt.load_da3 and self.prompt_list is None:
                 assert da3_outputs is not None
 
+                if depths is not None:
+                    outputs[f"images_gt_depth"] = colorize_depth(1./depths, batch_mode=True)
+                    outputs[f"depth_{cfg_scale}"] = tF.mse_loss(da3_outputs["depth"], depths)  # (,)
+
                 ## Get ground-truth geometry labels
                 _, (ray_o, ray_d) = plucker_ray(H//2, W//2,
                     C2W.float(), fxfycxcy.float(), normalize_ray_d=False)
@@ -467,10 +474,8 @@ class Wan(nn.Module):
                     2. * torch.atan(1. / (2. * fxfycxcy[:, :, 1:2])),  # (B, f, 1); fy -> fov_h
                     2. * torch.atan(1. / (2. * fxfycxcy[:, :, 0:1])),  # (B, f, 1); fx -> fov_w
                 ], dim=-1).to(dtype)  # (B, f, 9)
-                outputs[f"images_gt_depth"] = colorize_depth(1./gt_depths, batch_mode=True)
 
                 ## Compute geometry metrics via MSE
-                outputs[f"depth_{cfg_scale}"] = tF.mse_loss(da3_outputs["depth"], gt_depths)  # (,)
                 outputs[f"ray_{cfg_scale}"] = tF.mse_loss(da3_outputs["ray"], gt_raymaps)  # (,)
                 outputs[f"pose_{cfg_scale}"] = tF.mse_loss(da3_outputs["pose_enc"], gt_pose_enc)  # (,)
 
@@ -498,11 +503,13 @@ class Wan(nn.Module):
             images = torch.zeros((B, F, 3, H, W), dtype=dtype, device=device)  # (B, F, 3, H, W); not really used
 
         idxs = torch.arange(0, F, 4).to(device=device, dtype=torch.long)
-        if self.opt.load_da3:
-            gt_depths = data["depth"].to(dtype)[:, idxs, ...]  # (B, f, H, W)
         C2W = data["C2W"].to(dtype)[:, idxs, ...]  # (B, f, 4, 4)
         fxfycxcy = data["fxfycxcy"].to(dtype)[:, idxs, ...]  # (B, f, 4)
         plucker = plucker_ray(H, W, C2W.float(), fxfycxcy.float())[0].to(dtype)  # (B, f, 6, H, W)
+        if "depth" in data:
+            depths = data["depth"].to(dtype)[:, idxs, ...]  # (B, f, H, W)
+        else:
+            depths = None
 
         f = 1 + (F - 1) // self.opt.compression_ratio[0]
         h = H // self.opt.compression_ratio[1]
@@ -702,6 +709,10 @@ class Wan(nn.Module):
                     for k in all_da3_outputs[0].keys()
                 }
 
+                if depths is not None:
+                    outputs[f"images_gt_depth"] = colorize_depth(1./depths, batch_mode=True)
+                    outputs[f"depth_{cfg_scale}"] = tF.mse_loss(da3_outputs["depth"], depths)  # (,)
+
                 ## Get ground-truth geometry labels
                 _, (ray_o, ray_d) = plucker_ray(H//2, W//2,
                     C2W.float(), fxfycxcy.float(), normalize_ray_d=False)
@@ -712,10 +723,8 @@ class Wan(nn.Module):
                     2. * torch.atan(1. / (2. * fxfycxcy[:, :, 1:2])),  # (B, f, 1); fy -> fov_h
                     2. * torch.atan(1. / (2. * fxfycxcy[:, :, 0:1])),  # (B, f, 1); fx -> fov_w
                 ], dim=-1).to(dtype)  # (B, f, 9)
-                outputs[f"images_gt_depth"] = colorize_depth(1./gt_depths, batch_mode=True)
 
                 ## Compute geometry metrics via MSE
-                outputs[f"depth_{cfg_scale}"] = tF.mse_loss(da3_outputs["depth"], gt_depths)  # (,)
                 outputs[f"ray_{cfg_scale}"] = tF.mse_loss(da3_outputs["ray"], gt_raymaps)  # (,)
                 outputs[f"pose_{cfg_scale}"] = tF.mse_loss(da3_outputs["pose_enc"], gt_pose_enc)  # (,)
 

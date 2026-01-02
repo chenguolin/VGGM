@@ -348,33 +348,33 @@ class DMD_Wan(Wan):
                 plucker,
             )
 
-        if da3_outputs is None:
-            return dmd_loss, dmd_grad_norm, pred_x0, None
-
         # (Optional) Step 3: DA3 outputs
-            ## Get ground-truth geometry labels
-        H, W = noises.shape[-2] * 8, noises.shape[-1] * 8  # `8`: hard-coded for Wan2.1
-        _, (ray_o, ray_d) = plucker_ray(H//2, W//2,
-            C2W.float(), fxfycxcy.float(), normalize_ray_d=False)
-        gt_raymaps = torch.cat([ray_d, ray_o], dim=2).to(noises.dtype)  # (B, f, 6, H/2, W/2)
-        gt_pose_enc = torch.cat([
-            C2W[:, :, :3, 3].float(),  # (B, f, 3)
-            mat_to_quat(C2W[:, :, :3, :3].float()),  # (B, f, 4)
-            2. * torch.atan(1. / (2. * fxfycxcy[:, :, 1:2])),  # (B, f, 1); fy -> fov_h
-            2. * torch.atan(1. / (2. * fxfycxcy[:, :, 0:1])),  # (B, f, 1); fx -> fov_w
-        ], dim=-1).to(noises.dtype)  # (B, f, 9)
-            ## Compute geometry losses
-        depth_loss = self.depth_loss_fn(da3_outputs["depth"], depths, confs=da3_outputs["depth_conf"])  # (B, f)
-        ray_loss = self.ray_loss_fn(da3_outputs["ray"], gt_raymaps, confs=da3_outputs["ray_conf"])  # (B, f)
-        camera_loss = self.camera_loss_fn(da3_outputs["pose_enc"], gt_pose_enc)  # (B, f)
+        if da3_outputs is not None:
+            da3_outputs = {"depth": da3_outputs["depth"]}
+            if not self.opt.self_forcing:
+                if "depth_loss" not in da3_outputs:
+                    assert depths is not None
+                    depth_loss = self.depth_loss_fn(da3_outputs["depth"], depths, confs=da3_outputs["depth_conf"])  # (B, f)
+                    da3_outputs["depth_loss"] = depth_loss.mean()
+                if "ray_loss" not in da3_outputs or "camera_loss" not in da3_outputs:
+                    assert C2W is not None and fxfycxcy is not None
+                    H, W = noises.shape[-2] * 8, noises.shape[-1] * 8  # `8`: hard-coded for Wan2.1
+                    _, (ray_o, ray_d) = plucker_ray(H//2, W//2,
+                        C2W.float(), fxfycxcy.float(), normalize_ray_d=False)
+                    gt_raymaps = torch.cat([ray_d, ray_o], dim=2).to(noises.dtype)  # (B, f, 6, H/2, W/2)
+                    gt_pose_enc = torch.cat([
+                        C2W[:, :, :3, 3].float(),  # (B, f, 3)
+                        mat_to_quat(C2W[:, :, :3, :3].float()),  # (B, f, 4)
+                        2. * torch.atan(1. / (2. * fxfycxcy[:, :, 1:2])),  # (B, f, 1); fy -> fov_h
+                        2. * torch.atan(1. / (2. * fxfycxcy[:, :, 0:1])),  # (B, f, 1); fx -> fov_w
+                    ], dim=-1).to(noises.dtype)  # (B, f, 9)
+                        ## Compute geometry losses
+                    ray_loss = self.ray_loss_fn(da3_outputs["ray"], gt_raymaps, confs=da3_outputs["ray_conf"])  # (B, f)
+                    camera_loss = self.camera_loss_fn(da3_outputs["pose_enc"], gt_pose_enc)  # (B, f)
+                    da3_outputs["ray_loss"] = ray_loss.mean()
+                    da3_outputs["camera_loss"] = camera_loss.mean()
 
-        return dmd_loss, dmd_grad_norm, pred_x0, \
-            {
-                "depth_loss": depth_loss.mean(),
-                "ray_loss": ray_loss.mean(),
-                "camera_loss": camera_loss.mean(),
-                "depth": da3_outputs["depth"],
-            }
+        return dmd_loss, dmd_grad_norm, pred_x0, da3_outputs
 
     def _compute_distribution_matching_loss(self,
         pred_x0: Tensor,
