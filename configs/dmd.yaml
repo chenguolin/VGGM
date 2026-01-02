@@ -21,7 +21,7 @@ train:
   early_eval_freq: 100
   early_eval: 1000
   eval_freq: 100
-  save_freq: 2000
+  save_freq: 500
   eval_freq_epoch: 5
   save_freq_epoch: 10
   use_ema: true
