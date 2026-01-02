@@ -191,12 +191,12 @@ opt_dict: Dict[str, Options] = {}
 # Wan2.1-T2V-1.3B
 opt_dict["wan2.1_t2v_1.3b"] = Options(
     input_plucker=True,
-    name_lr_mult="diffusion.model",
+    exclude_name_lr_mult="plucker_embed",
 )
 opt_dict["wan2.1_t2v_1.3b_i2v"] = Options(
     first_latent_cond=True,
     input_plucker=True,
-    name_lr_mult="diffusion.model",
+    exclude_name_lr_mult="plucker_embed",
 )
 opt_dict["wan2.1_t2v_1.3b_causal"] = Options(
     first_latent_cond=False,
