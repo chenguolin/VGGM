@@ -728,8 +728,8 @@ class WanDiffusionDA3Wrapper(nn.Module):
                     dit_x = rearrange(dit_x, "b (f h w) d -> (b f) (h w) d", f=tff, h=h//2, w=w//2)  # `2`: hard-coded for patch embedding
                     da3_x = rearrange(da3_x, "b f n d -> (b f) n d")
                     # da3_x = rearrange(da3_x, "b f n d -> b (f n) d")
-                    dit_x_res, da3_x_res = self.dit_da3_attns[da3_i](dit_x, da3_x)
-                    dit_x, da3_x = dit_x + dit_x_res, da3_x + da3_x_res
+                    dit_x_res, da3_x_res = self.dit_da3_attns[da3_i](dit_x, da3_x[:, 1:, :])
+                    dit_x, da3_x = dit_x + dit_x_res, torch.cat([da3_x[:, :1, :], da3_x[:, 1:, :] + da3_x_res], dim=1)
                     dit_x = rearrange(dit_x, "(b f) (h w) d -> b (f h w) d", f=tff, h=h//2, w=w//2)  # `2`: hard-coded for patch embedding
                     da3_x = rearrange(da3_x, "(b f) n d -> b f n d", f=tff)
                     # da3_x = rearrange(da3_x, "b (f n) d -> b f n d", f=tff)

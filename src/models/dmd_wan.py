@@ -353,7 +353,6 @@ class DMD_Wan(Wan):
 
         # (Optional) Step 3: DA3 outputs
         if da3_outputs is not None:
-            da3_outputs = {"depth": da3_outputs["depth"]}
             if not self.use_self_forcing:
                 if "depth_loss" not in da3_outputs:
                     assert depths is not None
