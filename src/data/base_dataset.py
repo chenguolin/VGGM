@@ -108,8 +108,8 @@ class BaseDataset(EasyDataset):
 
         # (Optional) Resize and CenterCrop depths
         if depths is not None:
-            depths = tvT.Resize((scaled_H, scaled_W), tvT.InterpolationMode.NEAREST_EXACT)(depths)
-            depths = tvT.CenterCrop((new_H, new_W))(depths)
+            depths = tvT.Resize((scaled_H//self.opt.da3_down_ratio, scaled_W//self.opt.da3_down_ratio), tvT.InterpolationMode.NEAREST_EXACT)(depths)
+            depths = tvT.CenterCrop((new_H//self.opt.da3_down_ratio, new_W//self.opt.da3_down_ratio))(depths)
 
         return images.clamp(0., 1.), depths, fxfycxcy
 

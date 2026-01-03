@@ -56,6 +56,7 @@ class Options:
         "diffusion",
         "inverse_timestep",
     ] = "inverse_timestep"
+    da3_down_ratio: int = 1
     da3_chunk_size: int = 8  # DPT head chunk size, not for causality
     da3_use_ray_pose: bool = False
 
@@ -185,9 +186,9 @@ class Options:
         )
 
         self.max_attention_size = (self.max_window_size + self.sink_size) * self.frame_seqlen
-        self.da3_max_attention_size = (self.max_window_size + self.sink_size) * (self.frame_seqlen + 1)  # `+1` for camera token
+        self.da3_max_attention_size = (self.max_window_size + self.sink_size) * (self.frame_seqlen // (self.da3_down_ratio * self.da3_down_ratio) + 1)  # `+1` for camera token
         self.max_kvcache_attention_size = self.max_kvcache_size * self.frame_seqlen
-        self.da3_max_kvcache_attention_size = self.max_kvcache_size * (self.frame_seqlen + 1)  # `+1` for camera token
+        self.da3_max_kvcache_attention_size = self.max_kvcache_size * (self.frame_seqlen // (self.da3_down_ratio * self.da3_down_ratio) + 1)  # `+1` for camera token
 
 
 # Set all options for different tasks and models

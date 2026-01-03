@@ -105,6 +105,7 @@ class Wan(nn.Module):
                 #
                 da3_model_name=opt.da3_model_name,
                 da3_chunk_size=opt.da3_chunk_size,
+                da3_down_ratio=opt.da3_down_ratio,
                 da3_use_ray_pose=opt.da3_use_ray_pose,
                 da3_interactive=opt.da3_interactive and not opt.only_train_da3,
                 da3_max_attention_size=opt.da3_max_attention_size,
@@ -282,7 +283,7 @@ class Wan(nn.Module):
         # (Optional) DA3 loss
         if self.opt.load_da3:
             ## Get ground-truth geometry labels
-            _, (ray_o, ray_d) = plucker_ray(H//2, W//2,
+            _, (ray_o, ray_d) = plucker_ray(H//2//self.opt.da3_down_ratio, W//2//self.opt.da3_down_ratio,
                 C2W.float(), fxfycxcy.float(), normalize_ray_d=False)
             gt_raymaps = torch.cat([ray_d, ray_o], dim=2).to(dtype)  # (B, f, 6, H/2, W/2)
             gt_pose_enc = torch.cat([
@@ -470,7 +471,7 @@ class Wan(nn.Module):
                     outputs[f"depth_{cfg_scale}"] = tF.mse_loss(da3_outputs["depth"], depths)  # (,)
 
                 ## Get ground-truth geometry labels
-                _, (ray_o, ray_d) = plucker_ray(H//2, W//2,
+                _, (ray_o, ray_d) = plucker_ray(H//2//self.opt.da3_down_ratio, W//2//self.opt.da3_down_ratio,
                     C2W.float(), fxfycxcy.float(), normalize_ray_d=False)
                 gt_raymaps = torch.cat([ray_d, ray_o], dim=2).to(dtype)  # (B, f, 6, H/2, W/2)
                 gt_pose_enc = torch.cat([
@@ -582,7 +583,7 @@ class Wan(nn.Module):
                         current_start=chunk_idx * self.opt.chunk_size * frame_seqlen,
                         #
                         kv_cache_da3=self.kv_cache_pos_da3,
-                        current_start_da3=chunk_idx * self.opt.chunk_size * (frame_seqlen + 1),  # `+1` for camera token
+                        current_start_da3=chunk_idx * self.opt.chunk_size * (frame_seqlen // (self.opt.da3_down_ratio * self.opt.da3_down_ratio) + 1),  # `+1` for camera token
                     )
 
                     #### CFG
@@ -598,7 +599,7 @@ class Wan(nn.Module):
                             current_start=chunk_idx * self.opt.chunk_size * frame_seqlen,
                             #
                             kv_cache_da3=self.kv_cache_neg_da3,
-                            current_start_da3=chunk_idx * self.opt.chunk_size * (frame_seqlen + 1),  # `+1` for camera token
+                            current_start_da3=chunk_idx * self.opt.chunk_size * (frame_seqlen // (self.opt.da3_down_ratio * self.opt.da3_down_ratio) + 1),  # `+1` for camera token
                         )
                         if not self.opt.load_da3:
                             model_outputs = model_outputs_neg + cfg_scale * (model_outputs - model_outputs_neg)
@@ -645,7 +646,7 @@ class Wan(nn.Module):
                     current_start=chunk_idx * self.opt.chunk_size * frame_seqlen,
                     #
                     kv_cache_da3=self.kv_cache_pos_da3,
-                    current_start_da3=chunk_idx * self.opt.chunk_size * (frame_seqlen + 1),  # `+1` for camera token
+                    current_start_da3=chunk_idx * self.opt.chunk_size * (frame_seqlen // (self.opt.da3_down_ratio * self.opt.da3_down_ratio) + 1),  # `+1` for camera token
                 )
                 if cfg_scale > 1.:
                     model_outputs_neg = self.diffusion(
@@ -659,7 +660,7 @@ class Wan(nn.Module):
                         current_start=chunk_idx * self.opt.chunk_size * frame_seqlen,
                         #
                         kv_cache_da3=self.kv_cache_neg_da3,
-                        current_start_da3=chunk_idx * self.opt.chunk_size * (frame_seqlen + 1),  # `+1` for camera token
+                        current_start_da3=chunk_idx * self.opt.chunk_size * (frame_seqlen // (self.opt.da3_down_ratio * self.opt.da3_down_ratio) + 1),  # `+1` for camera token
                     )
                     if not self.opt.load_da3:
                         model_outputs = model_outputs_neg + cfg_scale * (model_outputs - model_outputs_neg)
@@ -719,7 +720,7 @@ class Wan(nn.Module):
                     outputs[f"depth_{cfg_scale}"] = tF.mse_loss(da3_outputs["depth"], depths)  # (,)
 
                 ## Get ground-truth geometry labels
-                _, (ray_o, ray_d) = plucker_ray(H//2, W//2,
+                _, (ray_o, ray_d) = plucker_ray(H//2//self.opt.da3_down_ratio, W//2//self.opt.da3_down_ratio,
                     C2W.float(), fxfycxcy.float(), normalize_ray_d=False)
                 gt_raymaps = torch.cat([ray_d, ray_o], dim=2).to(dtype)  # (B, f, 6, H/2, W/2)
                 gt_pose_enc = torch.cat([

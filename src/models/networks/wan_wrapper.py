@@ -345,6 +345,7 @@ class WanDiffusionDA3Wrapper(nn.Module):
         #
         da3_model_name: str = "da3-large-1.1",
         da3_chunk_size: int = 8,
+        da3_down_ratio: int = 1,
         da3_use_ray_pose: bool = False,
         da3_interactive: bool = False,
         da3_max_attention_size: int = 32781,  # 81 x 480 x 832 -> 21 x (30 x 52 + 1), +1 for camera token
@@ -410,11 +411,12 @@ class WanDiffusionDA3Wrapper(nn.Module):
         if da3_interactive:
             self.dit_da3_interactive = nn.ModuleList([
                 # `1536` and `1024` are hard-coded for Wan1.3B and DA3-large
-                InteractiveModule(dim1=1536, dim2=1024, dim=1536, num_heads=24)
+                InteractiveModule(dim1=1536, dim2=1024, dim=1536, num_heads=24, down_ratio=da3_down_ratio)
                 for _ in range(24)  # `24`: hard-coded for DA3-large
             ])
 
         self.da3_chunk_size = da3_chunk_size
+        self.da3_down_ratio = da3_down_ratio
         self.da3_use_ray_pose = da3_use_ray_pose
         self.da3_interactive = da3_interactive
         self.da3_max_attention_size = da3_max_attention_size
@@ -545,7 +547,7 @@ class WanDiffusionDA3Wrapper(nn.Module):
                     self.block_mask = self.model._prepare_teacher_forcing_mask(
                         device,
                         num_frames=f,
-                        frame_seqlen=1 + h * w // (self.model.patch_size[1] * self.model.patch_size[2]),  # `1+` for camera token
+                        frame_seqlen=1 + h * w // (self.model.patch_size[1] * self.model.patch_size[2]) // (self.da3_down_ratio * self.da3_down_ratio),  # `1+` for camera token
                         sink_size=self.model.sink_size,
                         chunk_size=self.model.chunk_size,
                         max_attention_size=self.da3_max_attention_size,
@@ -554,7 +556,7 @@ class WanDiffusionDA3Wrapper(nn.Module):
                     self.block_mask = self.model._prepare_blockwise_causal_attn_mask(
                         device,
                         num_frames=f,
-                        frame_seqlen=1 + h * w // (self.model.patch_size[1] * self.model.patch_size[2]),  # `1+` for camera token
+                        frame_seqlen=1 + h * w // (self.model.patch_size[1] * self.model.patch_size[2]) // (self.da3_down_ratio * self.da3_down_ratio),  # `1+` for camera token
                         sink_size=self.model.sink_size,
                         chunk_size=self.model.chunk_size,
                         max_attention_size=self.da3_max_attention_size,
@@ -582,7 +584,7 @@ class WanDiffusionDA3Wrapper(nn.Module):
         dit_x, da3_x = None, None
         da3_output = []
         blocks_to_take = [11, 15, 19, 23]  # hard-coded for DA3-large
-        pos, pos_nodiff = self.da3_model.backbone.pretrained._prepare_rope(B, tff, h*8, w*8, device)  # `8`: hard-coded for Wan2.1
+        pos, pos_nodiff = self.da3_model.backbone.pretrained._prepare_rope(B, tff, h*8//self.da3_down_ratio, w*8//self.da3_down_ratio, device)  # `8`: hard-coded for Wan2.1
 
         for i, block in enumerate(self.model.blocks):
             ## Only Wan DiT
@@ -672,17 +674,23 @@ class WanDiffusionDA3Wrapper(nn.Module):
                     dit_x = block(dit_x, **kwargs)
 
                 ### DA3
-                da3_x = da3_x if da3_x is not None else x
+                if da3_x is None:  # optional: downsample DiT features for DA3 input
+                    da3_x = rearrange(x, "b (f h w) d -> (b f) d h w", f=tff, h=h//2, w=w//2)  # `2`: hard-coded for patch embedding
+                    if self.da3_down_ratio > 1:
+                        da3_x = tF.interpolate(da3_x, scale_factor=1/self.da3_down_ratio, mode="bilinear", align_corners=True)
+                        da3_x = rearrange(da3_x, "(b f) d h w -> b (f h w) d", f=tff, h=h//(2*self.da3_down_ratio), w=w//(2*self.da3_down_ratio))  # `2`: hard-coded for patch embedding
+                else:
+                    da3_x = da3_x
                 da3_i = i - (len(self.model.blocks) - 24)
                 da3_block = self.da3_model.backbone.pretrained.blocks[da3_i]
 
                 if da3_i == 0:  # the first layer of DA3
                     B = da3_x.shape[0]
-                    da3_x = rearrange(da3_x, "b (f h w) d -> (b f) (h w) d", f=tff, h=h//2, w=w//2)  # `2`: hard-coded for patch embedding
+                    da3_x = rearrange(da3_x, "b (f h w) d -> (b f) (h w) d", f=tff, h=h//(2*self.da3_down_ratio), w=w//(2*self.da3_down_ratio))  # `2`: hard-coded for patch embedding
                     da3_x = self.da3_adapter(da3_x)  # align dimension
                     cls_token = self.da3_model.backbone.pretrained.prepare_cls_token(B, tff)
                     da3_x = torch.cat((cls_token, da3_x), dim=1)
-                    da3_x = da3_x + self.da3_model.backbone.pretrained.interpolate_pos_encoding(da3_x, h*8, w*8)  # `8`: hard-coded for Wan2.1
+                    da3_x = da3_x + self.da3_model.backbone.pretrained.interpolate_pos_encoding(da3_x, h*8//self.da3_down_ratio, w*8//self.da3_down_ratio)  # `8`: hard-coded for Wan2.1
                     da3_x = rearrange(da3_x, "(b f) n d -> b f n d", f=tff)
 
                 if da3_i < 8:  # `8`: hard-coded for DA3-large `self.rope_start`
@@ -727,12 +735,10 @@ class WanDiffusionDA3Wrapper(nn.Module):
                 if self.da3_interactive:
                     dit_x = rearrange(dit_x, "b (f h w) d -> (b f) (h w) d", f=tff, h=h//2, w=w//2)  # `2`: hard-coded for patch embedding
                     da3_x = rearrange(da3_x, "b f n d -> (b f) n d")
-                    # da3_x = rearrange(da3_x, "b f n d -> b (f n) d")
-                    dit_x_res, da3_x_res = self.dit_da3_interactive[da3_i](dit_x, da3_x[:, 1:, :])
+                    dit_x_res, da3_x_res = self.dit_da3_interactive[da3_i](dit_x, da3_x[:, 1:, :], h=h//2, w=w//2)
                     dit_x, da3_x = dit_x + dit_x_res, torch.cat([da3_x[:, :1, :], da3_x[:, 1:, :] + da3_x_res], dim=1)
                     dit_x = rearrange(dit_x, "(b f) (h w) d -> b (f h w) d", f=tff, h=h//2, w=w//2)  # `2`: hard-coded for patch embedding
                     da3_x = rearrange(da3_x, "(b f) n d -> b f n d", f=tff)
-                    # da3_x = rearrange(da3_x, "b (f n) d -> b f n d", f=tff)
 
         # Wan DiT head & unpatchify
         if self.is_causal and clean_x is not None:
@@ -758,7 +764,7 @@ class WanDiffusionDA3Wrapper(nn.Module):
         # NOTE: keep teacher forcing part for DA3
         # da3_outputs = [out[:, out.shape[1]//2:, :] for out in da3_outputs]  # remove teacher forcing part
         feats = tuple(zip(da3_outputs, camera_tokens))
-        head_outputs = self.da3_model.head(feats, h*8, w*8, patch_start_idx=0, chunk_size=self.da3_chunk_size)  # `*8`: hard-coded for Wan2.1
+        head_outputs = self.da3_model.head(feats, h*8//self.da3_down_ratio, w*8//self.da3_down_ratio, patch_start_idx=0, chunk_size=self.da3_chunk_size)  # `*8`: hard-coded for Wan2.1
         depths, depths_conf = head_outputs["depth"], head_outputs["depth_conf"]  # (B, f, H, W), (B, f, H, W)
         rays, rays_conf = head_outputs["ray"], head_outputs["ray_conf"]  # (B, f, H, W, 6), (B, f, H, W)
 
@@ -844,13 +850,14 @@ class WanDiffusionDA3Wrapper(nn.Module):
 
 
 class InteractiveModule(nn.Module):
-    def __init__(self, dim1: int, dim2: int, dim: int, num_heads: int, qk_norm=True, eps=1e-6):
+    def __init__(self, dim1: int, dim2: int, dim: int, num_heads: int, down_ratio=1, qk_norm=True, eps=1e-6):
         super().__init__()
 
         assert dim % num_heads == 0
         self.dim = dim
         self.num_heads = num_heads
         self.head_dim = dim // num_heads
+        self.down_ratio = down_ratio
         self.qk_norm = qk_norm
         self.eps = eps
 
@@ -879,7 +886,7 @@ class InteractiveModule(nn.Module):
         zero_init_module(self.o1)
         zero_init_module(self.o2)
 
-    def forward(self, x1: Tensor, x2: Tensor) -> Tuple[Tensor, Tensor]:
+    def forward(self, x1: Tensor, x2: Tensor, h=None, w=None) -> Tuple[Tensor, Tensor]:
         # reshape_fn = lambda x: rearrange(x, "b n (h hd) -> b n h hd", h=self.num_heads)
 
         # q1, k1, v1 = reshape_fn(self.q1(x1)), reshape_fn(self.k1(x1)), reshape_fn(self.v1(x1))
@@ -891,7 +898,18 @@ class InteractiveModule(nn.Module):
         # o1 = self.o1(attention(q1, k2, v2).flatten(2))
         # o2 = self.o2(attention(q2, k1, v1).flatten(2))
 
+        if self.down_ratio > 1:
+            assert h is not None and w is not None
+            x2 = rearrange(x2, "b (h w) d -> b d h w", h=h//self.down_ratio, w=w//self.down_ratio)
+            x2 = tF.interpolate(x2, scale_factor=self.down_ratio, mode="bilinear", align_corners=True)
+            x2 = rearrange(x2, "b d h w -> b (h w) d")
+
         o1 = self.o1(torch.cat([x1, x2], dim=-1))
         o2 = self.o2(torch.cat([x1, x2], dim=-1))
+
+        if self.down_ratio > 1:
+            o2 = rearrange(o2, "b (h w) d -> b d h w", h=h, w=w)
+            o2 = tF.interpolate(o2, scale_factor=1/self.down_ratio, mode="bilinear", align_corners=True)
+            o2 = rearrange(o2, "b d h w -> b (h w) d")
 
         return o1, o2

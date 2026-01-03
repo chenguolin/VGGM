@@ -372,7 +372,7 @@ class DMD_Wan(Wan):
                 if "ray_loss" not in da3_outputs or "camera_loss" not in da3_outputs:
                     assert C2W is not None and fxfycxcy is not None
                     H, W = noises.shape[-2] * 8, noises.shape[-1] * 8  # `8`: hard-coded for Wan2.1
-                    _, (ray_o, ray_d) = plucker_ray(H//2, W//2,
+                    _, (ray_o, ray_d) = plucker_ray(H//2//self.opt.da3_down_ratio, W//2//self.opt.da3_down_ratio,
                         C2W.float(), fxfycxcy.float(), normalize_ray_d=False)
                     gt_raymaps = torch.cat([ray_d, ray_o], dim=2).to(noises.dtype)  # (B, f, 6, H/2, W/2)
                     gt_pose_enc = torch.cat([
