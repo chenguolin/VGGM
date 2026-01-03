@@ -217,13 +217,35 @@ opt_dict["wan2.1_t2v_1.3b_causal"] = Options(
 
 # Self-Forcing reproduction
 opt_dict["sf_rep"] = Options(
+    use_vidprom=True,
+    input_res=(480, 832),
+    #
     is_causal=True,
+    use_teacher_forcing=False,
+    #
+    sink_size=0,
+    chunk_size=3,
+    max_window_size=21,
+    rope_outside=False,
+    num_input_frames_test=201,
+    #
     generator_path=f"{ROOT}/.cache/ode_init.pt",
+    teacher_path=None,
+    is_teacher_causal=False,
+    #
     use_dmd=True,
-    num_inference_steps=4,
-    deterministic_inference=False,
+    self_forcing_prob=1.,
+    real_guidance_scale=4.,
+    last_step_only=False,
+    context_noise=0,
+    same_step_across_chunks=True,
+    #
     name_lr_mult="fake_score",
     lr_mult=0.2,
+    #
+    num_inference_steps=4,
+    cfg_scale=(1.,),
+    deterministic_inference=False,
 )
 
 # ODE Distillation
