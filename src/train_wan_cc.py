@@ -10,6 +10,7 @@ import argparse
 import logging
 import math
 import gc
+from contextlib import nullcontext
 
 from tqdm import tqdm
 import wandb
@@ -464,7 +465,7 @@ def main():
 
             model.train()
 
-            with accelerator.accumulate(model):
+            with accelerator.accumulate(model) if not args.use_deepspeed else nullcontext():
 
                 is_eval = ((global_update_step % configs["train"]["early_eval_freq"] == 0 and
                     global_update_step < configs["train"]["early_eval"])  # 1. more frequently at the beginning
