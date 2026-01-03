@@ -106,7 +106,7 @@ class Wan(nn.Module):
                 da3_model_name=opt.da3_model_name,
                 da3_chunk_size=opt.da3_chunk_size,
                 da3_use_ray_pose=opt.da3_use_ray_pose,
-                da3_use_bicrossattn=opt.da3_use_bicrossattn and not opt.only_train_da3,
+                da3_interactive=opt.da3_interactive and not opt.only_train_da3,
                 da3_max_attention_size=opt.da3_max_attention_size,
             )
             if opt.only_train_da3:
@@ -301,8 +301,13 @@ class Wan(nn.Module):
             if self.opt.no_noise_for_da3:
                 da3_loss = (depth_loss + ray_loss + camera_loss).flatten(0, 1)  # (B*f,)
             else:  # weighted by noise level
-                da3_loss = self.diffusion.scheduler.training_weight(timesteps.flatten(0, 1)) * \
-                    (depth_loss + ray_loss + camera_loss).flatten(0, 1)  # (B*f,)
+                if self.opt.da3_weight_type == "uniform":
+                    da3_weights = 1.
+                elif self.opt.da3_weight_type == "diffusion":
+                    da3_weights = self.diffusion.scheduler.training_weight(timesteps.flatten(0, 1))
+                elif self.opt.da3_weight_type == "inverse_timestep":
+                    da3_weights = 1. / (timesteps.flatten(0, 1) + 1)
+                da3_loss = da3_weights * (depth_loss + ray_loss + camera_loss).flatten(0, 1)  # (B*f,)
             outputs["depth_loss"] = depth_loss.mean()
             outputs["ray_loss"] = ray_loss.mean()
             outputs["camera_loss"] = camera_loss.mean()

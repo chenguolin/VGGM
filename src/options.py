@@ -50,7 +50,12 @@ class Options:
     only_train_da3: bool = False
     only_train_resdit: bool = False
     no_noise_for_da3: bool = False
-    da3_use_bicrossattn: bool = True
+    da3_interactive: bool = False
+    da3_weight_type: Literal[
+        "uniform",
+        "diffusion",
+        "inverse_timestep",
+    ] = "inverse_timestep"
     da3_chunk_size: int = 8  # DPT head chunk size, not for causality
     da3_use_ray_pose: bool = False
 

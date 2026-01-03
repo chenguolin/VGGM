@@ -346,7 +346,7 @@ class WanDiffusionDA3Wrapper(nn.Module):
         da3_model_name: str = "da3-large-1.1",
         da3_chunk_size: int = 8,
         da3_use_ray_pose: bool = False,
-        da3_use_bicrossattn: bool = False,
+        da3_interactive: bool = False,
         da3_max_attention_size: int = 32781,  # 81 x 480 x 832 -> 21 x (30 x 52 + 1), +1 for camera token
     ):
         super().__init__()
@@ -407,16 +407,16 @@ class WanDiffusionDA3Wrapper(nn.Module):
 
         # Extra modules of WanDA3
         self.da3_adapter = nn.Linear(1536, 1024)  # hard-coded for Wan2.1-1.3B to DA3-large
-        if da3_use_bicrossattn:
-            self.dit_da3_attns = nn.ModuleList([
+        if da3_interactive:
+            self.dit_da3_interactive = nn.ModuleList([
                 # `1536` and `1024` are hard-coded for Wan1.3B and DA3-large
-                BiCrossAttention(dim1=1536, dim2=1024, dim=1536, num_heads=24)
+                InteractiveModule(dim1=1536, dim2=1024, dim=1536, num_heads=24)
                 for _ in range(24)  # `24`: hard-coded for DA3-large
             ])
 
         self.da3_chunk_size = da3_chunk_size
         self.da3_use_ray_pose = da3_use_ray_pose
-        self.da3_use_bicrossattn = da3_use_bicrossattn
+        self.da3_interactive = da3_interactive
         self.da3_max_attention_size = da3_max_attention_size
 
         self.is_causal = is_causal
@@ -724,11 +724,11 @@ class WanDiffusionDA3Wrapper(nn.Module):
                     da3_output.append((out_da3_x[:, :, 0], out_da3_x))
 
                 ### (Optional) Interaction
-                if self.da3_use_bicrossattn:
+                if self.da3_interactive:
                     dit_x = rearrange(dit_x, "b (f h w) d -> (b f) (h w) d", f=tff, h=h//2, w=w//2)  # `2`: hard-coded for patch embedding
                     da3_x = rearrange(da3_x, "b f n d -> (b f) n d")
                     # da3_x = rearrange(da3_x, "b f n d -> b (f n) d")
-                    dit_x_res, da3_x_res = self.dit_da3_attns[da3_i](dit_x, da3_x[:, 1:, :])
+                    dit_x_res, da3_x_res = self.dit_da3_interactive[da3_i](dit_x, da3_x[:, 1:, :])
                     dit_x, da3_x = dit_x + dit_x_res, torch.cat([da3_x[:, :1, :], da3_x[:, 1:, :] + da3_x_res], dim=1)
                     dit_x = rearrange(dit_x, "(b f) (h w) d -> b (f h w) d", f=tff, h=h//2, w=w//2)  # `2`: hard-coded for patch embedding
                     da3_x = rearrange(da3_x, "(b f) n d -> b f n d", f=tff)
@@ -843,7 +843,7 @@ class WanDiffusionDA3Wrapper(nn.Module):
         return x0_pred.to(original_dtype)
 
 
-class BiCrossAttention(nn.Module):
+class InteractiveModule(nn.Module):
     def __init__(self, dim1: int, dim2: int, dim: int, num_heads: int, qk_norm=True, eps=1e-6):
         super().__init__()
 

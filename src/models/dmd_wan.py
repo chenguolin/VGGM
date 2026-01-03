@@ -353,11 +353,22 @@ class DMD_Wan(Wan):
 
         # (Optional) Step 3: DA3 outputs
         if da3_outputs is not None:
+            ## CausVid
             if not self.use_self_forcing:
+                if "timesteps" in da3_outputs:
+                    if self.opt.da3_weight_type == "uniform":
+                        da3_weights = 1.
+                    elif self.opt.da3_weight_type == "diffusion":
+                        da3_weights = self.diffusion.scheduler.training_weight(da3_outputs["timesteps"].flatten(0, 1))
+                    elif self.opt.da3_weight_type == "inverse_timestep":
+                        da3_weights = 1. / (da3_outputs["timesteps"].flatten(0, 1) + 1)
+                else:
+                    da3_weights = 1.
+
                 if "depth_loss" not in da3_outputs:
                     assert depths is not None
                     depth_loss = self.depth_loss_fn(da3_outputs["depth"], depths, confs=da3_outputs["depth_conf"])  # (B, f)
-                    da3_outputs["depth_loss"] = depth_loss.mean()
+                    da3_outputs["depth_loss"] = (da3_weights * depth_loss.flatten(0, 1)).mean()
                 if "ray_loss" not in da3_outputs or "camera_loss" not in da3_outputs:
                     assert C2W is not None and fxfycxcy is not None
                     H, W = noises.shape[-2] * 8, noises.shape[-1] * 8  # `8`: hard-coded for Wan2.1
@@ -373,8 +384,8 @@ class DMD_Wan(Wan):
                         ## Compute geometry losses
                     ray_loss = self.ray_loss_fn(da3_outputs["ray"], gt_raymaps, confs=da3_outputs["ray_conf"])  # (B, f)
                     camera_loss = self.camera_loss_fn(da3_outputs["pose_enc"], gt_pose_enc)  # (B, f)
-                    da3_outputs["ray_loss"] = ray_loss.mean()
-                    da3_outputs["camera_loss"] = camera_loss.mean()
+                    da3_outputs["ray_loss"] = (da3_weights * ray_loss.flatten(0, 1)).mean()
+                    da3_outputs["camera_loss"] = (da3_weights * camera_loss.flatten(0, 1)).mean()
 
         return dmd_loss, dmd_grad_norm, pred_x0, da3_outputs
 
@@ -563,6 +574,8 @@ class DMD_Wan(Wan):
             model_outputs, da3_outputs = \
                 model_outputs if self.opt.load_da3 else (model_outputs, None)
             pred_x0 = self.diffusion._convert_flow_pred_to_x0(model_outputs, noisy_latents, timesteps).to(dtype)
+            if da3_outputs is not None:
+                da3_outputs["timesteps"] = timesteps
 
         gradient_mask = None  # TODO: handle generating long videos
         if self.opt.first_latent_cond:
