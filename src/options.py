@@ -241,7 +241,7 @@ opt_dict["wan2.1_t2v_1.3b_ode"] = Options(
     ode_pairs_dir=f"{ROOT}/data/ode_pairs_t2v",
     #
     num_inference_steps=4,
-    deterministic_inference=True,
+    deterministic_inference=False,
 )
 
 # Self-Forcing DMD
