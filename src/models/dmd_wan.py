@@ -142,7 +142,7 @@ class DMD_Wan(Wan):
 
         # Text encoder
         if self.text_encoder is not None:
-            if self.prompt_list is None:
+            if self.prompt_list is None or not self.use_self_forcing:
                 prompts = data["prompt"]  # a list of strings
             else:
                 prompts = np.random.choice(self.prompt_list, B, replace=False).tolist()
