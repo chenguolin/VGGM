@@ -1,6 +1,7 @@
 # Referred from https://github.com/guandeh17/Self-Forcing/blob/main/wan/modules/causal_model.py
 
 from typing import *
+from torch import Tensor
 
 from copy import deepcopy
 import math
@@ -105,6 +106,8 @@ class CausalWanSelfAttention(nn.Module):
         block_mask,
         kv_cache=None,
         current_start=0,  # use with `kv_cache`
+        #
+        memory_num_tokens=0,
     ):
         r"""
         Args:
@@ -126,6 +129,7 @@ class CausalWanSelfAttention(nn.Module):
 
         # No KV cache
         if kv_cache is None:
+            assert memory_num_tokens == 0
 
             # Teacher forcing training
             if (s == seq_lens[0].item() * 2):
@@ -166,6 +170,11 @@ class CausalWanSelfAttention(nn.Module):
 
         # Use KV cache
         else:
+            if memory_num_tokens > 0:
+                q, memory_tokens_q = q[:, :-memory_num_tokens], q[:, -memory_num_tokens:]
+                k, memory_tokens_k = k[:, :-memory_num_tokens], k[:, -memory_num_tokens:]
+                v, memory_tokens_v = v[:, :-memory_num_tokens], v[:, -memory_num_tokens:]
+
             frame_seqlen = math.prod(grid_sizes[0][1:]).item()
             if not self.rope_outside:
                 current_start_frame = current_start // frame_seqlen
@@ -231,6 +240,11 @@ class CausalWanSelfAttention(nn.Module):
                 assert input_k.shape[1] // frame_seqlen == grid_sizes_kv[0, 0]
                 input_k = causal_rope_apply(
                     input_k, grid_sizes_kv, freqs, start_frame=0).type_as(v)
+
+            if memory_num_tokens > 0:
+                roped_query = torch.cat([roped_query, memory_tokens_q], dim=1)
+                input_k = torch.cat([input_k, memory_tokens_k], dim=1)
+                input_v = torch.cat([input_v, memory_tokens_v], dim=1)
 
             x = attention(roped_query, input_k, input_v)
 
@@ -301,6 +315,8 @@ class CausalWanAttentionBlock(nn.Module):
         kv_cache=None,
         crossattn_cache=None,
         current_start=0,
+        #
+        memory_tokens=None,
     ):
         r"""
         Args:
@@ -316,11 +332,18 @@ class CausalWanAttentionBlock(nn.Module):
         e = [_e.squeeze(2) for _e in e]
         # assert e[0].dtype == torch.float32
 
+        if memory_tokens is not None:
+            memory_num_tokens = memory_tokens.shape[1]
+            x = torch.cat([x, memory_tokens], dim=1)
+            e = [torch.cat([_e, _e[:, -1:, :].repeat(1, memory_num_tokens, 1)], dim=1) for _e in e]
+        else:
+            memory_num_tokens = 0
+
         # self-attention
         y = self.self_attn(
             self.norm1(x) * (1 + e[1]) + e[0],
             seq_lens, grid_sizes, freqs,
-            block_mask, kv_cache, current_start)
+            block_mask, kv_cache, current_start, memory_num_tokens)
         # with torch.amp.autocast('cuda', dtype=torch.float32):
         x = x + y * e[2]
 
@@ -335,7 +358,10 @@ class CausalWanAttentionBlock(nn.Module):
 
         x = cross_attn_ffn(x, context, context_lens, e, crossattn_cache)
 
-        return x
+        if memory_tokens is not None:
+            return x[:, :-memory_num_tokens, :], x[:, -memory_num_tokens:, :]
+        else:
+            return x
 
 
 class CausalWanModel(ModelMixin, ConfigMixin):
@@ -686,6 +712,8 @@ class CausalWanModel(ModelMixin, ConfigMixin):
         kv_cache: dict = None,
         crossattn_cache: dict = None,
         current_start: int = 0,
+        #
+        memory_tokens: Optional[Tensor] = None,
     ):
         r"""
         Run the diffusion model with kv caching.
@@ -786,6 +814,7 @@ class CausalWanModel(ModelMixin, ConfigMixin):
                     {
                         "kv_cache": kv_cache[block_index],
                         "current_start": current_start,
+                        "memory_tokens": memory_tokens,
                     }
                 )
                 with torch.autograd.graph.save_on_cpu():
@@ -799,6 +828,7 @@ class CausalWanModel(ModelMixin, ConfigMixin):
                     {
                         "kv_cache": kv_cache[block_index],
                         "current_start": current_start,
+                        "memory_tokens": memory_tokens,
                     }
                 )
                 x = torch.utils.checkpoint.checkpoint(
@@ -812,16 +842,22 @@ class CausalWanModel(ModelMixin, ConfigMixin):
                         "kv_cache": kv_cache[block_index],
                         "crossattn_cache": crossattn_cache[block_index],
                         "current_start": current_start,
+                        "memory_tokens": memory_tokens,
                     }
                 )
                 x = block(x, **kwargs)
+            if memory_tokens is not None:
+                x, memory_tokens = x
 
         # head
         x = self.head(x, e.unflatten(0, (bt, seq_len)))
 
         # unpatchify
         x = self.unpatchify(x, grid_sizes)
-        return [u.float() for u in x]
+        if memory_tokens is not None:
+            return [u.float() for u in x], memory_tokens
+        else:
+            return [u.float() for u in x]
 
     def _forward_train(
         self,

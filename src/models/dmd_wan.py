@@ -35,9 +35,6 @@ class DMD_Wan(Wan):
             opt.teacher_input_plucker,
             #
             0,  # hard-coded `memory_num_tokens`
-            opt.memory_num_blocks,
-            opt.memory_dim,
-            opt.memory_num_heads,
             #
             opt.use_gradient_checkpointing,
             opt.use_gradient_checkpointing_offload,
@@ -72,9 +69,6 @@ class DMD_Wan(Wan):
             opt.teacher_input_plucker,
             #
             0,  # hard-coded `memory_num_tokens`
-            opt.memory_num_blocks,
-            opt.memory_dim,
-            opt.memory_num_heads,
             #
             opt.use_gradient_checkpointing,
             opt.use_gradient_checkpointing_offload,
@@ -361,7 +355,7 @@ class DMD_Wan(Wan):
                     elif self.opt.da3_weight_type == "diffusion":
                         da3_weights = self.diffusion.scheduler.training_weight(da3_outputs["timesteps"].flatten(0, 1))
                     elif self.opt.da3_weight_type == "inverse_timestep":
-                        da3_weights = 1. / (da3_outputs["timesteps"].flatten(0, 1) + 1)
+                        da3_weights = 1. / (da3_outputs["timesteps"].flatten(0, 1) + 0.1)
                 else:
                     da3_weights = 1.
 

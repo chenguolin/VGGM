@@ -178,7 +178,7 @@ class WanDiffusionWrapper(nn.Module):
         if memory_num_tokens > 0:
             self.init_state = nn.Embedding(memory_num_tokens, self.model.dim)
             self.init_state.weight.data.normal_(0., 0.02)
-            self.state, self.memory_num_tokens = None, memory_num_tokens
+        self.memory_num_tokens = memory_num_tokens
 
         self.scheduler = FlowMatchScheduler(
             num_train_timesteps=num_train_timesteps,
@@ -204,6 +204,8 @@ class WanDiffusionWrapper(nn.Module):
         crossattn_cache: Optional[List[Dict[str, Any]]] = None,
         current_start: Optional[int] = 0,
         #
+        memory_tokens: Optional[Tensor] = None,
+        #
         kv_cache_da3: Optional[List[Dict[str, Any]]] = None,  # not used; for compatibility
         current_start_da3: Optional[int] = 0,  # not used; for compatibility
         #
@@ -224,7 +226,7 @@ class WanDiffusionWrapper(nn.Module):
             plucker_embeds = None
 
         if kv_cache is not None:
-            model_outputs = torch.stack(self.model(
+            model_outputs = self.model(
                 [noisy_latent for noisy_latent in noisy_latents],
                 timesteps,
                 [prompt_embed for prompt_embed in prompt_embeds],
@@ -238,8 +240,16 @@ class WanDiffusionWrapper(nn.Module):
                 kv_cache=kv_cache,
                 crossattn_cache=crossattn_cache,
                 current_start=current_start,
-            ), dim=0)  # (B, D, f, h, w)
+                #
+                memory_tokens=memory_tokens,
+            )
+            if memory_tokens is not None:
+                model_outputs, memory_tokens = model_outputs
+            model_outputs = torch.stack(model_outputs, dim=0)  # (B, D, f, h, w)
+
         else:
+            assert memory_tokens is None
+
             if clean_x is not None:  # teacher forcing
                 model_outputs = torch.stack(self.model(
                     [noisy_latent for noisy_latent in noisy_latents],
@@ -268,7 +278,10 @@ class WanDiffusionWrapper(nn.Module):
                     [plucker_embed for plucker_embed in plucker_embeds] if plucker_embeds is not None else None,
                 ), dim=0)  # (B, D, f, h, w)
 
-        return model_outputs
+        if memory_tokens is not None:
+            return model_outputs, memory_tokens
+        else:
+            return model_outputs
 
     def _convert_flow_pred_to_x0(self, flow_pred: Tensor, xt: Tensor, timestep: Tensor) -> Tensor:
         """
@@ -365,7 +378,7 @@ class WanDiffusionDA3Wrapper(nn.Module):
         if memory_num_tokens > 0:
             self.init_state = nn.Embedding(memory_num_tokens, self.model.dim)
             self.init_state.weight.data.normal_(0., 0.02)
-            self.state, self.memory_num_tokens = None, memory_num_tokens
+        self.memory_num_tokens = memory_num_tokens
 
         self.scheduler = FlowMatchScheduler(
             num_train_timesteps=num_train_timesteps,
@@ -420,6 +433,8 @@ class WanDiffusionDA3Wrapper(nn.Module):
         kv_cache: Optional[List[Dict[str, Any]]] = None,
         crossattn_cache: Optional[List[Dict[str, Any]]] = None,
         current_start: Optional[int] = 0,
+        #
+        memory_tokens: Optional[Tensor] = None,
         #
         kv_cache_da3: Optional[List[Dict[str, Any]]] = None,
         current_start_da3: Optional[int] = 0,
@@ -579,6 +594,7 @@ class WanDiffusionDA3Wrapper(nn.Module):
                             {
                                 "kv_cache": kv_cache[i],
                                 "current_start": current_start,
+                                "memory_tokens": memory_tokens,
                             }
                         )
                     with torch.autograd.graph.save_on_cpu():
@@ -594,6 +610,7 @@ class WanDiffusionDA3Wrapper(nn.Module):
                             {
                                 "kv_cache": kv_cache[i],
                                 "current_start": current_start,
+                                "memory_tokens": memory_tokens,
                             }
                         )
                     x = torch.utils.checkpoint.checkpoint(
@@ -609,9 +626,12 @@ class WanDiffusionDA3Wrapper(nn.Module):
                                 "kv_cache": kv_cache[i],
                                 "crossattn_cache": crossattn_cache[i],
                                 "current_start": current_start,
+                                "memory_tokens": memory_tokens,
                             }
                         )
                     x = block(x, **kwargs)
+                if memory_tokens is not None:
+                    x, memory_tokens = x
 
             ## Wan DiT & DA3
             else:
@@ -623,6 +643,7 @@ class WanDiffusionDA3Wrapper(nn.Module):
                             {
                                 "kv_cache": kv_cache[i],
                                 "current_start": current_start,
+                                "memory_tokens": memory_tokens,
                             }
                         )
                     with torch.autograd.graph.save_on_cpu():
@@ -638,6 +659,7 @@ class WanDiffusionDA3Wrapper(nn.Module):
                             {
                                 "kv_cache": kv_cache[i],
                                 "current_start": current_start,
+                                "memory_tokens": memory_tokens,
                             }
                         )
                     dit_x = torch.utils.checkpoint.checkpoint(
@@ -653,9 +675,12 @@ class WanDiffusionDA3Wrapper(nn.Module):
                                 "kv_cache": kv_cache[i],
                                 "crossattn_cache": crossattn_cache[i],
                                 "current_start": current_start,
+                                "memory_tokens": memory_tokens,
                             }
                         )
                     dit_x = block(dit_x, **kwargs)
+                if memory_tokens is not None:
+                    dit_x, memory_tokens = dit_x
 
                 ### DA3
                 if da3_x is None:  # optional: downsample DiT features for DA3 input
@@ -791,7 +816,10 @@ class WanDiffusionDA3Wrapper(nn.Module):
             "fxfycxcy": fxfycxcy,       # (B, f, 4)
         }
 
-        return dit_x, da3_final_outputs
+        if memory_tokens is not None:
+            return dit_x, da3_final_outputs, memory_tokens
+        else:
+            return dit_x, da3_final_outputs
 
     def _convert_flow_pred_to_x0(self, flow_pred: Tensor, xt: Tensor, timestep: Tensor) -> Tensor:
         """

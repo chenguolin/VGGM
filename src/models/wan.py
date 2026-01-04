@@ -304,7 +304,7 @@ class Wan(nn.Module):
                 elif self.opt.da3_weight_type == "diffusion":
                     da3_weights = self.diffusion.scheduler.training_weight(timesteps.flatten(0, 1))
                 elif self.opt.da3_weight_type == "inverse_timestep":
-                    da3_weights = 1. / (timesteps.flatten(0, 1) + 1)
+                    da3_weights = 1. / (timesteps.flatten(0, 1) + 0.1)
                 da3_loss = da3_weights * (depth_loss + ray_loss + camera_loss).flatten(0, 1)  # (B*f,)
             outputs["depth_loss"] = depth_loss.mean()
             outputs["ray_loss"] = ray_loss.mean()
@@ -552,6 +552,11 @@ class Wan(nn.Module):
             ## Set KV cache
             self._initialize_kv_cache(B, device=device, dtype=dtype)
             self._initialize_crossattn_cache(B, device=device, dtype=dtype)
+            if self.opt.memory_num_tokens > 0:
+                memory_tokens = self.diffusion.init_state(torch.arange(self.opt.memory_num_tokens, device=device)).expand(B, -1, -1)
+                memory_tokens_neg = self.diffusion.init_state(torch.arange(self.opt.memory_num_tokens, device=device)).expand(B, -1, -1)
+            else:
+                memory_tokens, memory_tokens_neg = None, None
 
             ## Auto-regression steps
             assert f % self.opt.chunk_size == 0
@@ -585,9 +590,13 @@ class Wan(nn.Module):
                         crossattn_cache=self.crossattn_cache_pos,
                         current_start=chunk_idx * self.opt.chunk_size * frame_seqlen,
                         #
+                        memory_tokens=memory_tokens,
+                        #
                         kv_cache_da3=self.kv_cache_pos_da3,
                         current_start_da3=chunk_idx * self.opt.chunk_size * (frame_seqlen // (self.opt.da3_down_ratio * self.opt.da3_down_ratio) + 1),  # `+1` for camera token
                     )
+                    if memory_tokens is not None:
+                        model_outputs, memory_tokens_tmp = model_outputs  # NOTE: NOT update `memory_tokens` here
 
                     #### CFG
                     if cfg_scale > 1.:
@@ -601,9 +610,14 @@ class Wan(nn.Module):
                             crossattn_cache=self.crossattn_cache_neg,
                             current_start=chunk_idx * self.opt.chunk_size * frame_seqlen,
                             #
+                            memory_tokens=memory_tokens_neg,
+                            #
                             kv_cache_da3=self.kv_cache_neg_da3,
                             current_start_da3=chunk_idx * self.opt.chunk_size * (frame_seqlen // (self.opt.da3_down_ratio * self.opt.da3_down_ratio) + 1),  # `+1` for camera token
                         )
+                        if memory_tokens_neg is not None:
+                            model_outputs_neg, memory_tokens_neg_tmp = model_outputs_neg  # NOTE: NOT update `memory_tokens_neg` here
+
                         if not self.opt.load_da3:
                             model_outputs = model_outputs_neg + cfg_scale * (model_outputs - model_outputs_neg)
                         else:
@@ -648,9 +662,14 @@ class Wan(nn.Module):
                     crossattn_cache=self.crossattn_cache_pos,
                     current_start=chunk_idx * self.opt.chunk_size * frame_seqlen,
                     #
+                    memory_tokens=memory_tokens,
+                    #
                     kv_cache_da3=self.kv_cache_pos_da3,
                     current_start_da3=chunk_idx * self.opt.chunk_size * (frame_seqlen // (self.opt.da3_down_ratio * self.opt.da3_down_ratio) + 1),  # `+1` for camera token
                 )
+                if memory_tokens is not None:
+                    model_outputs, memory_tokens = model_outputs  # NOTE: update `memory_tokens` here
+
                 if cfg_scale > 1.:
                     model_outputs_neg = self.diffusion(
                         this_chunk_latents,
@@ -665,6 +684,9 @@ class Wan(nn.Module):
                         kv_cache_da3=self.kv_cache_neg_da3,
                         current_start_da3=chunk_idx * self.opt.chunk_size * (frame_seqlen // (self.opt.da3_down_ratio * self.opt.da3_down_ratio) + 1),  # `+1` for camera token
                     )
+                    if memory_tokens_neg is not None:
+                        model_outputs_neg, memory_tokens_neg = model_outputs_neg  # NOTE: update `memory_tokens_neg` here
+
                     if not self.opt.load_da3:
                         model_outputs = model_outputs_neg + cfg_scale * (model_outputs - model_outputs_neg)
                     else:

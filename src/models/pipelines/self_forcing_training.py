@@ -65,6 +65,10 @@ class SelfForcingTrainingPipeline:
         if self.opt.is_causal:
             self._initialize_kv_cache(B, dtype, device)
             self._initialize_crossattn_cache(B, dtype, device)
+            if self.opt.memory_num_tokens > 0:
+                memory_tokens = self.diffusion.init_state(torch.arange(self.opt.memory_num_tokens, device=device)).expand(B, -1, -1)
+            else:
+                memory_tokens = None
 
         # Auto-regression steps
         assert f % self.opt.chunk_size == 0
@@ -106,9 +110,14 @@ class SelfForcingTrainingPipeline:
                             crossattn_cache=self.crossattn_cache_pos,
                             current_start=chunk_idx * self.opt.chunk_size * frame_seqlen,
                             #
+                            memory_tokens=memory_tokens,
+                            #
                             kv_cache_da3=self.kv_cache_pos_da3,
                             current_start_da3=chunk_idx * self.opt.chunk_size * (frame_seqlen + 1),  # `+1` for camera token
                         )
+                        if memory_tokens is not None:
+                            model_outputs, memory_tokens_tmp = model_outputs  # NOTE: NOT update `memory_tokens` here
+
                         model_outputs, da3_outputs = \
                             model_outputs if self.opt.load_da3 else (model_outputs, None)
 
@@ -143,9 +152,14 @@ class SelfForcingTrainingPipeline:
                         crossattn_cache=self.crossattn_cache_pos,
                         current_start=chunk_idx * self.opt.chunk_size * frame_seqlen,
                         #
+                        memory_tokens=memory_tokens,
+                        #
                         kv_cache_da3=self.kv_cache_pos_da3,
                         current_start_da3=chunk_idx * self.opt.chunk_size * (frame_seqlen + 1),  # `+1` for camera token
                     )
+                    if memory_tokens is not None:
+                        model_outputs, memory_tokens_tmp = model_outputs  # NOTE: NOT update `memory_tokens` here
+
                     model_outputs, da3_outputs = \
                         model_outputs if self.opt.load_da3 else (model_outputs, None)
 
@@ -168,7 +182,7 @@ class SelfForcingTrainingPipeline:
                     context_timesteps.flatten(0, 1),
                 ).unflatten(0, (B, self.opt.chunk_size)).transpose(1, 2).to(dtype)
                 with torch.no_grad():
-                    self.diffusion(
+                    model_outputs = self.diffusion(
                         pred_x0,
                         context_timesteps,
                         prompt_embeds,
@@ -178,9 +192,13 @@ class SelfForcingTrainingPipeline:
                         crossattn_cache=self.crossattn_cache_pos,
                         current_start=chunk_idx * self.opt.chunk_size * frame_seqlen,
                         #
+                        memory_tokens=memory_tokens,
+                        #
                         kv_cache_da3=self.kv_cache_pos_da3,
                         current_start_da3=chunk_idx * self.opt.chunk_size * (frame_seqlen + 1),  # `+1` for camera token
                     )
+                    if memory_tokens is not None:
+                        model_outputs, memory_tokens = model_outputs  # NOTE: update `memory_tokens` here
 
         if self.opt.load_da3:
             assert da3_outputs is not None
