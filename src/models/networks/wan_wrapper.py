@@ -141,9 +141,6 @@ class WanDiffusionWrapper(nn.Module):
         input_plucker: bool = False,
         #
         memory_num_tokens: int = 0,
-        memory_num_blocks: int = 8,
-        memory_dim: int = 1024,
-        memory_num_heads: int = 8,
         #
         use_gradient_checkpointing: bool = True,
         use_gradient_checkpointing_offload: bool = False,
@@ -179,14 +176,9 @@ class WanDiffusionWrapper(nn.Module):
 
         # (Optional) Memory module
         if memory_num_tokens > 0:
-            self.memory = TransformerRNN(
-                q_dim=self.model.in_dim,  # same as `self.model.out_dim`
-                dim=memory_dim,
-                num_heads=memory_num_heads,
-                num_state_tokens=memory_num_tokens,
-                num_blocks=memory_num_blocks,
-            )
-            zero_init_module(self.memory.proj_o)
+            self.init_state = nn.Embedding(memory_num_tokens, self.model.dim)
+            self.init_state.weight.data.normal_(0., 0.02)
+            self.state, self.memory_num_tokens = None, memory_num_tokens
 
         self.scheduler = FlowMatchScheduler(
             num_train_timesteps=num_train_timesteps,
@@ -330,9 +322,6 @@ class WanDiffusionDA3Wrapper(nn.Module):
         input_plucker: bool = False,
         #
         memory_num_tokens: int = 0,
-        memory_num_blocks: int = 8,
-        memory_dim: int = 1024,
-        memory_num_heads: int = 8,
         #
         use_gradient_checkpointing: bool = True,
         use_gradient_checkpointing_offload: bool = False,
@@ -374,14 +363,9 @@ class WanDiffusionDA3Wrapper(nn.Module):
 
         # (Optional) Memory module
         if memory_num_tokens > 0:
-            self.memory = TransformerRNN(
-                q_dim=self.model.in_dim,  # same as `self.model.out_dim`
-                dim=memory_dim,
-                num_heads=memory_num_heads,
-                num_state_tokens=memory_num_tokens,
-                num_blocks=memory_num_blocks,
-            )
-            zero_init_module(self.memory.proj_o)
+            self.init_state = nn.Embedding(memory_num_tokens, self.model.dim)
+            self.init_state.weight.data.normal_(0., 0.02)
+            self.state, self.memory_num_tokens = None, memory_num_tokens
 
         self.scheduler = FlowMatchScheduler(
             num_train_timesteps=num_train_timesteps,

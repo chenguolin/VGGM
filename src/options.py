@@ -77,9 +77,6 @@ class Options:
     enable_riflex: bool = False
         ## Memory
     memory_num_tokens: int = 0
-    memory_num_blocks: int = 6
-    memory_dim: int = 1024
-    memory_num_heads: int = 8
         ## Causal
     is_causal: bool = False
     sink_size: int = 0

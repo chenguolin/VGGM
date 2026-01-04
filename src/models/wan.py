@@ -65,9 +65,6 @@ class Wan(nn.Module):
                 opt.input_plucker,
                 #
                 opt.memory_num_tokens,
-                opt.memory_num_blocks,
-                opt.memory_dim,
-                opt.memory_num_heads,
                 #
                 opt.use_gradient_checkpointing,
                 opt.use_gradient_checkpointing_offload,
@@ -90,9 +87,6 @@ class Wan(nn.Module):
                 opt.input_plucker,
                 #
                 opt.memory_num_tokens,
-                opt.memory_num_blocks,
-                opt.memory_dim,
-                opt.memory_num_heads,
                 #
                 opt.use_gradient_checkpointing,
                 opt.use_gradient_checkpointing_offload,
