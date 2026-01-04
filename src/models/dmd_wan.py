@@ -179,7 +179,7 @@ class DMD_Wan(Wan):
             fxfycxcy = data["fxfycxcy"].to(dtype)[:, idxs, ...]  # (B, f, 4)
             plucker = plucker_ray(H, W, C2W.float(), fxfycxcy.float())[0].to(dtype)  # (B, f, 6, H, W)
         else:
-            plucker = None
+            C2W, fxfycxcy, plucker = None, None, None
         if "depth" in data:
             depths = data["depth"].to(dtype)[:, idxs, ...]  # (B, f, H, W)
         else:

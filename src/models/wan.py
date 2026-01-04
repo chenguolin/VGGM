@@ -194,9 +194,12 @@ class Wan(nn.Module):
         if self.opt.load_da3:
             assert "depth" in data
             gt_depths = data["depth"].to(dtype)[:, idxs, ...]  # (B, f, H, W)
-        C2W = data["C2W"].to(dtype)[:, idxs, ...]  # (B, f, 4, 4)
-        fxfycxcy = data["fxfycxcy"].to(dtype)[:, idxs, ...]  # (B, f, 4)
-        plucker = plucker_ray(H, W, C2W.float(), fxfycxcy.float())[0].to(dtype)  # (B, f, 6, H, W)
+        if "C2W" in data and "fxfycxcy" in data:
+            C2W = data["C2W"].to(dtype)[:, idxs, ...]  # (B, f, 4, 4)
+            fxfycxcy = data["fxfycxcy"].to(dtype)[:, idxs, ...]  # (B, f, 4)
+            plucker = plucker_ray(H, W, C2W.float(), fxfycxcy.float())[0].to(dtype)  # (B, f, 6, H, W)
+        else:
+            C2W, fxfycxcy, plucker = None, None, None
 
         # Text encoder
         if self.text_encoder is not None:
@@ -351,9 +354,12 @@ class Wan(nn.Module):
             device = self.diffusion.model.device
 
         idxs = torch.arange(0, F, 4).to(device=device, dtype=torch.long)
-        C2W = data["C2W"].to(dtype)[:, idxs, ...]  # (B, f, 4, 4)
-        fxfycxcy = data["fxfycxcy"].to(dtype)[:, idxs, ...]  # (B, f, 4)
-        plucker = plucker_ray(H, W, C2W.float(), fxfycxcy.float())[0].to(dtype)  # (B, f, 6, H, W)
+        if "C2W" in data and "fxfycxcy" in data:
+            C2W = data["C2W"].to(dtype)[:, idxs, ...]  # (B, f, 4, 4)
+            fxfycxcy = data["fxfycxcy"].to(dtype)[:, idxs, ...]  # (B, f, 4)
+            plucker = plucker_ray(H, W, C2W.float(), fxfycxcy.float())[0].to(dtype)  # (B, f, 6, H, W)
+        else:
+            C2W, fxfycxcy, plucker = None, None, None
         if "depth" in data:
             depths = data["depth"].to(dtype)[:, idxs, ...]  # (B, f, H, W)
         else:
@@ -509,9 +515,12 @@ class Wan(nn.Module):
             images = torch.zeros((B, F, 3, H, W), dtype=dtype, device=device)  # (B, F, 3, H, W); not really used
 
         idxs = torch.arange(0, F, 4).to(device=device, dtype=torch.long)
-        C2W = data["C2W"].to(dtype)[:, idxs, ...]  # (B, f, 4, 4)
-        fxfycxcy = data["fxfycxcy"].to(dtype)[:, idxs, ...]  # (B, f, 4)
-        plucker = plucker_ray(H, W, C2W.float(), fxfycxcy.float())[0].to(dtype)  # (B, f, 6, H, W)
+        if "C2W" in data and "fxfycxcy" in data:
+            C2W = data["C2W"].to(dtype)[:, idxs, ...]  # (B, f, 4, 4)
+            fxfycxcy = data["fxfycxcy"].to(dtype)[:, idxs, ...]  # (B, f, 4)
+            plucker = plucker_ray(H, W, C2W.float(), fxfycxcy.float())[0].to(dtype)  # (B, f, 6, H, W)
+        else:
+            C2W, fxfycxcy, plucker = None, None, None
         if "depth" in data:
             depths = data["depth"].to(dtype)[:, idxs, ...]  # (B, f, H, W)
         else:
