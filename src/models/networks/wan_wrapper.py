@@ -678,7 +678,7 @@ class WanDiffusionDA3Wrapper(nn.Module):
                     da3_x = rearrange(x, "b (f h w) d -> (b f) d h w", f=tff, h=h//2, w=w//2)  # `2`: hard-coded for patch embedding
                     if self.da3_down_ratio > 1:
                         da3_x = tF.interpolate(da3_x, scale_factor=1/self.da3_down_ratio, mode="bilinear", align_corners=True)
-                        da3_x = rearrange(da3_x, "(b f) d h w -> b (f h w) d", f=tff, h=h//(2*self.da3_down_ratio), w=w//(2*self.da3_down_ratio))  # `2`: hard-coded for patch embedding
+                    da3_x = rearrange(da3_x, "(b f) d h w -> b (f h w) d", f=tff, h=h//(2*self.da3_down_ratio), w=w//(2*self.da3_down_ratio))  # `2`: hard-coded for patch embedding
                 else:
                     da3_x = da3_x
                 da3_i = i - (len(self.model.blocks) - 24)
