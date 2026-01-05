@@ -206,6 +206,11 @@ opt_dict["wan2.1_t2v_1.3b_causal"] = Options(
     first_latent_cond=False,
     input_plucker=True,
     #
+    # load_da3=True,
+    # da3_interactive=True,
+    # da3_weight_type="inverse_timestep",
+    # da3_down_ratio=1,
+    #
     is_causal=True,
     use_teacher_forcing=True,
     #
@@ -215,6 +220,7 @@ opt_dict["wan2.1_t2v_1.3b_causal"] = Options(
     rope_outside=False,
     #
     generator_path=f"{ROOT}/projects/VGGM/.pth",
+    # exclude_name_lr_mult="da3",
 )
 
 # Self-Forcing reproduction
