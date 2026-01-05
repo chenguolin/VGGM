@@ -23,6 +23,7 @@ class SelfForcingTrainingPipeline:
         if opt.warp_denoising_step:
             timesteps = torch.cat((diffusion.scheduler.timesteps.cpu(), torch.tensor([0], dtype=torch.float32)))
             self.denoising_step_list = timesteps[self.opt.num_train_timesteps - self.denoising_step_list]
+        self.denoising_step_list = torch.cat([self.denoising_step_list, torch.tensor([0], dtype=torch.float32)])  # add the last step
 
         self.kv_cache_pos = None
         self.crossattn_cache_pos = None
@@ -74,7 +75,7 @@ class SelfForcingTrainingPipeline:
         assert f % self.opt.chunk_size == 0
         num_chunks = f // self.opt.chunk_size
         frame_seqlen = h * w // 4  # `4`: hard-coded for 2x2 patch embedding in DiT
-        exit_flags = self.generate_and_sync_list(num_chunks, len(self.denoising_step_list), device)
+        exit_flags = self.generate_and_sync_list(num_chunks, len(self.denoising_step_list)-1, device)
 
         # Temporal denoising loop
         all_da3_outputs = [None] * num_chunks
@@ -86,7 +87,7 @@ class SelfForcingTrainingPipeline:
                 this_chunk_plucker = None
 
             # Spatial denoising loop
-            for i, timestep in enumerate(self.denoising_step_list):
+            for i, timestep in enumerate(self.denoising_step_list[:-1]):
                 # Only backprop at the randomly selected timestep (consistent across all ranks)
                 if self.opt.same_step_across_chunks:
                     exit_flag = (i == exit_flags[0])
@@ -206,19 +207,6 @@ class SelfForcingTrainingPipeline:
                 k: torch.cat([all_da3_outputs[i][k] for i in range(num_chunks)], dim=1)
                 for k in all_da3_outputs[0].keys()
             }
-
-        # # Return the denoised timesteps
-        # if not self.opt.same_step_across_chunks:
-        #     denoised_timestep_from, denoised_timestep_to = None, None
-        # elif exit_flags[0] == len(self.denoising_step_list) - 1:
-        #     denoised_timestep_to = 0
-        #     denoised_timestep_from = 1000 - torch.argmin(
-        #         (self.diffusion.scheduler.timesteps - self.denoising_step_list[exit_flags[0]]).abs(), dim=0).item()
-        # else:
-        #     denoised_timestep_to = 1000 - torch.argmin(
-        #         (self.diffusion.scheduler.timesteps - self.denoising_step_list[exit_flags[0] + 1]).abs(), dim=0).item()
-        #     denoised_timestep_from = 1000 - torch.argmin(
-        #         (self.diffusion.scheduler.timesteps - self.denoising_step_list[exit_flags[0]]).abs(), dim=0).item()
 
         return outputs, da3_outputs
 
