@@ -335,7 +335,6 @@ class CausalWanAttentionBlock(nn.Module):
         if memory_tokens is not None:
             memory_num_tokens = memory_tokens.shape[1]
             x = torch.cat([x, memory_tokens], dim=1)
-            e = [torch.cat([_e, _e[:, -1:, :].repeat(1, memory_num_tokens, 1)], dim=1) for _e in e]
         else:
             memory_num_tokens = 0
 
@@ -777,6 +776,14 @@ class CausalWanModel(ModelMixin, ConfigMixin):
             sinusoidal_embedding_1d(self.freq_dim, t.flatten()).type_as(x))
         e0 = self.time_projection(e).unflatten(1, (6, self.dim)).unflatten(0, (bt, seq_len))
         # assert e.dtype == torch.float32 and e0.dtype == torch.float32
+
+        if memory_tokens is not None:
+            num_memory_tokens = memory_tokens.shape[1]
+            t_mem = torch.zeros_like(t[:, :num_memory_tokens])
+            e_mem = self.time_embedding(
+                sinusoidal_embedding_1d(self.freq_dim, t_mem.flatten()).type_as(x))
+            e0_mem = self.time_projection(e_mem).unflatten(1, (6, self.dim)).unflatten(0, (bt, num_memory_tokens))
+            e0 = torch.cat([e0, e0_mem], dim=1)
 
         # context
         context_lens = None
