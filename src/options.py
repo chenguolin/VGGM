@@ -236,7 +236,6 @@ opt_dict["sf_rep"] = Options(
     chunk_size=3,
     max_window_size=21,
     rope_outside=False,
-    num_input_frames_test=201,
     #
     generator_path=f"{ROOT}/.cache/ode_init.pt",
     teacher_path=None,
@@ -252,6 +251,7 @@ opt_dict["sf_rep"] = Options(
     name_lr_mult="fake_score",
     lr_mult=0.2,
     #
+    num_input_frames_test=201,
     num_inference_steps=4,
     cfg_scale=(1.,),
     deterministic_inference=False,
@@ -312,6 +312,7 @@ opt_dict["wan2.1_t2v_1.3b_dmd"] = Options(
     name_lr_mult="fake_score",
     lr_mult=0.2,
     #
+    num_input_frames_test=201,
     num_inference_steps=4,
     cfg_scale=(1.,),
     deterministic_inference=False,
