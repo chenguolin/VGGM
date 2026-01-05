@@ -225,7 +225,6 @@ opt_dict["wan2.1_t2v_1.3b_causal"] = Options(
 
 # Self-Forcing reproduction
 opt_dict["sf_rep"] = Options(
-    use_vidprom=True,
     input_res=(480, 832),
     #
     is_causal=True,
