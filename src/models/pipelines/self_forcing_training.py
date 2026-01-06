@@ -114,7 +114,7 @@ class SelfForcingTrainingPipeline:
                             memory_tokens=memory_tokens,
                             #
                             kv_cache_da3=self.kv_cache_pos_da3,
-                            current_start_da3=chunk_idx * self.opt.chunk_size * (frame_seqlen + 1),  # `+1` for camera token
+                            current_start_da3=chunk_idx * self.opt.chunk_size * (frame_seqlen // (self.opt.da3_down_ratio * self.opt.da3_down_ratio) + 1),  # `+1` for camera token
                         )
                         if memory_tokens is not None:
                             model_outputs, memory_tokens_tmp = model_outputs  # NOTE: NOT update `memory_tokens` here
@@ -156,7 +156,7 @@ class SelfForcingTrainingPipeline:
                         memory_tokens=memory_tokens,
                         #
                         kv_cache_da3=self.kv_cache_pos_da3,
-                        current_start_da3=chunk_idx * self.opt.chunk_size * (frame_seqlen + 1),  # `+1` for camera token
+                        current_start_da3=chunk_idx * self.opt.chunk_size * (frame_seqlen // (self.opt.da3_down_ratio * self.opt.da3_down_ratio) + 1),  # `+1` for camera token
                     )
                     if memory_tokens is not None:
                         model_outputs, memory_tokens_tmp = model_outputs  # NOTE: NOT update `memory_tokens` here
@@ -196,7 +196,7 @@ class SelfForcingTrainingPipeline:
                         memory_tokens=memory_tokens,
                         #
                         kv_cache_da3=self.kv_cache_pos_da3,
-                        current_start_da3=chunk_idx * self.opt.chunk_size * (frame_seqlen + 1),  # `+1` for camera token
+                        current_start_da3=chunk_idx * self.opt.chunk_size * (frame_seqlen // (self.opt.da3_down_ratio * self.opt.da3_down_ratio) + 1),  # `+1` for camera token
                     )
                     if memory_tokens is not None:
                         model_outputs, memory_tokens = model_outputs  # NOTE: update `memory_tokens` here
