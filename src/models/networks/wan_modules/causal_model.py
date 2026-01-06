@@ -777,6 +777,7 @@ class CausalWanModel(ModelMixin, ConfigMixin):
         e0 = self.time_projection(e).unflatten(1, (6, self.dim)).unflatten(0, (bt, seq_len))
         # assert e.dtype == torch.float32 and e0.dtype == torch.float32
 
+        # memory tokens
         if memory_tokens is not None:
             num_memory_tokens = memory_tokens.shape[1]
             t_mem = torch.zeros_like(t[:, :num_memory_tokens])

@@ -488,6 +488,15 @@ class WanDiffusionDA3Wrapper(nn.Module):
             sinusoidal_embedding_1d(self.model.freq_dim, t.flatten()).type_as(x))
         e0 = self.model.time_projection(e).unflatten(1, (6, self.model.dim)).unflatten(0, (bt, seq_len))
 
+        # memory tokens
+        if memory_tokens is not None:
+            num_memory_tokens = memory_tokens.shape[1]
+            t_mem = torch.zeros_like(t[:, :num_memory_tokens])
+            e_mem = self.model.time_embedding(
+                sinusoidal_embedding_1d(self.model.freq_dim, t_mem.flatten()).type_as(x))
+            e0_mem = self.model.time_projection(e_mem).unflatten(1, (6, self.model.dim)).unflatten(0, (bt, num_memory_tokens))
+            e0 = torch.cat([e0, e0_mem], dim=1)
+
         # context
         context_lens = None
         context = self.model.text_embedding(
@@ -817,7 +826,7 @@ class WanDiffusionDA3Wrapper(nn.Module):
         }
 
         if memory_tokens is not None:
-            return dit_x, da3_final_outputs, memory_tokens
+            return (dit_x, da3_final_outputs), memory_tokens
         else:
             return dit_x, da3_final_outputs
 
