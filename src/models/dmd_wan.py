@@ -222,6 +222,9 @@ class DMD_Wan(Wan):
                 plucker,
                 #
                 clean_latents=latents if not use_self_forcing else None,
+                #
+                C2W=C2W,
+                fxfycxcy=fxfycxcy,
             )
 
         outputs["loss"] = critic_loss + self.opt.dmd_loss_weight * generator_loss
@@ -246,6 +249,9 @@ class DMD_Wan(Wan):
         plucker: Optional[Tensor] = None,
         #
         clean_latents: Optional[Tensor] = None,
+        #
+        C2W: Optional[Tensor] = None,
+        fxfycxcy: Optional[Tensor] = None,
     ):
         """
         Generate image/videos from noise and train the critic with generated samples.
@@ -265,6 +271,9 @@ class DMD_Wan(Wan):
                 plucker,
                 #
                 clean_latents,
+                #
+                C2W,
+                fxfycxcy,
             )
 
         # Step 2: Compute the fake prediction
@@ -332,6 +341,9 @@ class DMD_Wan(Wan):
             plucker,
             #
             clean_latents,
+            #
+            C2W,
+            fxfycxcy,
         )
 
         # Step 2: Compute the DMD loss
@@ -515,6 +527,9 @@ class DMD_Wan(Wan):
         plucker: Optional[Tensor] = None,
         #
         clean_latents: Optional[Tensor] = None,
+        #
+        C2W: Optional[Tensor] = None,
+        fxfycxcy: Optional[Tensor] = None,
     ):
         """
         Optionally simulate the generator's input from noise using backward simulation
@@ -528,6 +543,9 @@ class DMD_Wan(Wan):
                 prompt_embeds,
                 cond_latents,
                 plucker,
+                #
+                C2W,
+                fxfycxcy,
             )
         else:
             assert clean_latents is not None
@@ -583,6 +601,9 @@ class DMD_Wan(Wan):
         prompt_embeds: Tensor,
         cond_latents: Optional[Tensor] = None,
         plucker: Optional[Tensor] = None,
+        #
+        C2W: Optional[Tensor] = None,
+        fxfycxcy: Optional[Tensor] = None,
     ):
         """
         Simulate the generator's input from noise to avoid training/inference mismatch.
@@ -596,6 +617,9 @@ class DMD_Wan(Wan):
             prompt_embeds,
             cond_latents,
             plucker,
+            #
+            C2W,
+            fxfycxcy,
         )
 
     def _initialize_inference_pipeline(self):

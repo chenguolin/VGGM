@@ -46,11 +46,13 @@ class Options:
 
     # DA3
     load_da3: bool = False
+        ### Model
     da3_model_name: str = "da3-large-1.1"
     only_train_da3: bool = False
     only_train_resdit: bool = False
     no_noise_for_da3: bool = False
     da3_interactive: bool = True
+        ## Train
     da3_weight_type: Literal[
         "uniform",
         "diffusion",
@@ -59,6 +61,8 @@ class Options:
     da3_down_ratio: int = 1
     da3_chunk_size: int = 8  # DPT head chunk size, not for causality
     da3_use_ray_pose: bool = False
+        ## Self Geometry Forcing
+    da3_loss_in_sf: bool = False
 
     # VAE
     vae_path: str = f"{ROOT}/.cache/huggingface/hub/Wan-AI/Wan2.1-T2V-1.3B/Wan2.1_VAE.pth"
@@ -285,6 +289,7 @@ opt_dict["wan2.1_t2v_1.3b_dmd"] = Options(
     da3_interactive=True,
     da3_weight_type="inverse_timestep",
     da3_down_ratio=1,
+    da3_loss_in_sf=False,
     #
     is_causal=True,
     use_teacher_forcing=False,

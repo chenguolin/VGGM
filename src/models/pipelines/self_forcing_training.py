@@ -1,17 +1,23 @@
 from typing import *
 from torch import Tensor
 from src.models.wan import WanDiffusionWrapper, WanDiffusionDA3Wrapper
+from src.models.networks.taehv import TAEHV
 
 import torch
 import torch.distributed as dist
 
+from depth_anything_3.model.utils.transform import mat_to_quat
+
 from src.options import Options
+from src.models.losses import XYZLoss, CameraLoss
+from src.utils import plucker_ray
 
 
 class SelfForcingTrainingPipeline:
     def __init__(self,
         opt: Options,
         diffusion: WanDiffusionWrapper | WanDiffusionDA3Wrapper,
+        tae: Optional[TAEHV] = None,
     ):
         super().__init__()
 
@@ -28,6 +34,8 @@ class SelfForcingTrainingPipeline:
         self.kv_cache_pos = None
         self.crossattn_cache_pos = None
         self.kv_cache_pos_da3 = None
+
+        self.ray_loss_fn, self.camera_loss_fn = XYZLoss(opt), CameraLoss(opt)
 
     def generate_and_sync_list(self, num_chunks: int, num_denoising_steps: int, device: torch.device):
         rank = dist.get_rank() if dist.is_initialized() else 0
@@ -54,6 +62,9 @@ class SelfForcingTrainingPipeline:
         prompt_embeds: Tensor,
         cond_latents: Optional[Tensor] = None,
         plucker: Optional[Tensor] = None,
+        #
+        C2W: Optional[Tensor] = None,
+        fxfycxcy: Optional[Tensor] = None,
     ):
         B, _, f, h, w = noises.shape
         device, dtype = noises.device, noises.dtype
@@ -207,6 +218,27 @@ class SelfForcingTrainingPipeline:
                 k: torch.cat([all_da3_outputs[i][k] for i in range(num_chunks)], dim=1)
                 for k in all_da3_outputs[0].keys()
             }
+
+        if self.opt.da3_loss_in_sf:
+            assert C2W is not None and fxfycxcy is not None
+            H, W = self.opt.input_res
+
+            # Get ground-truth geometry labels
+            _, (ray_o, ray_d) = plucker_ray(H//2//self.opt.da3_down_ratio, W//2//self.opt.da3_down_ratio,
+                C2W.float(), fxfycxcy.float(), normalize_ray_d=False)
+            gt_raymaps = torch.cat([ray_d, ray_o], dim=2).to(dtype)  # (B, f, 6, H/2, W/2)
+            gt_pose_enc = torch.cat([
+                C2W[:, :, :3, 3].float(),  # (B, f, 3)
+                mat_to_quat(C2W[:, :, :3, :3].float()),  # (B, f, 4)
+                2. * torch.atan(1. / (2. * fxfycxcy[:, :, 1:2])),  # (B, f, 1); fy -> fov_h
+                2. * torch.atan(1. / (2. * fxfycxcy[:, :, 0:1])),  # (B, f, 1); fx -> fov_w
+            ], dim=-1).to(dtype)  # (B, f, 9)
+
+            # Compute geometry losses
+            ray_loss = self.ray_loss_fn(da3_outputs["ray"], gt_raymaps, confs=da3_outputs["ray_conf"])  # (B, f)
+            camera_loss = self.camera_loss_fn(da3_outputs["pose_enc"], gt_pose_enc)  # (B, f)
+            da3_outputs["ray_loss"] = ray_loss.mean()
+            da3_outputs["camera_loss"] = camera_loss.mean()
 
         return outputs, da3_outputs
 
