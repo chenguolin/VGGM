@@ -469,7 +469,7 @@ class SelfForcingTrainingPipeline:
             da3_outputs["ray_loss"] = ray_loss.mean()
             da3_outputs["camera_loss"] = camera_loss.mean()
 
-        return outputs, None
+        return outputs, da3_outputs
 
     def _initialize_kv_cache(self, batch_size: int, dtype: torch.dtype, device: torch.device):
         """
