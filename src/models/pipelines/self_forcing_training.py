@@ -336,7 +336,7 @@ class SelfForcingTrainingPipeline:
 
             require_grad = window_index % rolling_window_length == exit_flag
 
-            if current_start_frame == 0:
+            if current_start_frame == 0 and cond_latents is not None:
                 noisy_input = torch.cat([cond_latents, noisy_input[:, :, 1:, ...]], dim=2)
                 current_timesteps = torch.cat([torch.zeros_like(current_timesteps[:, :1]), current_timesteps[:, 1:]], dim=1)
 
