@@ -107,6 +107,7 @@ class Options:
     last_step_only: bool = False
     context_noise: int = 0
     same_step_across_chunks: bool = True
+    rolling: bool = False
         ## Teacher-forcing
     use_teacher_forcing: bool = False
         ## Noise scheduler
@@ -239,6 +240,7 @@ opt_dict["sf_rep"] = Options(
     chunk_size=3,
     max_window_size=21,
     rope_outside=False,
+    rolling=False,
     #
     generator_path=f"{ROOT}/.cache/ode_init.pt",
     teacher_path=None,
@@ -299,6 +301,7 @@ opt_dict["wan2.1_t2v_1.3b_dmd"] = Options(
     chunk_size=3,
     max_window_size=21,
     rope_outside=False,
+    rolling=False,
     #
     generator_path=f"{ROOT}/projects/VGGM/.pth",
     teacher_path=f"{ROOT}/projects/VGGM/.pth",

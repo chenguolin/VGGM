@@ -206,6 +206,10 @@ class WanDiffusionWrapper(nn.Module):
         #
         memory_tokens: Optional[Tensor] = None,
         #
+        rolling: bool = False,
+        update_cache: bool = False,
+        chunk_size: int = 1,
+        #
         kv_cache_da3: Optional[List[Dict[str, Any]]] = None,  # not used; for compatibility
         current_start_da3: Optional[int] = 0,  # not used; for compatibility
         #
@@ -242,6 +246,10 @@ class WanDiffusionWrapper(nn.Module):
                 current_start=current_start,
                 #
                 memory_tokens=memory_tokens,
+                #
+                rolling=rolling,
+                update_cache=update_cache,
+                chunk_size=chunk_size,
             )
             if memory_tokens is not None:
                 model_outputs, memory_tokens = model_outputs
@@ -436,6 +444,10 @@ class WanDiffusionDA3Wrapper(nn.Module):
         #
         memory_tokens: Optional[Tensor] = None,
         #
+        rolling: bool = False,
+        update_cache: bool = False,
+        chunk_size: int = 1,
+        #
         kv_cache_da3: Optional[List[Dict[str, Any]]] = None,
         current_start_da3: Optional[int] = 0,
         #
@@ -604,6 +616,7 @@ class WanDiffusionDA3Wrapper(nn.Module):
                                 "kv_cache": kv_cache[i],
                                 "current_start": current_start,
                                 "memory_tokens": memory_tokens,
+                                "rolling": rolling, "update_cache": update_cache, "chunk_size": chunk_size,
                             }
                         )
                     with torch.autograd.graph.save_on_cpu():
@@ -620,6 +633,7 @@ class WanDiffusionDA3Wrapper(nn.Module):
                                 "kv_cache": kv_cache[i],
                                 "current_start": current_start,
                                 "memory_tokens": memory_tokens,
+                                "rolling": rolling, "update_cache": update_cache, "chunk_size": chunk_size,
                             }
                         )
                     x = torch.utils.checkpoint.checkpoint(
@@ -636,6 +650,7 @@ class WanDiffusionDA3Wrapper(nn.Module):
                                 "crossattn_cache": crossattn_cache[i],
                                 "current_start": current_start,
                                 "memory_tokens": memory_tokens,
+                                "rolling": rolling, "update_cache": update_cache, "chunk_size": chunk_size,
                             }
                         )
                     x = block(x, **kwargs)
@@ -653,6 +668,7 @@ class WanDiffusionDA3Wrapper(nn.Module):
                                 "kv_cache": kv_cache[i],
                                 "current_start": current_start,
                                 "memory_tokens": memory_tokens,
+                                "rolling": rolling, "update_cache": update_cache, "chunk_size": chunk_size,
                             }
                         )
                     with torch.autograd.graph.save_on_cpu():
@@ -669,6 +685,7 @@ class WanDiffusionDA3Wrapper(nn.Module):
                                 "kv_cache": kv_cache[i],
                                 "current_start": current_start,
                                 "memory_tokens": memory_tokens,
+                                "rolling": rolling, "update_cache": update_cache, "chunk_size": chunk_size,
                             }
                         )
                     dit_x = torch.utils.checkpoint.checkpoint(
@@ -685,6 +702,7 @@ class WanDiffusionDA3Wrapper(nn.Module):
                                 "crossattn_cache": crossattn_cache[i],
                                 "current_start": current_start,
                                 "memory_tokens": memory_tokens,
+                                "rolling": rolling, "update_cache": update_cache, "chunk_size": chunk_size,
                             }
                         )
                     dit_x = block(dit_x, **kwargs)
@@ -731,6 +749,8 @@ class WanDiffusionDA3Wrapper(nn.Module):
                         kv_cache=kv_cache_da3[da3_i] if self.is_causal and kv_cache_da3 is not None else None,
                         current_start=current_start_da3,
                         frame_seqlen=da3_x.shape[2],  # it should be h*w//4 + 1
+                        #
+                        rolling=rolling, update_cache=update_cache, chunk_size=chunk_size,
                     )
                 else:
                     da3_x = self.da3_model.backbone.pretrained.process_attention(
@@ -742,6 +762,8 @@ class WanDiffusionDA3Wrapper(nn.Module):
                         # kv_cache=kv_cache_da3[da3_i] if self.is_causal and kv_cache_da3 is not None else None,
                         # current_start=current_start_da3,
                         # frame_seqlen=da3_x.shape[2],  # it should be h*w//4 + 1
+                        #
+                        # rolling=rolling, update_cache=update_cache, chunk_size=chunk_size,
                     )
                     local_da3_x = da3_x
 
