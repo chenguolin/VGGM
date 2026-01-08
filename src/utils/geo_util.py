@@ -24,14 +24,14 @@ def render_pt3d_points(
     fxfycxcy: Tensor,  # (f, 4)
 ):
     f = C2W.shape[0]
-    cameras = setup_pt3d_cameras(C2W, fxfycxcy)
+    cameras = setup_pt3d_cameras(H, W, C2W, fxfycxcy)
     render_setup = setup_pt3d_renderer(cameras, (H, W))
     renderer = render_setup["renderer"]
 
     point_cloud = Pointclouds(points=[points] * f, features=[colors] * f)
 
     render_images = renderer(point_cloud)  # (f, H, W, 4)
-    return render_images[..., :3].permute(0, 3, 1, 2)  # (f, 3, H, W)
+    return render_images[..., :3].permute(0, 3, 1, 2)  # (f, 3, H, W) in [0, 1]
 
 
 def setup_pt3d_renderer(cameras: PerspectiveCameras, image_size: int | Tuple[int, int]):
@@ -53,24 +53,21 @@ def setup_pt3d_renderer(cameras: PerspectiveCameras, image_size: int | Tuple[int
     return render_setup
 
 
-def setup_pt3d_cameras(C2W: Tensor, fxfycxcy: Tensor):
-    device, dtype = C2W.device, C2W.dtype
+def setup_pt3d_cameras(H: int, W: int, C2W: Tensor, fxfycxcy: Tensor):
+    device = C2W.device
 
-    R_cv_to_pt3d = torch.tensor([
-        [ 1,  0,  0],
-        [ 0, -1,  0],
-        [ 0,  0, -1],
-    ], device=device, dtype=dtype)
-
-    W2C = inverse_c2w(C2W)  # (f, 4, 4)
-    R = W2C[:, :3, :3] @ R_cv_to_pt3d.T  # (f, 3, 3)
-    T = W2C[:, :3, 3] @ R_cv_to_pt3d.T   # (f, 3)
+    R, T = C2W[:, :3, :3], C2W[:, :3, 3:]
+    R = torch.stack([-R[:, :, 0], -R[:, :, 1], R[:, :, 2]], dim=2)  # opencv/colmap -> pytorch3d
+    W2C = inverse_c2w(torch.cat([R, T], dim=2))  # (f, 4, 4)
+    R, T = W2C[:, :3, :3].permute(0, 2, 1), W2C[:, :3, 3]
 
     return PerspectiveCameras(
+        focal_length=torch.cat([fxfycxcy[:, 0:1] * W, fxfycxcy[:, 1:2] * H], dim=1),
+        principal_point=torch.cat([fxfycxcy[:, 2:3] * W, fxfycxcy[:, 3:4] * H], dim=1),
+        in_ndc=False,
+        image_size=((H, W),),
         R=R,
         T=T,
-        focal_length=fxfycxcy[:, :2],
-        principal_point=fxfycxcy[:, 2:],
         device=device,
     )
 
