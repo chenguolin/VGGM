@@ -43,7 +43,7 @@ class RealcamvidDataset(BaseDataset):
         num_frames = len(vr)
         input_frame_idxs = self._frame_sample(num_frames)
 
-        depths = None
+        depths, confs = None, None
 
         # Load cameras
         if self.opt.load_da3_cam:
@@ -61,6 +61,8 @@ class RealcamvidDataset(BaseDataset):
 
             if self.opt.load_depth:
                 depths = torch.from_numpy(da3_data["depth"][input_frame_idxs, ...]).float()  # (F, H, W)
+            if self.opt.load_conf:
+                confs = torch.from_numpy(da3_data["conf"][input_frame_idxs, ...]).float()  # (F, H, W)
 
         else:
             W2C = metadata["camera_extrinsics"]
@@ -109,4 +111,6 @@ class RealcamvidDataset(BaseDataset):
         }
         if depths is not None:
             return_dict["depth"] = depths  # (F, H, W)
+        if confs is not None:
+            return_dict["conf"] = confs  # (F, H, W)
         return return_dict
