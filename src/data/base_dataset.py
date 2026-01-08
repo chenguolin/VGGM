@@ -80,10 +80,12 @@ class BaseDataset(EasyDataset):
         # Uniformly sampling
         return clip_frame_idxs[np.linspace(0, gap-1, F, dtype=int)].tolist()
 
-    def _data_augment(self, images: Tensor, depths: Optional[Tensor], fxfycxcy: Tensor):
+    def _data_augment(self, images: Tensor, depths: Optional[Tensor], confs: Optional[Tensor], fxfycxcy: Tensor):
         images, fxfycxcy = images.clone(), fxfycxcy.clone()  # not inplace
         if depths is not None:
             depths = depths.clone()
+        if confs is not None:
+            confs = confs.clone()
 
         assert images.ndim == 4  # (F, C, H, W)
         H, W = images.shape[-2:]
@@ -111,7 +113,12 @@ class BaseDataset(EasyDataset):
             depths = tvT.Resize((scaled_H//self.opt.da3_down_ratio, scaled_W//self.opt.da3_down_ratio), tvT.InterpolationMode.NEAREST_EXACT)(depths)
             depths = tvT.CenterCrop((new_H//self.opt.da3_down_ratio, new_W//self.opt.da3_down_ratio))(depths)
 
-        return images.clamp(0., 1.), depths, fxfycxcy
+        # (Optional) Resize and CenterCrop confs
+        if confs is not None:
+            confs = tvT.Resize((scaled_H//self.opt.da3_down_ratio, scaled_W//self.opt.da3_down_ratio), tvT.InterpolationMode.NEAREST_EXACT)(confs)
+            confs = tvT.CenterCrop((new_H//self.opt.da3_down_ratio, new_W//self.opt.da3_down_ratio))(confs)
+
+        return images.clamp(0., 1.), depths, confs, fxfycxcy
 
     def _camera_normalize(self, C2W: Tensor) -> Tensor:
         C2W = C2W.clone()  # not inplace

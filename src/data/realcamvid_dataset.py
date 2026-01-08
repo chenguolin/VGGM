@@ -87,7 +87,7 @@ class RealcamvidDataset(BaseDataset):
         images = torch.stack([images[idx] for idx in input_frame_idxs]).float()  # (F, 3, H, W)
 
         # Data augmentation
-        images, depths, fxfycxcy = self._data_augment(images, depths, fxfycxcy)
+        images, depths, confs, fxfycxcy = self._data_augment(images, depths, confs, fxfycxcy)
 
         # Camera normalization
         C2W = self._camera_normalize(C2W)

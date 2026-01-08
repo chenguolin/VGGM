@@ -1,9 +1,181 @@
 from typing import *
-from numpy import ndarray
 from torch import Tensor, LongTensor, BoolTensor
 
-import numpy as np
+from math import floor, ceil
 import torch
+from einops import rearrange
+
+from pytorch3d.renderer import (
+    PointsRasterizationSettings,
+    PointsRenderer,
+    PointsRasterizer,
+    AlphaCompositor,
+    PerspectiveCameras,
+)
+from pytorch3d.structures import Pointclouds
+
+
+def render_pt3d_points(
+    H: int,
+    W: int,
+    points: Tensor,    # (M, 3)
+    colors: Tensor,    # (M, 3)
+    C2W: Tensor,       # (f, 4, 4)
+    fxfycxcy: Tensor,  # (f, 4)
+):
+    f = C2W.shape[0]
+    cameras = setup_pt3d_cameras(C2W, fxfycxcy)
+    render_setup = setup_pt3d_renderer(cameras, (H, W))
+    renderer = render_setup["renderer"]
+
+    point_cloud = Pointclouds(points=[points] * f, features=[colors] * f)
+
+    render_images = renderer(point_cloud)  # (f, H, W, 4)
+    return render_images[..., :3].permute(0, 3, 1, 2)  # (f, 3, H, W)
+
+
+def setup_pt3d_renderer(cameras: PerspectiveCameras, image_size: int | Tuple[int, int]):
+    # Define the settings for rasterization and shading.
+    raster_settings = PointsRasterizationSettings(
+        image_size=image_size,
+        radius=0.01,
+        points_per_pixel=10,
+        bin_size=0,
+    )
+
+    renderer = PointsRenderer(
+        rasterizer=PointsRasterizer(cameras=cameras, raster_settings=raster_settings),
+        compositor=AlphaCompositor(),
+    )
+
+    render_setup =  {"cameras": cameras, "raster_settings": raster_settings, "renderer": renderer}
+
+    return render_setup
+
+
+def setup_pt3d_cameras(C2W: Tensor, fxfycxcy: Tensor):
+    device, dtype = C2W.device, C2W.dtype
+
+    R_cv_to_pt3d = torch.tensor([
+        [ 1,  0,  0],
+        [ 0, -1,  0],
+        [ 0,  0, -1],
+    ], device=device, dtype=dtype)
+
+    W2C = inverse_c2w(C2W)  # (f, 4, 4)
+    R = W2C[:, :3, :3] @ R_cv_to_pt3d.T  # (f, 3, 3)
+    T = W2C[:, :3, 3] @ R_cv_to_pt3d.T   # (f, 3)
+
+    return PerspectiveCameras(
+        R=R,
+        T=T,
+        focal_length=fxfycxcy[:, :2],
+        principal_point=fxfycxcy[:, 2:],
+        device=device,
+    )
+
+
+def filter_da3_points(
+    images: Tensor,    # (f, 3, H, W) in [0, 1]
+    depths: Tensor,    # (f, H, W)
+    confs: Tensor,     # (f, H, W)
+    C2W: Tensor,       # (f, 4, 4)
+    fxfycxcy: Tensor,  # (f, 4)
+    *,
+    filter_black_bg: bool = False,
+    filter_white_bg: bool = False,
+    conf_thresh: float = 1.05,
+    conf_thresh_percentile: float = 0.4,
+    ensure_thresh_percentile: float = 0.9,
+):
+    if filter_black_bg:
+        confs[(images < 16/255).all(dim=1, keepdim=True)] = 1.  # black pixels
+    if filter_white_bg:
+        confs[(images >= 240/255).all(dim=1, keepdim=True)] = 1.  # black pixels
+
+    lower = torch_quantile(confs, conf_thresh_percentile).item()
+    upper = torch_quantile(confs, ensure_thresh_percentile).item()
+    conf_thresh = min(max(conf_thresh, lower), upper)
+    valid_masks = confs > conf_thresh  # (f, H, W)
+
+    points = unproject_depth(depths[None], C2W[None], fxfycxcy[None])[0]  # (f, 3, H, W)
+
+    points = rearrange(points, "f c h w -> (f h w) c")
+    colors = rearrange(images, "f c h w -> (f h w) c")
+    valid_masks = rearrange(valid_masks, "f h w -> (f h w)")
+    return points[valid_masks, :], colors[valid_masks, :]  # (M, 3), (M, 3)
+
+
+def torch_quantile(
+    input: Tensor,
+    q: float,
+    dim = None,
+    keepdim: bool = False,
+    *,
+    interpolation: str = "nearest",
+    out: Tensor = None,
+) -> torch.Tensor:
+    """Better torch.quantile for one SCALAR quantile.
+
+    Using torch.kthvalue. Better than torch.quantile because:
+        - No 2**24 input size limit (pytorch/issues/67592),
+        - Much faster, at least on big input sizes.
+
+    Arguments:
+        input (torch.Tensor): See torch.quantile.
+        q (float): See torch.quantile. Supports only scalar input
+            currently.
+        dim (int | None): See torch.quantile.
+        keepdim (bool): See torch.quantile. Supports only False
+            currently.
+        interpolation: {"nearest", "lower", "higher"}
+            See torch.quantile.
+        out (torch.Tensor | None): See torch.quantile. Supports only
+            None currently.
+    """
+    # https://github.com/pytorch/pytorch/issues/64947
+    # Sanitization: q
+    try:
+        q = float(q)
+        assert 0 <= q <= 1
+    except Exception:
+        raise ValueError(f"Only scalar input 0<=q<=1 is currently supported (got {q})!")
+
+    # Handle dim=None case
+    if dim_was_none := dim is None:
+        dim = 0
+        input = input.reshape((-1,) + (1,) * (input.ndim - 1))
+
+    # Set interpolation method
+    if interpolation == "nearest":
+        inter = round
+    elif interpolation == "lower":
+        inter = floor
+    elif interpolation == "higher":
+        inter = ceil
+    else:
+        raise ValueError(
+            "Supported interpolations currently are {'nearest', 'lower', 'higher'} "
+            f"(got '{interpolation}')!"
+        )
+
+    # Validate out parameter
+    if out is not None:
+        raise ValueError(f"Only None value is currently supported for out (got {out})!")
+
+    # Compute k-th value
+    k = inter(q * (input.shape[dim] - 1)) + 1
+    out = torch.kthvalue(input, k, dim, keepdim=True, out=out)[0]
+
+    # Handle keepdim and dim=None cases
+    if keepdim:
+        return out
+    if dim_was_none:
+        return out.squeeze()
+    else:
+        return out.squeeze(dim)
+
+    return out
 
 
 def project_points(
