@@ -59,7 +59,7 @@ class Options:
         "uniform",
         "diffusion",
         "inverse_timestep",
-    ] = "inverse_timestep"
+    ] = "uniform"
     da3_down_ratio: int = 1
     da3_chunk_size: int = 8  # DPT head chunk size, not for causality
     da3_use_ray_pose: bool = False
@@ -215,7 +215,7 @@ opt_dict["wan2.1_t2v_1.3b_causal"] = Options(
     #
     # load_da3=True,
     # da3_interactive=True,
-    # da3_weight_type="inverse_timestep",
+    # da3_weight_type="uniform",
     # da3_down_ratio=1,
     #
     is_causal=True,
@@ -291,7 +291,7 @@ opt_dict["wan2.1_t2v_1.3b_dmd"] = Options(
     #
     load_da3=False,
     da3_interactive=True,
-    da3_weight_type="inverse_timestep",
+    da3_weight_type="uniform",
     da3_down_ratio=1,
     da3_loss_in_sf=False,
     #
