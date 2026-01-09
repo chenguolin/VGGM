@@ -41,7 +41,7 @@ class RealcamvidDataset(BaseDataset):
         video_path = os.path.join(self.root, metadata["video_path"])
         vr = VideoReader(str(video_path), ctx=cpu(0))
         num_frames = len(vr)
-        input_frame_idxs = self._frame_sample(num_frames)
+        input_frame_idxs = self._frame_sample(num_frames, pingpong_threshold=self.opt.pingpong_threshold)
 
         depths, confs = None, None
 

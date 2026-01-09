@@ -27,6 +27,7 @@ class Options:
     num_input_frames: int = 81
     num_input_frames_test: Optional[int] = None
     crop_resize_ratio: Tuple[float, float] = (0.77, 1.)
+    pingpong_threshold: int = 64
     load_da3_cam: bool = True
     load_depth: bool = True
     load_conf: bool = False
