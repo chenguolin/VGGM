@@ -33,6 +33,7 @@ class Options:
     load_conf: bool = False
     normalize_xyz: bool = True
     use_vidprom: bool = False
+    use_short_caption: bool = False
         ## Camera normalization
     camera_norm_type: Literal[
         "none",

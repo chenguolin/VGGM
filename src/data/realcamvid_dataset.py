@@ -35,13 +35,17 @@ class RealcamvidDataset(BaseDataset):
         #     prompt = metadata["long_caption"]
         # else:
         #     prompt = metadata["short_caption"]
-        prompt = metadata["long_caption"]
+        if self.opt.use_short_caption:
+            prompt = metadata["short_caption"]
+        else:
+            prompt = metadata["long_caption"]
 
         # Sample frames
         video_path = os.path.join(self.root, metadata["video_path"])
         vr = VideoReader(str(video_path), ctx=cpu(0))
         num_frames = len(vr)
-        input_frame_idxs = self._frame_sample(num_frames, pingpong_threshold=self.opt.pingpong_threshold)
+        input_frame_idxs = self._frame_sample(num_frames,
+            pingpong_threshold=self.opt.pingpong_threshold if "Mira" not in uid else -1)  # not reverse videos for dynamic MiraData
 
         depths, confs = None, None
 
