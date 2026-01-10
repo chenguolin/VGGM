@@ -149,11 +149,8 @@ class VAEDecoderWrapper(nn.Module):
             z: torch.Tensor,
             *feat_cache: List[torch.Tensor]
     ):
-        # from [batch_size, num_frames, num_channels, height, width]
-        # to [batch_size, num_channels, num_frames, height, width]
-        z = z.permute(0, 2, 1, 3, 4)
         feat_cache = list(feat_cache)
-        print("Length of feat_cache: ", len(feat_cache))
+        # print("Length of feat_cache: ", len(feat_cache))
 
         device, dtype = z.device, z.dtype
         scale = [self.mean.to(device=device, dtype=dtype),
@@ -178,9 +175,6 @@ class VAEDecoderWrapper(nn.Module):
                 out = torch.cat([out, out_], 2)
 
         out = out.float().clamp_(-1, 1)
-        # from [batch_size, num_channels, num_frames, height, width]
-        # to [batch_size, num_frames, num_channels, height, width]
-        out = out.permute(0, 2, 1, 3, 4)
         return out, feat_cache
 
 

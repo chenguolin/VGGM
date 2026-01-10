@@ -15,6 +15,7 @@ from pytorch3d.renderer import (
 from pytorch3d.structures import Pointclouds
 
 
+@torch.autocast(device_type="cuda", enabled=False)
 def render_pt3d_points(
     H: int,
     W: int,
@@ -25,17 +26,17 @@ def render_pt3d_points(
     return_masks: bool = False,
 ):
     f = C2W.shape[0]
-    cameras = setup_pt3d_cameras(H, W, C2W, fxfycxcy)
+    cameras = setup_pt3d_cameras(H, W, C2W.float(), fxfycxcy.float())
     render_setup = setup_pt3d_renderer(cameras, (H, W))
     renderer = render_setup["renderer"]
 
-    point_cloud = Pointclouds(points=[points] * f, features=[colors] * f)
+    point_cloud = Pointclouds(points=[points.float()] * f, features=[colors.float()] * f)
 
     render_images = renderer(point_cloud).permute(0, 3, 1, 2)  # (f, 4, H, W)
     if not return_masks:
-        return render_images[..., :3]  # (f, 3, H, W) in [0, 1]
+        return render_images[:, :3, ...]  # (f, 3, H, W) in [0, 1]
     else:
-        return render_images[..., :3], render_images[..., 3]  # (f, 3, H, W) in [0, 1], (f, H, W)
+        return render_images[:, :3, ...], render_images[:, 3, ...]  # (f, 3, H, W) in [0, 1], (f, H, W)
 
 
 def setup_pt3d_renderer(cameras: PerspectiveCameras, image_size: int | Tuple[int, int]):
@@ -89,16 +90,18 @@ def filter_da3_points(
     conf_thresh_percentile: float = 0.4,
     ensure_thresh_percentile: float = 0.9,
     random_sample_ratio: float = -1.,
+    min_num_points: int = 10000,
+    max_num_points: int = 1000000,
 ):
     if filter_black_bg:
         confs[(images < 16/255).all(dim=1, keepdim=True)] = 1.  # black pixels
     if filter_white_bg:
-        confs[(images >= 240/255).all(dim=1, keepdim=True)] = 1.  # black pixels
+        confs[(images >= 240/255).all(dim=1, keepdim=True)] = 1.  # white pixels
 
     lower = torch_quantile(confs, conf_thresh_percentile).item()
     upper = torch_quantile(confs, ensure_thresh_percentile).item()
     conf_thresh = min(max(conf_thresh, lower), upper)
-    valid_masks = confs > conf_thresh  # (f, H, W)
+    valid_masks = confs >= conf_thresh  # (f, H, W)
 
     points = unproject_depth(depths[None], C2W[None], fxfycxcy[None])[0]  # (f, 3, H, W)
 
@@ -108,7 +111,7 @@ def filter_da3_points(
     valid_points, valid_colors = points[valid_masks, :], colors[valid_masks, :]  # (M, 3), (M, 3)
 
     if random_sample_ratio > 0. and random_sample_ratio <= 1.:
-        sample_size = int(random_sample_ratio * valid_points.shape[0])
+        sample_size = min(max_num_points, max(min_num_points, int(random_sample_ratio * valid_points.shape[0])))
         rand_idxs = torch.randperm(valid_points.shape[0], device=valid_points.device)[:sample_size]
         valid_points, valid_colors = valid_points[rand_idxs, :], valid_colors[rand_idxs, :]
     return valid_points, valid_colors
@@ -121,7 +124,7 @@ def torch_quantile(
     *,
     interpolation: str = "nearest",
     out: Tensor = None,
-) -> torch.Tensor:
+) -> Tensor:
     """Better torch.quantile for one SCALAR quantile.
 
     Using torch.kthvalue. Better than torch.quantile because:

@@ -88,6 +88,8 @@ class Options:
     enable_riflex: bool = False
     conf_thresh_percentile: float = 0.4
     rand_pcrender_ratio: float = 0.01
+    min_num_points: int = 10000
+    max_num_points: int = 1000000
         ## Memory
     memory_num_tokens: int = 0
         ## Causal

@@ -1,7 +1,7 @@
 from typing import *
 from torch import Tensor
 from src.models.wan import WanDiffusionWrapper, WanDiffusionDA3Wrapper
-from src.models.networks.taehv import TAEHV
+from src.models.networks import VAEDecoderWrapper, TAEHV
 
 import torch
 import torch.distributed as dist
@@ -10,14 +10,15 @@ from depth_anything_3.model.utils.transform import mat_to_quat
 
 from src.options import Options
 from src.models.losses import XYZLoss, CameraLoss
-from src.utils import plucker_ray
+from src.utils.constant import ZERO_VAE_CACHE
+from src.utils import plucker_ray, filter_da3_points, render_pt3d_points
 
 
 class SelfForcingTrainingPipeline:
     def __init__(self,
         opt: Options,
         diffusion: WanDiffusionWrapper | WanDiffusionDA3Wrapper,
-        tae: Optional[TAEHV] = None,
+        current_vae_decoder: Optional[VAEDecoderWrapper | TAEHV] = None,
     ):
         super().__init__()
 
@@ -36,6 +37,8 @@ class SelfForcingTrainingPipeline:
         self.kv_cache_pos_da3 = None
 
         self.ray_loss_fn, self.camera_loss_fn = XYZLoss(opt), CameraLoss(opt)
+
+        self.current_vae_decoder = current_vae_decoder
 
     def generate_and_sync_list(self, num_chunks: int, num_denoising_steps: int, device: torch.device):
         rank = dist.get_rank() if dist.is_initialized() else 0
@@ -88,6 +91,23 @@ class SelfForcingTrainingPipeline:
         frame_seqlen = h * w // 4  # `4`: hard-coded for 2x2 patch embedding in DiT
         exit_flags = self.generate_and_sync_list(num_chunks, len(self.denoising_step_list)-1, device)
 
+        # (Optional) Point cloud rendering
+        if self.opt.extra_condition_dim > 0:
+            assert self.opt.load_da3
+
+            if cond_latents is not None:
+                raise NotImplementedError  # TODO
+            else:
+                render_images = torch.zeros((B, self.opt.chunk_size, 3, h*8, w*8), dtype=dtype, device=device)  # `8`: hard-coded for Wan2.1
+            render_images_vis = render_images
+
+            current_images_f = None
+            vae_cache = ZERO_VAE_CACHE
+            for i in range(len(vae_cache)):
+                vae_cache[i] = vae_cache[i].to(device=device, dtype=dtype)
+        else:
+            render_images = None
+
         # Temporal denoising loop
         all_da3_outputs = [None] * num_chunks
         for chunk_idx in range(num_chunks):
@@ -117,6 +137,7 @@ class SelfForcingTrainingPipeline:
                             timesteps,
                             prompt_embeds,
                             plucker=this_chunk_plucker,
+                            extra_condition=render_images,
                             #
                             kv_cache=self.kv_cache_pos,
                             crossattn_cache=self.crossattn_cache_pos,
@@ -159,6 +180,7 @@ class SelfForcingTrainingPipeline:
                         timesteps,
                         prompt_embeds,
                         plucker=this_chunk_plucker,
+                        extra_condition=render_images,
                         #
                         kv_cache=self.kv_cache_pos,
                         crossattn_cache=self.crossattn_cache_pos,
@@ -183,7 +205,7 @@ class SelfForcingTrainingPipeline:
             all_da3_outputs[chunk_idx] = da3_outputs
 
             # Rerun with timestep `context_timestep` to update KV cache
-            if self.opt.is_causal:
+            if self.opt.is_causal and chunk_idx < num_chunks - 1:
                 context_timesteps = self.opt.context_noise * torch.ones_like(timesteps)
                 if chunk_idx == 0 and cond_latents is not None:
                     context_timesteps = torch.cat([torch.zeros_like(context_timesteps[:, :1]), context_timesteps[:, 1:]], dim=1)
@@ -199,6 +221,7 @@ class SelfForcingTrainingPipeline:
                         context_timesteps,
                         prompt_embeds,
                         plucker=this_chunk_plucker,
+                        extra_condition=render_images,
                         #
                         kv_cache=self.kv_cache_pos,
                         crossattn_cache=self.crossattn_cache_pos,
@@ -211,6 +234,42 @@ class SelfForcingTrainingPipeline:
                     )
                     if memory_tokens is not None:
                         model_outputs, memory_tokens = model_outputs  # NOTE: update `memory_tokens` here
+
+                # (Optional) Update render images for next chunks
+                if self.opt.extra_condition_dim > 0:
+                    assert self.current_vae_decoder is not None
+
+                    _current_images_f, vae_cache = self.current_vae_decoder(pred_x0, *vae_cache)
+                    _current_images_f = (_current_images_f.clamp(-1., 1.) + 1.) / 2.
+                    _idxs = torch.arange(3, _current_images_f.shape[2], 4).to(device=device, dtype=torch.long)
+                    _current_images_f = _current_images_f[:, :, _idxs, :, :].transpose(1, 2)  # (B, f_chunk, 3, H, W)
+                    assert _current_images_f.shape[1] == self.opt.chunk_size
+                    if current_images_f is None:
+                        current_images_f = _current_images_f
+                    else:
+                        current_images_f = torch.cat([current_images_f, _current_images_f], dim=1)  # (B, f', 3, H, W)
+
+                    current_depths = torch.cat([all_da3_outputs[i]["depth"] for i in range(chunk_idx + 1)], dim=1)  # (B, f', H, W)
+                    current_confs = torch.cat([all_da3_outputs[i]["depth_conf"] for i in range(chunk_idx + 1)], dim=1)  # (B, f', H, W)
+                    current_C2W = torch.cat([all_da3_outputs[i]["C2W"] for i in range(chunk_idx + 1)], dim=1)  # (B, f', 4, 4)
+                    current_fxfycxcy = torch.cat([all_da3_outputs[i]["fxfycxcy"] for i in range(chunk_idx + 1)], dim=1)  # (B, f', 4)
+
+                    all_render_images = []
+                    for i in range(B):
+                        points, colors = filter_da3_points(
+                            current_images_f[i], current_depths[i], current_confs[i], current_C2W[i], current_fxfycxcy[i],
+                            conf_thresh_percentile=self.opt.conf_thresh_percentile,
+                            random_sample_ratio=self.opt.rand_pcrender_ratio,
+                            min_num_points=self.opt.min_num_points,
+                            max_num_points=self.opt.max_num_points,
+                        )
+                        render_images = render_pt3d_points(H, W, points, colors,
+                            C2W[i, (chunk_idx + 1) * self.opt.chunk_size:(chunk_idx + 2) * self.opt.chunk_size, ...],
+                            fxfycxcy[i, (chunk_idx + 1) * self.opt.chunk_size:(chunk_idx + 2) * self.opt.chunk_size, ...],
+                        ).to(dtype)
+                        all_render_images.append(render_images)
+                    render_images = torch.stack(all_render_images, dim=0)  # (B, f_chunk, 3, H, W)
+                    render_images_vis = torch.cat([render_images_vis, render_images], dim=1)
 
         if self.opt.load_da3:
             assert da3_outputs is not None
@@ -239,6 +298,9 @@ class SelfForcingTrainingPipeline:
             camera_loss = self.camera_loss_fn(da3_outputs["pose_enc"], gt_pose_enc)  # (B, f)
             da3_outputs["ray_loss"] = ray_loss.mean()
             da3_outputs["camera_loss"] = camera_loss.mean()
+
+        if render_images is not None:
+            da3_outputs["images_render"] = render_images_vis
 
         return outputs, da3_outputs
 

@@ -21,9 +21,12 @@ from src.models.networks import (
     WanVAEWrapper,
     WanDiffusionWrapper,
     WanDiffusionDA3Wrapper,
+    VAEDecoderWrapper,
+    TAEHV,
 )
 from src.models.losses import XYZLoss, DepthLoss, CameraLoss
-from src.utils import convert_to_buffer, plucker_ray, colorize_depth
+from src.utils.constant import ZERO_VAE_CACHE
+from src.utils import convert_to_buffer, plucker_ray, colorize_depth, filter_da3_points, render_pt3d_points
 
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -41,6 +44,26 @@ class Wan(nn.Module):
                 self.prompt_list = [line.rstrip() for line in f]
         else:
             self.prompt_list = None
+
+        # (Optinoal) Causal VAE decoder
+        if opt.input_pcrender and opt.is_causal:
+            if not opt.load_tae:
+                self.current_vae_decoder = VAEDecoderWrapper()
+                vae_state_dict = torch.load(opt.vae_path, map_location="cpu", weights_only=True)
+                decoder_state_dict = {}
+                for key, value in vae_state_dict.items():
+                    if "decoder." in key or "conv2" in key:
+                        decoder_state_dict[key] = value
+                self.current_vae_decoder.load_state_dict(decoder_state_dict)
+            else:  # TODO: support TAE
+                self.current_vae_decoder = TAEHV(opt.tae_path)
+
+            if opt.use_deepspeed_zero3:
+                self.current_vae_decoder.requires_grad_(False)  # for ZeRO3 parameter split
+            else:
+                convert_to_buffer(self.current_vae_decoder, persistent=False)  # no gradient & not save to checkpoint
+        else:
+            self.current_vae_decoder = None
 
         # Text encoder
         if opt.load_text_encoder:
@@ -226,6 +249,69 @@ class Wan(nn.Module):
         f = latents.shape[2]
         cond_latents = cond_latents if torch.rand(1).item() < self.opt.random_i2v_prob else None
 
+        # (Optional) Point cloud rendering
+        if self.opt.extra_condition_dim > 0:
+            assert "depth" in data and "conf" in data and C2W is not None and fxfycxcy is not None
+            depths = data["depth"].to(dtype)[:, idxs, ...]  # (B, f, H, W)
+            confs = data["conf"].to(dtype)[:, idxs, ...]  # (B, f, H, W)
+            images_f = images[:, idxs, ...]  # (B, f, 3, H, W)
+            with torch.no_grad():
+                if not self.opt.is_causal:
+                    all_render_images = []
+                    for i in range(B):
+                        points, colors = filter_da3_points(
+                            images_f[i], depths[i], confs[i], C2W[i], fxfycxcy[i],
+                            conf_thresh_percentile=self.opt.conf_thresh_percentile,
+                            random_sample_ratio=self.opt.rand_pcrender_ratio,
+                            min_num_points=self.opt.min_num_points,
+                            max_num_points=self.opt.max_num_points,
+                        )
+                        render_images = render_pt3d_points(H, W, points, colors, C2W[i], fxfycxcy[i])  # (f, 3, H, W) in [0, 1]
+                        all_render_images.append(render_images.to(dtype))
+                    render_images = torch.stack(all_render_images, dim=0)  # (B, f, 3, H, W) in [0, 1]
+                else:  # teacher forcing style conditioning
+                    all_render_images = []
+                    for i in range(B):
+                        assert f % self.opt.chunk_size == 0
+                        num_chunks = f // self.opt.chunk_size
+                        all_render_images_chunk = []
+                        for ci in range(num_chunks-1):
+                            chunk_idxs = torch.arange(ci * self.opt.chunk_size, (ci + 1) * self.opt.chunk_size).to(device=device, dtype=torch.long)
+                            next_chunk_idxs = torch.arange((ci + 1) * self.opt.chunk_size, (ci + 2) * self.opt.chunk_size).to(device=device, dtype=torch.long)
+                            points, colors = filter_da3_points(
+                                images_f[i, chunk_idxs], depths[i, chunk_idxs], confs[i, chunk_idxs], C2W[i, chunk_idxs], fxfycxcy[i, chunk_idxs],
+                                conf_thresh_percentile=self.opt.conf_thresh_percentile,
+                                random_sample_ratio=self.opt.rand_pcrender_ratio,
+                                min_num_points=self.opt.min_num_points,
+                                max_num_points=self.opt.max_num_points,
+                            )
+                            render_images = render_pt3d_points(H, W, points, colors, C2W[i, next_chunk_idxs], fxfycxcy[i, next_chunk_idxs]).to(dtype)  # (f_chunk, 3, H, W) in [0, 1]
+                            all_render_images_chunk.append(render_images)
+                        all_render_images_chunk = torch.cat(all_render_images_chunk, dim=0)  # (f-f_chunk, 3, H, W)
+
+                        if cond_latents is not None:
+                            points, colors = filter_da3_points(
+                                images_f[i, 0:1], depths[i, 0:1], confs[i, 0:1], C2W[i, 0:1], fxfycxcy[i, 0:1],
+                                conf_thresh_percentile=self.opt.conf_thresh_percentile,
+                                random_sample_ratio=self.opt.rand_pcrender_ratio,
+                                min_num_points=self.opt.min_num_points,
+                                max_num_points=self.opt.max_num_points,
+                            )
+                            all_render_images_chunk = torch.cat([
+                                render_pt3d_points(H, W, points, colors, C2W[i, :self.opt.chunk_size], fxfycxcy[i, :self.opt.chunk_size]).to(dtype),
+                                all_render_images_chunk,
+                            ], dim=0)  # (f, 3, H, W)
+                        else:
+                            all_render_images_chunk = torch.cat([
+                                torch.zeros_like(all_render_images_chunk[:self.opt.chunk_size, ...]),
+                                all_render_images_chunk,
+                            ], dim=0)  # (f, 3, H, W)
+
+                        all_render_images.append(all_render_images_chunk)
+                    render_images = torch.stack(all_render_images, dim=0)  # (B, f, 3, H, W)
+        else:
+            render_images = None
+
         # Diffusion
         self.diffusion.scheduler.set_timesteps(self.opt.num_train_timesteps, training=True)
         noises = torch.randn_like(latents)
@@ -264,6 +350,7 @@ class Wan(nn.Module):
             timesteps,
             prompt_embeds,
             plucker=plucker if self.opt.input_plucker else None,
+            extra_condition=render_images,
             #
             clean_x=latents if self.opt.use_teacher_forcing else None,
         )
@@ -323,6 +410,9 @@ class Wan(nn.Module):
             if self.opt.load_da3:
                 outputs["images_gt_depth"] = colorize_depth(1./gt_depths, batch_mode=True)
                 outputs["images_pred_depth"] = colorize_depth(1./da3_outputs["depth"], batch_mode=True)
+
+            if render_images is not None:
+                outputs["images_render"] = render_images
 
         return outputs
 
@@ -390,13 +480,34 @@ class Wan(nn.Module):
             cond_latents = None
         cond_latents = cond_latents if torch.rand(1).item() < self.opt.random_i2v_prob else None
 
+        # (Optional) Point cloud rendering
+        if self.opt.extra_condition_dim > 0:
+            assert "depth" in data and "conf" in data and C2W is not None and fxfycxcy is not None
+            depths = data["depth"].to(dtype)[:, idxs, ...]  # (B, f, H, W)
+            confs = data["conf"].to(dtype)[:, idxs, ...]  # (B, f, H, W)
+            images_f = images[:, idxs, ...]  # (B, f, 3, H, W)
+            all_render_images = []
+            for i in range(B):
+                points, colors = filter_da3_points(
+                    images_f[i], depths[i], confs[i], C2W[i], fxfycxcy[i],
+                    conf_thresh_percentile=self.opt.conf_thresh_percentile,
+                    random_sample_ratio=self.opt.rand_pcrender_ratio,
+                    min_num_points=self.opt.min_num_points,
+                    max_num_points=self.opt.max_num_points,
+                )
+                render_images = render_pt3d_points(H, W, points, colors, C2W[i], fxfycxcy[i]).to(dtype)  # (f, 3, H, W) in [0, 1]
+                all_render_images.append(render_images.to(dtype))
+            render_images = torch.stack(all_render_images, dim=0)  # (B, f, 3, H, W) in [0, 1]
+        else:
+            render_images = None
+
         # Denoising
         for cfg_scale in self.opt.cfg_scale:
             latents = torch.randn(B, self.opt.latent_dim, f, h, w, device=device, dtype=dtype)
             if cond_latents is not None:
                 latents = torch.cat([cond_latents, latents[:, :, 1:, ...]], dim=2)
 
-            for i, timestep in tqdm(enumerate(self.diffusion.scheduler.timesteps),
+            for ti, timestep in tqdm(enumerate(self.diffusion.scheduler.timesteps),
                 total=len(self.diffusion.scheduler.timesteps), ncols=125, disable=not verbose, desc="[Denoise]"):
                 timesteps = timestep * torch.ones(B, f).to(dtype=dtype, device=device)
                 if cond_latents is not None:
@@ -408,6 +519,7 @@ class Wan(nn.Module):
                     timesteps,
                     prompt_embeds,
                     plucker=plucker if self.opt.input_plucker else None,
+                    extra_condition=render_images,
                 )
 
                 ## CFG
@@ -417,6 +529,7 @@ class Wan(nn.Module):
                         timesteps,
                         negative_prompt_embeds,  # torch.zeros_like(prompt_embeds)
                         plucker=plucker if self.opt.input_plucker else None,
+                        extra_condition=render_images,
                     )
                     if not self.opt.load_da3:
                         model_outputs = model_outputs_neg + cfg_scale * (model_outputs - model_outputs_neg)
@@ -437,8 +550,8 @@ class Wan(nn.Module):
                     ).unflatten(0, (B, f)).transpose(1, 2)  # (B, D, f, h, w)
                 else:
                     pred_x0 = self.diffusion._convert_flow_pred_to_x0(model_outputs, latents, timesteps)
-                    if i < len(self.diffusion.scheduler.timesteps) - 1:
-                        next_timesteps = self.diffusion.scheduler.timesteps[i + 1] * torch.ones_like(timesteps)
+                    if ti < len(self.diffusion.scheduler.timesteps) - 1:
+                        next_timesteps = self.diffusion.scheduler.timesteps[ti + 1] * torch.ones_like(timesteps)
                         if cond_latents is not None:
                             next_timesteps = torch.cat([torch.zeros_like(next_timesteps[:, :1]), next_timesteps[:, 1:]], dim=1)
 
@@ -475,7 +588,6 @@ class Wan(nn.Module):
                 assert da3_outputs is not None
 
                 if depths is not None:
-                    outputs[f"images_gt_depth"] = colorize_depth(1./depths, batch_mode=True)
                     outputs[f"depth_{cfg_scale}"] = tF.mse_loss(da3_outputs["depth"], depths)  # (,)
 
                 ## Get ground-truth geometry labels
@@ -495,6 +607,12 @@ class Wan(nn.Module):
 
                 # For visualization
                 outputs[f"images_pred_depth_{cfg_scale}"] = colorize_depth(1./da3_outputs["depth"], batch_mode=True)
+
+        if self.opt.load_da3 and depths is not None:
+            outputs[f"images_gt_depth"] = colorize_depth(1./depths, batch_mode=True)
+
+        if render_images is not None:
+            outputs["images_render"] = render_images
 
         return outputs
 
@@ -551,6 +669,36 @@ class Wan(nn.Module):
             cond_latents = None
         cond_latents = cond_latents if torch.rand(1).item() < self.opt.random_i2v_prob else None
 
+        # (Optional) Point cloud rendering
+        if self.opt.extra_condition_dim > 0:
+            assert self.opt.load_da3
+
+            if cond_latents is not None:
+                assert "depth" in data and "conf" in data and C2W is not None and fxfycxcy is not None
+                confs = data["conf"].to(dtype)[:, idxs, ...]  # (B, f, H, W)
+                all_render_images = []
+                for i in range(B):
+                    points, colors = filter_da3_points(
+                        images[i, 0:1], depths[i, 0:1], confs[i, 0:1], C2W[i, 0:1], fxfycxcy[i, 0:1],
+                        conf_thresh_percentile=self.opt.conf_thresh_percentile,
+                        random_sample_ratio=self.opt.rand_pcrender_ratio,
+                        min_num_points=self.opt.min_num_points,
+                        max_num_points=self.opt.max_num_points,
+                    )
+                    all_render_images_chunk = render_pt3d_points(H, W, points, colors, C2W[i, :self.opt.chunk_size], fxfycxcy[i, :self.opt.chunk_size]).to(dtype)
+                    all_render_images.append(all_render_images_chunk)
+                render_images = torch.stack(all_render_images, dim=0)  # (B, f_chunk, 3, H, W)
+            else:
+                render_images = torch.zeros((B, self.opt.chunk_size, 3, H, W), dtype=dtype, device=device)
+            render_images_vis = render_images
+
+            current_images_f = None
+            vae_cache = ZERO_VAE_CACHE
+            for i in range(len(vae_cache)):
+                vae_cache[i] = vae_cache[i].to(device=device, dtype=dtype)
+        else:
+            render_images = None
+
         # Denoising
         for cfg_scale in self.opt.cfg_scale:
             latents = torch.randn(B, self.opt.latent_dim, f, h, w, device=device, dtype=dtype)
@@ -581,7 +729,7 @@ class Wan(nn.Module):
                     this_chunk_plucker = None
 
                 ### Spatial denoising loop
-                for i, timestep in tqdm(enumerate(self.diffusion.scheduler.timesteps),
+                for ti, timestep in tqdm(enumerate(self.diffusion.scheduler.timesteps),
                     total=len(self.diffusion.scheduler.timesteps), ncols=125, disable=not verbose, desc="[Denoise]"):
                     timesteps = timestep[None, None].repeat(B, self.opt.chunk_size).to(dtype=dtype, device=device)
                     if chunk_idx == 0 and cond_latents is not None:
@@ -593,6 +741,7 @@ class Wan(nn.Module):
                         timesteps,
                         prompt_embeds,
                         plucker=this_chunk_plucker,
+                        extra_condition=render_images,
                         #
                         kv_cache=self.kv_cache_pos,
                         crossattn_cache=self.crossattn_cache_pos,
@@ -613,6 +762,7 @@ class Wan(nn.Module):
                             timesteps,
                             negative_prompt_embeds,  # torch.zeros_like(prompt_embeds)
                             plucker=this_chunk_plucker,
+                            extra_condition=render_images,
                             #
                             kv_cache=self.kv_cache_neg,
                             crossattn_cache=self.crossattn_cache_neg,
@@ -645,8 +795,8 @@ class Wan(nn.Module):
                         ).unflatten(0, (B, self.opt.chunk_size)).transpose(1, 2)  # (B, D, f_chunk, h, w)
                     else:
                         pred_x0 = self.diffusion._convert_flow_pred_to_x0(model_outputs, this_chunk_latents, timesteps)
-                        if i < len(self.diffusion.scheduler.timesteps) - 1:
-                            next_timesteps = self.diffusion.scheduler.timesteps[i + 1] * torch.ones_like(timesteps)
+                        if ti < len(self.diffusion.scheduler.timesteps) - 1:
+                            next_timesteps = self.diffusion.scheduler.timesteps[ti + 1] * torch.ones_like(timesteps)
                             if chunk_idx == 0 and cond_latents is not None:
                                 next_timesteps = torch.cat([torch.zeros_like(next_timesteps[:, :1]), next_timesteps[:, 1:]], dim=1)
 
@@ -665,6 +815,7 @@ class Wan(nn.Module):
                     timesteps * 0.,
                     prompt_embeds,
                     plucker=this_chunk_plucker,
+                    extra_condition=render_images,
                     #
                     kv_cache=self.kv_cache_pos,
                     crossattn_cache=self.crossattn_cache_pos,
@@ -684,6 +835,7 @@ class Wan(nn.Module):
                         timesteps * 0.,
                         negative_prompt_embeds,  # torch.zeros_like(prompt_embeds)
                         plucker=this_chunk_plucker,
+                        extra_condition=render_images,
                         #
                         kv_cache=self.kv_cache_neg,
                         crossattn_cache=self.crossattn_cache_neg,
@@ -720,6 +872,42 @@ class Wan(nn.Module):
                 # Record this chunk generated latents
                 latents[:, :, chunk_idx * self.opt.chunk_size:(chunk_idx + 1) * self.opt.chunk_size, ...] = this_chunk_latents
 
+                # (Optional) Update render images for next chunks
+                if self.opt.extra_condition_dim > 0 and chunk_idx < num_chunks - 1:
+                    assert self.current_vae_decoder is not None
+
+                    _current_images_f, vae_cache = self.current_vae_decoder(this_chunk_latents, *vae_cache)
+                    _current_images_f = (_current_images_f.clamp(-1., 1.) + 1.) / 2.
+                    _idxs = torch.arange(3, _current_images_f.shape[2], 4).to(device=device, dtype=torch.long)
+                    _current_images_f = _current_images_f[:, :, _idxs, :, :].transpose(1, 2)  # (B, f_chunk, 3, H, W)
+                    assert _current_images_f.shape[1] == self.opt.chunk_size
+                    if current_images_f is None:
+                        current_images_f = _current_images_f
+                    else:
+                        current_images_f = torch.cat([current_images_f, _current_images_f], dim=1)  # (B, f', 3, H, W)
+
+                    current_depths = torch.cat([all_da3_outputs[i]["depth"] for i in range(chunk_idx + 1)], dim=1)  # (B, f', H, W)
+                    current_confs = torch.cat([all_da3_outputs[i]["depth_conf"] for i in range(chunk_idx + 1)], dim=1)  # (B, f', H, W)
+                    current_C2W = torch.cat([all_da3_outputs[i]["C2W"] for i in range(chunk_idx + 1)], dim=1)  # (B, f', 4, 4)
+                    current_fxfycxcy = torch.cat([all_da3_outputs[i]["fxfycxcy"] for i in range(chunk_idx + 1)], dim=1)  # (B, f', 4)
+
+                    all_render_images = []
+                    for i in range(B):
+                        points, colors = filter_da3_points(
+                            current_images_f[i], current_depths[i], current_confs[i], current_C2W[i], current_fxfycxcy[i],
+                            conf_thresh_percentile=self.opt.conf_thresh_percentile,
+                            random_sample_ratio=self.opt.rand_pcrender_ratio,
+                            min_num_points=self.opt.min_num_points,
+                            max_num_points=self.opt.max_num_points,
+                        )
+                        render_images = render_pt3d_points(H, W, points, colors,
+                            C2W[i, (chunk_idx + 1) * self.opt.chunk_size:(chunk_idx + 2) * self.opt.chunk_size, ...],
+                            fxfycxcy[i, (chunk_idx + 1) * self.opt.chunk_size:(chunk_idx + 2) * self.opt.chunk_size, ...],
+                        ).to(dtype)
+                        all_render_images.append(render_images)
+                    render_images = torch.stack(all_render_images, dim=0)  # (B, f_chunk, 3, H, W)
+                    render_images_vis = torch.cat([render_images_vis, render_images], dim=1)
+
             # Decode
             pred_images = (self.decode_latent(latents, vae).clamp(-1., 1.) + 1.) / 2.  # (B, D, f, h, w) -> (B, F, 3, H, W)
             outputs[f"images_pred_{cfg_scale}"] = pred_images
@@ -749,7 +937,6 @@ class Wan(nn.Module):
                 }
 
                 if depths is not None:
-                    outputs[f"images_gt_depth"] = colorize_depth(1./depths, batch_mode=True)
                     outputs[f"depth_{cfg_scale}"] = tF.mse_loss(da3_outputs["depth"], depths)  # (,)
 
                 ## Get ground-truth geometry labels
@@ -769,6 +956,12 @@ class Wan(nn.Module):
 
                 # For visualization
                 outputs[f"images_pred_depth_{cfg_scale}"] = colorize_depth(1./da3_outputs["depth"], batch_mode=True)
+
+        if self.opt.load_da3 and depths is not None:
+            outputs[f"images_gt_depth"] = colorize_depth(1./depths, batch_mode=True)
+
+        if render_images is not None:
+            outputs["images_render"] = render_images_vis
 
         return outputs
 

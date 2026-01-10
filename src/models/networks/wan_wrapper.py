@@ -239,7 +239,7 @@ class WanDiffusionWrapper(nn.Module):
         # (Optional) Extra condition embedding
         if self.extra_condition_dim > 0:
             extra_condition = rearrange(extra_condition, "b f c h w -> (b f) c h w").to(noisy_latents.dtype)
-            extra_condition_embeds = self.extra_condition_embed(extra_condition_embeds)
+            extra_condition_embeds = self.extra_condition_embed(extra_condition)
             extra_condition_embeds = rearrange(extra_condition_embeds, "(b f) c h w -> b c f h w", f=f)  # (B, D, f, hh, ww)
             if plucker is not None:
                 plucker_embeds = plucker_embeds + extra_condition_embeds
@@ -492,14 +492,13 @@ class WanDiffusionDA3Wrapper(nn.Module):
             plucker = rearrange(plucker, "b f c h w -> (b f) c h w").to(noisy_latents.dtype)
             plucker_embeds = self.plucker_embed(plucker)
             plucker_embeds = rearrange(plucker_embeds, "(b f) c h w -> b c f h w", f=f)  # (B, D, f, hh, ww)
-            plucker_embeds = [plucker_embed for plucker_embed in plucker_embeds]
         else:
             plucker_embeds = None
 
         # (Optional) Extra condition embedding
         if self.extra_condition_dim > 0:
             extra_condition = rearrange(extra_condition, "b f c h w -> (b f) c h w").to(noisy_latents.dtype)
-            extra_condition_embeds = self.extra_condition_embed(extra_condition_embeds)
+            extra_condition_embeds = self.extra_condition_embed(extra_condition)
             extra_condition_embeds = rearrange(extra_condition_embeds, "(b f) c h w -> b c f h w", f=f)  # (B, D, f, hh, ww)
             if plucker is not None:
                 plucker_embeds = plucker_embeds + extra_condition_embeds
@@ -507,6 +506,9 @@ class WanDiffusionDA3Wrapper(nn.Module):
                 plucker_embeds = extra_condition_embeds
         else:
             extra_condition_embeds = None
+
+        if plucker_embeds is not None:
+            plucker_embeds = [plucker_embed for plucker_embed in plucker_embeds]
 
         # param
         device = self.model.patch_embedding.weight.device
