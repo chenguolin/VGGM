@@ -241,10 +241,10 @@ opt_dict["wan2.1_t2v_1.3b_causal"] = Options(
     is_causal=True,
     use_teacher_forcing=True,
     #
-    sink_size=0,
+    sink_size=3,
     chunk_size=3,
-    max_window_size=21,
-    rope_outside=False,
+    max_window_size=9,
+    rope_outside=True,
     #
     generator_path=f"{ROOT}/projects/VGGM/.pth",
     # exclude_name_lr_mult="da3",
@@ -261,7 +261,6 @@ opt_dict["sf_rep"] = Options(
     #
     is_causal=True,
     use_teacher_forcing=False,
-    memory_num_tokens=0,
     #
     sink_size=0,
     chunk_size=3,
@@ -319,15 +318,15 @@ opt_dict["wan2.1_t2v_1.3b_dmd"] = Options(
     da3_weight_type="uniform",
     da3_down_ratio=1,
     da3_loss_in_sf=False,
+    # only_train_resdit=True,
     #
     is_causal=True,
     use_teacher_forcing=False,
-    memory_num_tokens=0,
     #
-    sink_size=0,
+    sink_size=3,
     chunk_size=3,
-    max_window_size=21,
-    rope_outside=False,
+    max_window_size=9,
+    rope_outside=True,
     rolling=False,
     #
     generator_path=f"{ROOT}/projects/VGGM/.pth",
