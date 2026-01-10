@@ -63,6 +63,7 @@ class Wan(nn.Module):
                 True,  # hard-coded `extra_one_step`
                 #
                 opt.input_plucker,
+                opt.extra_condition_dim,
                 #
                 opt.memory_num_tokens,
                 #
@@ -85,6 +86,7 @@ class Wan(nn.Module):
                 True,  # hard-coded `extra_one_step`
                 #
                 opt.input_plucker,
+                opt.extra_condition_dim,
                 #
                 opt.memory_num_tokens,
                 #

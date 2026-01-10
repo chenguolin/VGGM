@@ -18,9 +18,8 @@ from .wan_modules.model import WanModel
 from .wan_modules.causal_model import CausalWanModel
 from .scheduler import FlowMatchScheduler
 
-from .wan_modules.model import WanRMSNorm, sinusoidal_embedding_1d, attention
-from .transformer_rnn import TransformerRNN
-from src.utils import zero_init_module, plucker_ray
+from .wan_modules.model import sinusoidal_embedding_1d
+from src.utils import zero_init_module
 
 from depth_anything_3.api import DepthAnything3
 from depth_anything_3.model.utils.transform import quat_to_mat
@@ -139,6 +138,7 @@ class WanDiffusionWrapper(nn.Module):
         extra_one_step: bool = True,
         #
         input_plucker: bool = False,
+        extra_condition_dim: int = 0,
         #
         memory_num_tokens: int = 0,
         #
@@ -174,6 +174,12 @@ class WanDiffusionWrapper(nn.Module):
             self.plucker_embed = nn.Conv2d(6, self.model.dim, kernel_size=16, stride=16)  # `16`: hard-coded for Wan2.1
             zero_init_module(self.plucker_embed)
 
+        # (Optional) Extra condition
+        self.extra_condition_dim = extra_condition_dim
+        if extra_condition_dim > 0:
+            self.extra_condition_embed = nn.Conv2d(extra_condition_dim, self.model.dim, kernel_size=16, stride=16)  # `16`: hard-coded for Wan2.1
+            zero_init_module(self.extra_condition_embed)
+
         # (Optional) Memory module
         if memory_num_tokens > 0:
             self.init_state = nn.Embedding(memory_num_tokens, self.model.dim)
@@ -199,6 +205,7 @@ class WanDiffusionWrapper(nn.Module):
         cond_latents: Optional[Tensor] = None,  # (B, D, f, h, w)
         #
         plucker: Optional[Tensor] = None,  # (B, f, 6, H, W)
+        extra_condition: Optional[Tensor] = None,  # (B, f, C, H, W)
         #
         kv_cache: Optional[List[Dict[str, Any]]] = None,
         crossattn_cache: Optional[List[Dict[str, Any]]] = None,
@@ -228,6 +235,18 @@ class WanDiffusionWrapper(nn.Module):
             plucker_embeds = rearrange(plucker_embeds, "(b f) c h w -> b c f h w", f=f)  # (B, D, f, hh, ww)
         else:
             plucker_embeds = None
+
+        # (Optional) Extra condition embedding
+        if self.extra_condition_dim > 0:
+            extra_condition = rearrange(extra_condition, "b f c h w -> (b f) c h w").to(noisy_latents.dtype)
+            extra_condition_embeds = self.extra_condition_embed(extra_condition_embeds)
+            extra_condition_embeds = rearrange(extra_condition_embeds, "(b f) c h w -> b c f h w", f=f)  # (B, D, f, hh, ww)
+            if plucker is not None:
+                plucker_embeds = plucker_embeds + extra_condition_embeds
+            else:
+                plucker_embeds = extra_condition_embeds
+        else:
+            extra_condition_embeds = None
 
         if kv_cache is not None:
             model_outputs = self.model(
@@ -341,6 +360,7 @@ class WanDiffusionDA3Wrapper(nn.Module):
         extra_one_step: bool = True,
         #
         input_plucker: bool = False,
+        extra_condition_dim: int = 0,
         #
         memory_num_tokens: int = 0,
         #
@@ -381,6 +401,12 @@ class WanDiffusionDA3Wrapper(nn.Module):
         if input_plucker:
             self.plucker_embed = nn.Conv2d(6, self.model.dim, kernel_size=16, stride=16)  # `16`: hard-coded for Wan2.1
             zero_init_module(self.plucker_embed)
+
+        # (Optional) Extra condition
+        self.extra_condition_dim = extra_condition_dim
+        if extra_condition_dim > 0:
+            self.extra_condition_embed = nn.Conv2d(extra_condition_dim, self.model.dim, kernel_size=16, stride=16)  # `16`: hard-coded for Wan2.1
+            zero_init_module(self.extra_condition_embed)
 
         # (Optional) Memory module
         if memory_num_tokens > 0:
@@ -437,6 +463,7 @@ class WanDiffusionDA3Wrapper(nn.Module):
         cond_latents: Optional[Tensor] = None,  # (B, D, f, h, w)
         #
         plucker: Optional[Tensor] = None,  # (B, f, 6, H, W)
+        extra_condition: Optional[Tensor] = None,  # (B, f, C, H, W)
         #
         kv_cache: Optional[List[Dict[str, Any]]] = None,
         crossattn_cache: Optional[List[Dict[str, Any]]] = None,
@@ -468,6 +495,18 @@ class WanDiffusionDA3Wrapper(nn.Module):
             plucker_embeds = [plucker_embed for plucker_embed in plucker_embeds]
         else:
             plucker_embeds = None
+
+        # (Optional) Extra condition embedding
+        if self.extra_condition_dim > 0:
+            extra_condition = rearrange(extra_condition, "b f c h w -> (b f) c h w").to(noisy_latents.dtype)
+            extra_condition_embeds = self.extra_condition_embed(extra_condition_embeds)
+            extra_condition_embeds = rearrange(extra_condition_embeds, "(b f) c h w -> b c f h w", f=f)  # (B, D, f, hh, ww)
+            if plucker is not None:
+                plucker_embeds = plucker_embeds + extra_condition_embeds
+            else:
+                plucker_embeds = extra_condition_embeds
+        else:
+            extra_condition_embeds = None
 
         # param
         device = self.model.patch_embedding.weight.device

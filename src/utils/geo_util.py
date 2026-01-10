@@ -88,6 +88,7 @@ def filter_da3_points(
     conf_thresh: float = 1.05,
     conf_thresh_percentile: float = 0.4,
     ensure_thresh_percentile: float = 0.9,
+    random_sample_ratio: float = -1.,
 ):
     if filter_black_bg:
         confs[(images < 16/255).all(dim=1, keepdim=True)] = 1.  # black pixels
@@ -103,9 +104,14 @@ def filter_da3_points(
 
     points = rearrange(points, "f c h w -> (f h w) c")
     colors = rearrange(images, "f c h w -> (f h w) c")
-    valid_masks = rearrange(valid_masks, "f h w -> (f h w)")
-    return points[valid_masks, :], colors[valid_masks, :]  # (M, 3), (M, 3)
+    valid_masks = rearrange(valid_masks, "f h w -> (f h w)")  # (M,)
+    valid_points, valid_colors = points[valid_masks, :], colors[valid_masks, :]  # (M, 3), (M, 3)
 
+    if random_sample_ratio > 0. and random_sample_ratio <= 1.:
+        sample_size = int(random_sample_ratio * valid_points.shape[0])
+        rand_idxs = torch.randperm(valid_points.shape[0], device=valid_points.device)[:sample_size]
+        valid_points, valid_colors = valid_points[rand_idxs, :], valid_colors[rand_idxs, :]
+    return valid_points, valid_colors
 
 def torch_quantile(
     input: Tensor,

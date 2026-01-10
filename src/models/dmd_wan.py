@@ -33,6 +33,7 @@ class DMD_Wan(Wan):
             True,  # hard-coded `extra_one_step`
             #
             opt.teacher_input_plucker,
+            opt.teacher_extra_condition_dim,
             #
             0,  # hard-coded `memory_num_tokens`
             #
@@ -67,6 +68,7 @@ class DMD_Wan(Wan):
             True,  # hard-coded `extra_one_step`
             #
             opt.teacher_input_plucker,
+            opt.teacher_extra_condition_dim,
             #
             0,  # hard-coded `memory_num_tokens`
             #

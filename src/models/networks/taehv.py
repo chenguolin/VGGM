@@ -1,4 +1,6 @@
 # Copied from https://github.com/madebyollin/taehv/blob/main/taehv.py
+# Modifications:
+    ## 1. `decode_video()`: keep the first `self.frames_to_trim` frames
 
 #!/usr/bin/env python3
 """
@@ -238,7 +240,7 @@ class TAEHV(nn.Module):
             # this still doesn't have correct temporal alignment for certain frame counts
             # (cogvideox seems to pad at the start?), but for multiple-of-4 it's fine.
             return x
-        return x[:, self.frames_to_trim:]
+        return x#[:, self.frames_to_trim:]
 
 @torch.no_grad()
 def main():

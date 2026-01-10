@@ -69,6 +69,9 @@ class Options:
 
     # VAE
     vae_path: str = f"{ROOT}/.cache/huggingface/hub/Wan-AI/Wan2.1-T2V-1.3B/Wan2.1_VAE.pth"
+        ## TAE
+    tae_path: str = f"{ROOT}/projects/VGGM/resources/taew2_1.pth"
+    load_tae: bool = False
         ## Post initialization (`__post_init__`)
     compression_ratio: Tuple[int, int, int] = None
     latent_dim: int = None
@@ -79,9 +82,12 @@ class Options:
     load_text_encoder: bool = True
     load_clip_encoder: bool = True
     input_plucker: bool = False
+    input_pcrender: bool = False
     first_latent_cond: bool = False
     random_i2v_prob: float = 1.
     enable_riflex: bool = False
+    conf_thresh_percentile: float = 0.4
+    rand_pcrender_ratio: float = 0.01
         ## Memory
     memory_num_tokens: int = 0
         ## Causal
@@ -96,6 +102,7 @@ class Options:
     teacher_path: Optional[str] = None
     is_teacher_causal: bool = False
     teacher_input_plucker: bool = False
+    teacher_input_pcrender: bool = False
     teacher_first_latent_cond: bool = False
         ## DMD
     use_dmd: bool = False
@@ -173,6 +180,10 @@ class Options:
             "realcamvid": f"{self.root}/RealCam-Vid",
         }
 
+        # Extra condition
+        self.extra_condition_dim = 3 if self.input_pcrender else 0
+        self.teacher_extra_condition_dim = 3 if self.teacher_input_pcrender else 0
+
         # VAE
         if "Wan2.2_VAE.pth" in self.vae_path:
             self.compression_ratio = (4, 16, 16)
@@ -181,6 +192,7 @@ class Options:
             self.compression_ratio = (4, 8, 8)
             self.latent_dim = 16
 
+        # Attention
         if self.max_window_size is None:
             self.max_window_size = (self.num_input_frames - 1) // self.compression_ratio[0] + 1 - self.sink_size
         if self.max_kvcache_size is None:
@@ -189,7 +201,6 @@ class Options:
             self.input_res[0] // self.compression_ratio[1] // 2 *  # `2`: patch size in DiT is hard-coded to 2
             self.input_res[1] // self.compression_ratio[2] // 2
         )
-
         self.max_attention_size = (self.max_window_size + self.sink_size) * self.frame_seqlen
         self.da3_max_attention_size = (self.max_window_size + self.sink_size) * (self.frame_seqlen // (self.da3_down_ratio * self.da3_down_ratio) + 1)  # `+1` for camera token
         self.max_kvcache_attention_size = self.max_kvcache_size * self.frame_seqlen

@@ -98,12 +98,12 @@ class SelfForcingTrainingPipeline:
                 this_chunk_plucker = None
 
             # Spatial denoising loop
-            for i, timestep in enumerate(self.denoising_step_list[:-1]):
+            for ti, timestep in enumerate(self.denoising_step_list[:-1]):
                 # Only backprop at the randomly selected timestep (consistent across all ranks)
                 if self.opt.same_step_across_chunks:
-                    exit_flag = (i == exit_flags[0])
+                    exit_flag = (ti == exit_flags[0])
                 else:
-                    exit_flag = (i == exit_flags[chunk_idx])
+                    exit_flag = (ti == exit_flags[chunk_idx])
 
                 timesteps = timestep[None, None].repeat(B, self.opt.chunk_size).to(dtype=dtype, device=device)
                 if chunk_idx == 0 and cond_latents is not None:
@@ -133,7 +133,7 @@ class SelfForcingTrainingPipeline:
                         model_outputs, da3_outputs = \
                             model_outputs if self.opt.load_da3 else (model_outputs, None)
 
-                        next_timesteps = self.denoising_step_list[i + 1] * torch.ones_like(timesteps)
+                        next_timesteps = self.denoising_step_list[ti + 1] * torch.ones_like(timesteps)
                         if chunk_idx == 0 and cond_latents is not None:
                             next_timesteps = torch.cat([torch.zeros_like(next_timesteps[:, :1]), next_timesteps[:, 1:]], dim=1)
 
