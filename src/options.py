@@ -217,11 +217,17 @@ opt_dict: Dict[str, Options] = {}
 opt_dict["wan2.1_t2v_1.3b"] = Options(
     input_plucker=True,
     exclude_name_lr_mult="plucker_embed,extra_condition_embed",
+    #
+    # load_conf=True,
+    # input_pcrender=True,
 )
 opt_dict["wan2.1_t2v_1.3b_i2v"] = Options(
     first_latent_cond=True,
     input_plucker=True,
     exclude_name_lr_mult="plucker_embed,extra_condition_embed",
+    #
+    # load_conf=True,
+    # input_pcrender=True,
 )
 opt_dict["wan2.1_t2v_1.3b_causal"] = Options(
     first_latent_cond=False,
@@ -242,6 +248,11 @@ opt_dict["wan2.1_t2v_1.3b_causal"] = Options(
     #
     generator_path=f"{ROOT}/projects/VGGM/.pth",
     # exclude_name_lr_mult="da3",
+    #
+    num_input_frames_test=201,
+    cfg_scale=(5.,),
+    #
+    # input_pcrender=True,
 )
 
 # Self-Forcing reproduction
