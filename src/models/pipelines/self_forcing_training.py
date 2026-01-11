@@ -84,6 +84,8 @@ class SelfForcingTrainingPipeline:
                 memory_tokens = self.diffusion.init_state(torch.arange(self.opt.memory_num_tokens, device=device)).expand(B, -1, -1)
             else:
                 memory_tokens = None
+        else:
+            memory_tokens = None
 
         # Auto-regression steps
         assert f % self.opt.chunk_size == 0

@@ -51,6 +51,7 @@ class Options:
     load_da3: bool = False
         ### Model
     da3_model_name: str = "da3-large-1.1"
+    fix_da3_heads: bool = True
     only_train_da3: bool = False
     only_train_resdit: bool = False
     no_noise_for_da3: bool = False
