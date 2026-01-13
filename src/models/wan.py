@@ -279,10 +279,10 @@ class Wan(nn.Module):
                         num_chunks = f // self.opt.chunk_size
                         all_render_images_chunk = []
                         for ci in range(num_chunks-1):
-                            chunk_idxs = torch.arange(ci * self.opt.chunk_size, (ci + 1) * self.opt.chunk_size).to(device=device, dtype=torch.long)
+                            hist_chunk_idxs = torch.arange(0, (ci + 1) * self.opt.chunk_size).to(device=device, dtype=torch.long)
                             next_chunk_idxs = torch.arange((ci + 1) * self.opt.chunk_size, (ci + 2) * self.opt.chunk_size).to(device=device, dtype=torch.long)
                             points, colors = filter_da3_points(
-                                images_f[i, chunk_idxs], depths[i, chunk_idxs], confs[i, chunk_idxs], C2W[i, chunk_idxs], fxfycxcy[i, chunk_idxs],
+                                images_f[i, hist_chunk_idxs], depths[i, hist_chunk_idxs], confs[i, hist_chunk_idxs], C2W[i, hist_chunk_idxs], fxfycxcy[i, hist_chunk_idxs],
                                 conf_thresh_percentile=self.opt.conf_thresh_percentile,
                                 random_sample_ratio=self.opt.rand_pcrender_ratio,
                                 min_num_points=self.opt.min_num_points,
