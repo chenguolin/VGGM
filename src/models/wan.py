@@ -277,18 +277,23 @@ class Wan(nn.Module):
                     for i in range(B):
                         assert f % self.opt.chunk_size == 0
                         num_chunks = f // self.opt.chunk_size
-                        all_render_images_chunk = []
+                        all_render_images_chunk, all_points, all_colors = [], None, None
                         for ci in range(num_chunks-1):
-                            hist_chunk_idxs = torch.arange(0, (ci + 1) * self.opt.chunk_size).to(device=device, dtype=torch.long)
+                            chunk_idxs = torch.arange(ci * self.opt.chunk_size, (ci + 1) * self.opt.chunk_size).to(device=device, dtype=torch.long)
                             next_chunk_idxs = torch.arange((ci + 1) * self.opt.chunk_size, (ci + 2) * self.opt.chunk_size).to(device=device, dtype=torch.long)
                             points, colors = filter_da3_points(
-                                images_f[i, hist_chunk_idxs], depths[i, hist_chunk_idxs], confs[i, hist_chunk_idxs], C2W[i, hist_chunk_idxs], fxfycxcy[i, hist_chunk_idxs],
+                                images_f[i, chunk_idxs], depths[i, chunk_idxs], confs[i, chunk_idxs], C2W[i, chunk_idxs], fxfycxcy[i, chunk_idxs],
                                 conf_thresh_percentile=self.opt.conf_thresh_percentile,
                                 random_sample_ratio=self.opt.rand_pcrender_ratio,
                                 min_num_points=self.opt.min_num_points,
                                 max_num_points=self.opt.max_num_points,
                             )
-                            render_images = render_pt3d_points(H, W, points, colors, C2W[i, next_chunk_idxs], fxfycxcy[i, next_chunk_idxs]).to(dtype)  # (f_chunk, 3, H, W) in [0, 1]
+                            if all_points is None:
+                                all_points, all_colors = points, colors
+                            else:
+                                all_points = torch.cat([all_points, points], dim=0)
+                                all_colors = torch.cat([all_colors, colors], dim=0)
+                            render_images = render_pt3d_points(H, W, all_points, all_colors, C2W[i, next_chunk_idxs], fxfycxcy[i, next_chunk_idxs]).to(dtype)  # (f_chunk, 3, H, W) in [0, 1]
                             all_render_images_chunk.append(render_images)
                         all_render_images_chunk = torch.cat(all_render_images_chunk, dim=0)  # (f-f_chunk, 3, H, W)
 
@@ -695,7 +700,6 @@ class Wan(nn.Module):
                 render_images = torch.zeros((B, self.opt.chunk_size, 3, H, W), dtype=dtype, device=device)
             render_images_vis = render_images
 
-            current_images_f = None
             vae_cache = ZERO_VAE_CACHE
             for i in range(len(vae_cache)):
                 vae_cache[i] = vae_cache[i].to(device=device, dtype=dtype)
@@ -723,7 +727,7 @@ class Wan(nn.Module):
             frame_seqlen = h * w // 4  # `4`: hard-coded for 2x2 patch embedding in DiT
 
             ## Temporal denoising loop
-            all_da3_outputs = [None] * num_chunks
+            all_da3_outputs, all_points, all_colors = [None] * num_chunks, [None] * B, [None] * B
             for chunk_idx in tqdm(range(num_chunks), ncols=125, disable=not verbose, desc="[Chunk]"):
                 this_chunk_latents = latents[:, :, chunk_idx * self.opt.chunk_size:(chunk_idx + 1) * self.opt.chunk_size, ...]
                 if self.opt.input_plucker:
@@ -879,20 +883,16 @@ class Wan(nn.Module):
                 if self.opt.extra_condition_dim > 0 and chunk_idx < num_chunks - 1:
                     assert self.current_vae_decoder is not None
 
-                    _current_images_f, vae_cache = self.current_vae_decoder(this_chunk_latents, *vae_cache)
-                    _current_images_f = (_current_images_f.clamp(-1., 1.) + 1.) / 2.
-                    _idxs = torch.arange(3, _current_images_f.shape[2], 4).to(device=device, dtype=torch.long)
-                    _current_images_f = _current_images_f[:, :, _idxs, :, :].transpose(1, 2)  # (B, f_chunk, 3, H, W)
-                    assert _current_images_f.shape[1] == self.opt.chunk_size
-                    if current_images_f is None:
-                        current_images_f = _current_images_f
-                    else:
-                        current_images_f = torch.cat([current_images_f, _current_images_f], dim=1)  # (B, f', 3, H, W)
+                    current_images_f, vae_cache = self.current_vae_decoder(this_chunk_latents, *vae_cache)
+                    current_images_f = (current_images_f.clamp(-1., 1.) + 1.) / 2.
+                    _idxs = torch.arange(3, current_images_f.shape[2], 4).to(device=device, dtype=torch.long)
+                    current_images_f = current_images_f[:, :, _idxs, :, :].transpose(1, 2)  # (B, f_chunk, 3, H, W)
+                    assert current_images_f.shape[1] == self.opt.chunk_size
 
-                    current_depths = torch.cat([all_da3_outputs[i]["depth"] for i in range(chunk_idx + 1)], dim=1)  # (B, f', H, W)
-                    current_confs = torch.cat([all_da3_outputs[i]["depth_conf"] for i in range(chunk_idx + 1)], dim=1)  # (B, f', H, W)
-                    current_C2W = torch.cat([all_da3_outputs[i]["C2W"] for i in range(chunk_idx + 1)], dim=1)  # (B, f', 4, 4)
-                    current_fxfycxcy = torch.cat([all_da3_outputs[i]["fxfycxcy"] for i in range(chunk_idx + 1)], dim=1)  # (B, f', 4)
+                    current_depths = all_da3_outputs[chunk_idx]["depth"]  # (B, f_chunk, H, W)
+                    current_confs = all_da3_outputs[chunk_idx]["depth_conf"]  # (B, f_chunk, H, W)
+                    current_C2W = all_da3_outputs[chunk_idx]["C2W"]  # (B, f_chunk, 4, 4)
+                    current_fxfycxcy = all_da3_outputs[chunk_idx]["fxfycxcy"]  # (B, f_chunk, 4)
 
                     all_render_images = []
                     for i in range(B):
@@ -903,7 +903,12 @@ class Wan(nn.Module):
                             min_num_points=self.opt.min_num_points,
                             max_num_points=self.opt.max_num_points,
                         )
-                        render_images = render_pt3d_points(H, W, points, colors,
+                        if all_points[i] is None:
+                            all_points[i], all_colors[i] = points, colors
+                        else:
+                            all_points[i] = torch.cat([all_points[i], points], dim=0)
+                            all_colors[i] = torch.cat([all_colors[i], colors], dim=0)
+                        render_images = render_pt3d_points(H, W, all_points[i], all_colors[i],
                             C2W[i, (chunk_idx + 1) * self.opt.chunk_size:(chunk_idx + 2) * self.opt.chunk_size, ...],
                             fxfycxcy[i, (chunk_idx + 1) * self.opt.chunk_size:(chunk_idx + 2) * self.opt.chunk_size, ...],
                         ).to(dtype)

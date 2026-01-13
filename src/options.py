@@ -61,7 +61,7 @@ class Options:
         "uniform",
         "diffusion",
         "inverse_timestep",
-    ] = "uniform"
+    ] = "inverse_timestep"
     da3_down_ratio: int = 1
     da3_chunk_size: int = 8  # DPT head chunk size, not for causality
     da3_use_ray_pose: bool = False
@@ -88,7 +88,7 @@ class Options:
     random_i2v_prob: float = 1.
     enable_riflex: bool = False
     conf_thresh_percentile: float = 0.4
-    rand_pcrender_ratio: float = 0.01
+    rand_pcrender_ratio: float = 0.1
     min_num_points: int = 10000
     max_num_points: int = 1000000
         ## Memory
@@ -236,7 +236,7 @@ opt_dict["wan2.1_t2v_1.3b_causal"] = Options(
     #
     # load_da3=True,
     # da3_interactive=True,
-    # da3_weight_type="uniform",
+    # da3_weight_type="inverse_timestep",
     # da3_down_ratio=1,
     # only_train_da3=True,
     # no_noise_for_da3=True,
