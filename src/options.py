@@ -238,6 +238,8 @@ opt_dict["wan2.1_t2v_1.3b_causal"] = Options(
     # da3_interactive=True,
     # da3_weight_type="uniform",
     # da3_down_ratio=1,
+    # only_train_da3=True,
+    # no_noise_for_da3=True,
     #
     is_causal=True,
     use_teacher_forcing=True,
@@ -250,9 +252,11 @@ opt_dict["wan2.1_t2v_1.3b_causal"] = Options(
     generator_path=f"{ROOT}/projects/VGGM/.pth",
     # exclude_name_lr_mult="da3",
     #
+    # num_input_frames=201,
     num_input_frames_test=201,
     cfg_scale=(5.,),
     #
+    # load_conf=True,
     # input_pcrender=True,
 )
 
