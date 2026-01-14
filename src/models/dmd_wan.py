@@ -643,7 +643,7 @@ class DMD_Wan(Wan):
         Here we encapsulate the inference code with a model-dependent outside function.
         We pass our FSDP/DeepSpeed-wrapped modules into the pipeline to save memory.
         """
-        self.inference_pipeline = SelfForcingTrainingPipeline(self.opt, self.diffusion)
+        self.inference_pipeline = SelfForcingTrainingPipeline(self.opt, self.diffusion, self.current_vae_decoder)
 
     def _add_lora_to_fake_score(self, target_modules: List[str], lora_rank: int, lora_alpha: Optional[int] = None):
         if lora_alpha is None:
