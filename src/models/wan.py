@@ -390,11 +390,16 @@ class Wan(nn.Module):
                 gt_depths, gt_raymaps, gt_pose_enc = \
                     torch.cat([gt_depths] * 2, dim=1), torch.cat([gt_raymaps] * 2, dim=1), torch.cat([gt_pose_enc] * 2, dim=1)
             ## Compute geometry losses; NOTE: weighted by diffusion scheduler weights
-            depth_loss = self.depth_loss_fn(da3_outputs["depth"], gt_depths, confs=da3_outputs["depth_conf"])  # (B, f)
+            if self.opt.da3_conf_loss:
+                depth_loss = self.depth_loss_fn(da3_outputs["depth"], gt_depths, confs=torch.ones_like(da3_outputs["depth_conf"]))  # (B, f)
+                conf_loss = tF.mse_loss(da3_outputs["depth_conf"], data["conf"].to(dtype)[:, idxs, ...], reduction="none").mean(dim=[2,3])  # (B, f)
+            else:
+                depth_loss = self.depth_loss_fn(da3_outputs["depth"], gt_depths, confs=da3_outputs["depth_conf"])  # (B, f)
+                conf_loss = torch.zeros_like(depth_loss)
             ray_loss = self.ray_loss_fn(da3_outputs["ray"], gt_raymaps, confs=da3_outputs["ray_conf"])  # (B, f)
             camera_loss = self.camera_loss_fn(da3_outputs["pose_enc"], gt_pose_enc)  # (B, f)
             if self.opt.no_noise_for_da3:
-                da3_loss = (depth_loss + ray_loss + camera_loss).flatten(0, 1)  # (B*f,)
+                da3_loss = (depth_loss + ray_loss + camera_loss + conf_loss).flatten(0, 1)  # (B*f,)
             else:  # weighted by noise level
                 if self.opt.da3_weight_type == "uniform":
                     da3_weights = 1.
@@ -402,10 +407,12 @@ class Wan(nn.Module):
                     da3_weights = self.diffusion.scheduler.training_weight(timesteps.flatten(0, 1))
                 elif self.opt.da3_weight_type == "inverse_timestep":
                     da3_weights = 1. / (timesteps.flatten(0, 1) + 0.1)
-                da3_loss = da3_weights * (depth_loss + ray_loss + camera_loss).flatten(0, 1)  # (B*f,)
+                da3_loss = da3_weights * (depth_loss + ray_loss + camera_loss + conf_loss).flatten(0, 1)  # (B*f,)
             outputs["depth_loss"] = depth_loss.mean()
             outputs["ray_loss"] = ray_loss.mean()
             outputs["camera_loss"] = camera_loss.mean()
+            if self.opt.da3_conf_loss:
+                outputs["conf_loss"] = conf_loss.mean()
             outputs["loss"] = outputs["diffusion_loss"] + da3_loss.mean()
 
         # For visualizaiton

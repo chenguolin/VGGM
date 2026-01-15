@@ -492,6 +492,7 @@ def main():
                 depth_loss = outputs["depth_loss"] if "depth_loss" in outputs else None
                 ray_loss = outputs["ray_loss"] if "ray_loss" in outputs else None
                 camera_loss = outputs["camera_loss"] if "camera_loss" in outputs else None
+                conf_loss = outputs["conf_loss"] if "conf_loss" in outputs else None
 
                 # Backpropagate
                 accelerator.backward(loss.mean())
@@ -523,6 +524,8 @@ def main():
                     ray_loss = accelerator.gather(ray_loss.detach()).mean()
                 if camera_loss is not None:
                     camera_loss = accelerator.gather(camera_loss.detach()).mean()
+                if conf_loss is not None:
+                    conf_loss = accelerator.gather(conf_loss.detach()).mean()
 
                 logs = {
                     "loss": loss.item(),
@@ -547,6 +550,8 @@ def main():
                     logs.update({"ray": ray_loss.item()})
                 if camera_loss is not None:
                     logs.update({"pose": camera_loss.item()})
+                if conf_loss is not None:
+                    logs.update({"conf": conf_loss.item()})
 
                 progress_bar.set_postfix(**logs)
                 progress_bar.update(1)
@@ -598,6 +603,10 @@ def main():
                         if camera_loss is not None:
                             wandb.log({
                                 "training/camera_loss": camera_loss.item()
+                            }, step=global_update_step)
+                        if conf_loss is not None:
+                            wandb.log({
+                                "training/conf_loss": conf_loss.item()
                             }, step=global_update_step)
 
                 # Save checkpoint
