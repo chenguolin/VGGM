@@ -19,7 +19,7 @@ from .wan_modules.causal_model import CausalWanModel
 from .scheduler import FlowMatchScheduler
 
 from .wan_modules.model import sinusoidal_embedding_1d
-from src.utils import zero_init_module
+from src.utils import zero_init_module, inverse_c2w, fxfycxcy_to_intrinsics
 
 from depth_anything_3.api import DepthAnything3
 from depth_anything_3.model.utils.transform import quat_to_mat
@@ -206,6 +206,8 @@ class WanDiffusionWrapper(nn.Module):
         #
         plucker: Optional[Tensor] = None,  # (B, f, 6, H, W)
         extra_condition: Optional[Tensor] = None,  # (B, f, C, H, W)
+        C2W: Optional[Tensor] = None,  # (B, f, 4, 4)
+        fxfycxcy: Optional[Tensor] = None,  # (B, f, 4)
         #
         kv_cache: Optional[List[Dict[str, Any]]] = None,
         crossattn_cache: Optional[List[Dict[str, Any]]] = None,
@@ -378,6 +380,7 @@ class WanDiffusionDA3Wrapper(nn.Module):
         da3_down_ratio: int = 1,
         da3_use_ray_pose: bool = False,
         da3_interactive: bool = False,
+        da3_input_cam: bool = True,
         da3_max_attention_size: int = 32781,  # 81 x 480 x 832 -> 21 x (30 x 52 + 1), +1 for camera token
     ):
         super().__init__()
@@ -432,7 +435,10 @@ class WanDiffusionDA3Wrapper(nn.Module):
         self.da3_model.backbone.pretrained.patch_size = 16  # hard-coded for Wan2.1
         self.da3_model.head.patch_size = 16  # hard-coded for Wan2.1
             ## Remove not used modules
-        self.da3_model.cam_enc = None
+        if not da3_input_cam:
+            self.da3_model.cam_enc = None
+        else:
+            self.da3_model.backbone.pretrained.camera_token = None
         self.da3_model.backbone.pretrained.patch_embed = None
 
         del _da3
@@ -450,6 +456,7 @@ class WanDiffusionDA3Wrapper(nn.Module):
         self.da3_down_ratio = da3_down_ratio
         self.da3_use_ray_pose = da3_use_ray_pose
         self.da3_interactive = da3_interactive
+        self.da3_input_cam = da3_input_cam
         self.da3_max_attention_size = da3_max_attention_size
 
         self.is_causal = is_causal
@@ -464,6 +471,8 @@ class WanDiffusionDA3Wrapper(nn.Module):
         #
         plucker: Optional[Tensor] = None,  # (B, f, 6, H, W)
         extra_condition: Optional[Tensor] = None,  # (B, f, C, H, W)
+        C2W: Optional[Tensor] = None,  # (B, f, 4, 4)
+        fxfycxcy: Optional[Tensor] = None,  # (B, f, 4)
         #
         kv_cache: Optional[List[Dict[str, Any]]] = None,
         crossattn_cache: Optional[List[Dict[str, Any]]] = None,
@@ -494,6 +503,21 @@ class WanDiffusionDA3Wrapper(nn.Module):
             plucker_embeds = rearrange(plucker_embeds, "(b f) c h w -> b c f h w", f=f)  # (B, D, f, hh, ww)
         else:
             plucker_embeds = None
+
+        # (Optional) Camera token for DA3
+        if self.da3_input_cam:
+            assert C2W is not None and fxfycxcy is not None
+            W2C = inverse_c2w(C2W).to(noisy_latents.dtype)  # (B, f, 4, 4)
+            intrinsics = fxfycxcy_to_intrinsics(fxfycxcy).to(noisy_latents.dtype)  # (B, f, 3, 3)
+            intrinsics[:, :, 0, 0] = intrinsics[:, :, 0, 0] * (w*8 // self.da3_down_ratio)
+            intrinsics[:, :, 1, 1] = intrinsics[:, :, 1, 1] * (h*8 // self.da3_down_ratio)
+            intrinsics[:, :, 0, 2] = intrinsics[:, :, 0, 2] * (w*8 // self.da3_down_ratio)
+            intrinsics[:, :, 1, 2] = intrinsics[:, :, 1, 2] * (h*8 // self.da3_down_ratio)
+            camera_token = self.da3_model.cam_enc(W2C, intrinsics, (h*8 // self.da3_down_ratio, w*8 // self.da3_down_ratio))  # (B, f, D)
+            if self.is_causal and clean_x is not None:
+                camera_token = torch.cat([camera_token, camera_token], dim=1)  # (B, 2f, D)
+        else:
+            camera_token = None
 
         # (Optional) Extra condition embedding
         if self.extra_condition_dim > 0:
@@ -776,9 +800,10 @@ class WanDiffusionDA3Wrapper(nn.Module):
                     g_pos, l_pos = pos_nodiff, pos
 
                 if da3_i == 8:  # `8`: hard-coded for DA3-large `self.alt_start`
-                    ref_token = self.da3_model.backbone.pretrained.camera_token[:, :1].expand(B, -1, -1)
-                    src_token = self.da3_model.backbone.pretrained.camera_token[:, 1:].expand(B, tff - 1, -1)
-                    camera_token = torch.cat([ref_token, src_token], dim=1)
+                    if camera_token is None:
+                        ref_token = self.da3_model.backbone.pretrained.camera_token[:, :1].expand(B, -1, -1)
+                        src_token = self.da3_model.backbone.pretrained.camera_token[:, 1:].expand(B, tff - 1, -1)
+                        camera_token = torch.cat([ref_token, src_token], dim=1)
                     da3_x[:, :, 0, :] = camera_token
 
                 if da3_i >= 8 and da3_i % 2 == 1:  # `8`: hard-coded for DA3-large `self.alt_start`

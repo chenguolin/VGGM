@@ -127,6 +127,7 @@ class Wan(nn.Module):
                 da3_down_ratio=opt.da3_down_ratio,
                 da3_use_ray_pose=opt.da3_use_ray_pose,
                 da3_interactive=opt.da3_interactive and not opt.only_train_da3,
+                da3_input_cam=opt.da3_input_cam,
                 da3_max_attention_size=opt.da3_max_attention_size,
             )
             if opt.only_train_da3:
@@ -358,6 +359,7 @@ class Wan(nn.Module):
             timesteps,
             prompt_embeds,
             plucker=plucker if self.opt.input_plucker else None,
+            C2W=C2W, fxfycxcy=fxfycxcy,  # for DA3
             extra_condition=render_images,
             #
             clean_x=latents if self.opt.use_teacher_forcing else None,
@@ -536,6 +538,7 @@ class Wan(nn.Module):
                     timesteps,
                     prompt_embeds,
                     plucker=plucker if self.opt.input_plucker else None,
+                    C2W=C2W, fxfycxcy=fxfycxcy,  # for DA3
                     extra_condition=render_images,
                 )
 
@@ -546,6 +549,7 @@ class Wan(nn.Module):
                         timesteps,
                         negative_prompt_embeds,  # torch.zeros_like(prompt_embeds)
                         plucker=plucker if self.opt.input_plucker else None,
+                        C2W=C2W, fxfycxcy=fxfycxcy,  # for DA3
                         extra_condition=render_images,
                     )
                     if not self.opt.load_da3:
@@ -746,6 +750,8 @@ class Wan(nn.Module):
                     this_chunk_plucker = plucker[:, chunk_idx * self.opt.chunk_size:(chunk_idx + 1) * self.opt.chunk_size, ...]
                 else:
                     this_chunk_plucker = None
+                this_chunk_C2W = C2W[:, chunk_idx * self.opt.chunk_size:(chunk_idx + 1) * self.opt.chunk_size, ...]
+                this_chunk_fxfycxcy = fxfycxcy[:, chunk_idx * self.opt.chunk_size:(chunk_idx + 1) * self.opt.chunk_size, ...]
 
                 ### Spatial denoising loop
                 for ti, timestep in tqdm(enumerate(self.diffusion.scheduler.timesteps),
@@ -760,6 +766,7 @@ class Wan(nn.Module):
                         timesteps,
                         prompt_embeds,
                         plucker=this_chunk_plucker,
+                        C2W=this_chunk_C2W, fxfycxcy=this_chunk_fxfycxcy,  # for DA3
                         extra_condition=render_images,
                         #
                         kv_cache=self.kv_cache_pos,
@@ -781,6 +788,7 @@ class Wan(nn.Module):
                             timesteps,
                             negative_prompt_embeds,  # torch.zeros_like(prompt_embeds)
                             plucker=this_chunk_plucker,
+                            C2W=this_chunk_C2W, fxfycxcy=this_chunk_fxfycxcy,  # for DA3
                             extra_condition=render_images,
                             #
                             kv_cache=self.kv_cache_neg,
@@ -834,6 +842,7 @@ class Wan(nn.Module):
                     timesteps * 0.,
                     prompt_embeds,
                     plucker=this_chunk_plucker,
+                    C2W=this_chunk_C2W, fxfycxcy=this_chunk_fxfycxcy,  # for DA3
                     extra_condition=render_images,
                     #
                     kv_cache=self.kv_cache_pos,
@@ -854,6 +863,7 @@ class Wan(nn.Module):
                         timesteps * 0.,
                         negative_prompt_embeds,  # torch.zeros_like(prompt_embeds)
                         plucker=this_chunk_plucker,
+                        C2W=this_chunk_C2W, fxfycxcy=this_chunk_fxfycxcy,  # for DA3
                         extra_condition=render_images,
                         #
                         kv_cache=self.kv_cache_neg,

@@ -586,6 +586,7 @@ class DMD_Wan(Wan):
                 timesteps,
                 prompt_embeds,
                 plucker=plucker,
+                C2W=C2W, fxfycxcy=fxfycxcy,  # for DA3
             )
             model_outputs, da3_outputs = \
                 model_outputs if self.opt.load_da3 else (model_outputs, None)

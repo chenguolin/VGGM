@@ -197,7 +197,7 @@ def project_points(
     znear: float = 0.001,
     zfar: float = 100.,
     margin: int = 0,
-) -> Tuple[LongTensor, BoolTensor]:
+) -> Tensor:
     """Project points in 3D world coordinate to image plane and valid_mask.
 
     Inputs:
@@ -211,8 +211,7 @@ def project_points(
         - `margin`: margin for valid mask
 
     Outputs:
-        - `xy`: (N, 2); LongTensor
-        - `valid_mask`: (N,); BoolTensor
+        - `depth_map`: (H, W); Tensor
     """
     W2C = inverse_c2w(C2W)
     homo_xyz_world = homogenize_points(xyz_world)  # (N, 4)
@@ -231,23 +230,15 @@ def project_points(
     valid_mask = (u_round >= margin) & (u_round <= W-1-margin) & (v_round >= margin) & (v_round <= H-1-margin) & valid_z
 
     # Considering occlusion, only keep the closest points
-    if valid_mask.any():
-        u_valid = u_round[valid_mask]  # (M,)
-        v_valid = v_round[valid_mask]  # (M,)
-        z_valid = z[valid_mask]  # (M,)
-        idx_valid = torch.arange(len(z))[valid_mask]  # (M,)
+    u_valid = u_round[valid_mask]  # (M,)
+    v_valid = v_round[valid_mask]  # (M,)
+    z_valid = z[valid_mask]  # (M,)
 
-        linear_idx = v_valid * W + u_valid  # (M,)
-        depth_buffer = torch.full((H * W,), float("inf"), device=z.device)
-        depth_buffer.scatter_reduce_(dim=0, index=linear_idx, src=z_valid, reduce="amin", include_self=True)
+    linear_idx = v_valid * W + u_valid  # (M,)
+    depth_buffer = torch.full((H * W,), float("inf"), device=z.device)
+    depth_buffer.scatter_reduce_(dim=0, index=linear_idx, src=z_valid, reduce="amin", include_self=True)
 
-        visible = z_valid == depth_buffer[linear_idx]  # not occluded
-
-        is_visible = torch.zeros_like(valid_mask)
-        is_visible[idx_valid[visible]] = True
-        valid_mask = valid_mask & is_visible
-
-    return torch.stack([u_round, v_round], dim=-1).long(), valid_mask.bool()
+    return depth_buffer.view(H, W)
 
 
 def unproject_depth(

@@ -117,6 +117,8 @@ class SelfForcingTrainingPipeline:
                 this_chunk_plucker = plucker[:, chunk_idx * self.opt.chunk_size:(chunk_idx + 1) * self.opt.chunk_size, ...]
             else:
                 this_chunk_plucker = None
+            this_chunk_C2W = C2W[:, chunk_idx * self.opt.chunk_size:(chunk_idx + 1) * self.opt.chunk_size, ...]
+            this_chunk_fxfycxcy = fxfycxcy[:, chunk_idx * self.opt.chunk_size:(chunk_idx + 1) * self.opt.chunk_size, ...]
 
             # Spatial denoising loop
             for ti, timestep in enumerate(self.denoising_step_list[:-1]):
@@ -138,6 +140,7 @@ class SelfForcingTrainingPipeline:
                             timesteps,
                             prompt_embeds,
                             plucker=this_chunk_plucker,
+                            C2W=this_chunk_C2W, fxfycxcy=this_chunk_fxfycxcy,  # for DA3
                             extra_condition=render_images,
                             #
                             kv_cache=self.kv_cache_pos,
@@ -181,6 +184,7 @@ class SelfForcingTrainingPipeline:
                         timesteps,
                         prompt_embeds,
                         plucker=this_chunk_plucker,
+                        C2W=this_chunk_C2W, fxfycxcy=this_chunk_fxfycxcy,  # for DA3
                         extra_condition=render_images,
                         #
                         kv_cache=self.kv_cache_pos,
@@ -222,6 +226,7 @@ class SelfForcingTrainingPipeline:
                         context_timesteps,
                         prompt_embeds,
                         plucker=this_chunk_plucker,
+                        C2W=this_chunk_C2W, fxfycxcy=this_chunk_fxfycxcy,  # for DA3
                         extra_condition=render_images,
                         #
                         kv_cache=self.kv_cache_pos,
