@@ -13,7 +13,7 @@ from src.options import Options
 from src.models.networks import WanDiffusionWrapper, WanVAEWrapper
 from src.models.wan import Wan
 from src.models.pipelines.self_forcing_training import SelfForcingTrainingPipeline
-from src.utils import convert_to_buffer, plucker_ray, colorize_depth
+from src.utils import convert_to_buffer, plucker_ray, colorize_depth, filter_da3_points, render_pt3d_points
 
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -180,6 +180,14 @@ class DMD_Wan(Wan):
             depths = data["depth"].to(dtype)[:, idxs, ...]  # (B, f, H, W)
         else:
             depths = None
+        if "conf" in data:
+            confs = data["conf"].to(dtype)[:, idxs, ...]  # (B, f, H, W)
+        else:
+            confs = None
+        if "image" in data:
+            images_f = data["image"].to(dtype)[:, idxs, ...]  # (B, f, 3, H, W)
+        else:
+            images_f = None
 
         # DMD
         self.diffusion.scheduler.set_timesteps(self.opt.num_train_timesteps, training=True)
@@ -198,6 +206,8 @@ class DMD_Wan(Wan):
                     C2W=C2W,
                     fxfycxcy=fxfycxcy,
                     depths=depths,
+                    confs=confs,
+                    images_f=images_f,
                 )
             outputs["generator_loss"] = generator_loss
             outputs["dmd_grad_norm"] = dmd_grad_norm
@@ -227,6 +237,9 @@ class DMD_Wan(Wan):
                 #
                 C2W=C2W,
                 fxfycxcy=fxfycxcy,
+                depths=depths,
+                confs=confs,
+                images_f=images_f,
             )
 
         outputs["loss"] = critic_loss + self.opt.dmd_loss_weight * generator_loss
@@ -256,6 +269,9 @@ class DMD_Wan(Wan):
         #
         C2W: Optional[Tensor] = None,
         fxfycxcy: Optional[Tensor] = None,
+        depths: Optional[Tensor] = None,
+        confs: Optional[Tensor] = None,
+        images_f: Optional[Tensor] = None,
     ):
         """
         Generate image/videos from noise and train the critic with generated samples.
@@ -278,6 +294,9 @@ class DMD_Wan(Wan):
                 #
                 C2W,
                 fxfycxcy,
+                depths,
+                confs,
+                images_f,
             )
 
         # Step 2: Compute the fake prediction
@@ -330,6 +349,8 @@ class DMD_Wan(Wan):
         C2W: Optional[Tensor] = None,
         fxfycxcy: Optional[Tensor] = None,
         depths: Optional[Tensor] = None,
+        confs: Optional[Tensor] = None,
+        images_f: Optional[Tensor] = None,
     ):
         """
         Generate image/videos from noise and compute the DMD loss.
@@ -348,6 +369,9 @@ class DMD_Wan(Wan):
             #
             C2W,
             fxfycxcy,
+            depths,
+            confs,
+            images_f,
         )
 
         # Step 2: Compute the DMD loss
@@ -534,6 +558,9 @@ class DMD_Wan(Wan):
         #
         C2W: Optional[Tensor] = None,
         fxfycxcy: Optional[Tensor] = None,
+        depths: Optional[Tensor] = None,
+        confs: Optional[Tensor] = None,
+        images_f: Optional[Tensor] = None,
     ):
         """
         Optionally simulate the generator's input from noise using backward simulation
@@ -556,6 +583,72 @@ class DMD_Wan(Wan):
 
             B, f = noises.shape[0], noises.shape[2]
             device, dtype = noises.device, noises.dtype
+
+            # (Optional) Point cloud rendering
+            if self.opt.extra_condition_dim > 0:
+                assert depths is not None and confs is not None and images_f is not None
+                H, W = images_f.shape[3], images_f.shape[4]
+                with torch.no_grad():
+                    if not self.opt.is_causal:
+                        all_render_images = []
+                        for i in range(B):
+                            points, colors = filter_da3_points(
+                                images_f[i], depths[i], confs[i], C2W[i], fxfycxcy[i],
+                                conf_thresh_percentile=self.opt.conf_thresh_percentile,
+                                random_sample_ratio=self.opt.rand_pcrender_ratio,
+                                min_num_points=self.opt.min_num_points,
+                                max_num_points=self.opt.max_num_points,
+                            )
+                            render_images = render_pt3d_points(H, W, points, colors, C2W[i], fxfycxcy[i])  # (f, 3, H, W) in [0, 1]
+                            all_render_images.append(render_images.to(dtype))
+                        render_images = torch.stack(all_render_images, dim=0)  # (B, f, 3, H, W) in [0, 1]
+                    else:  # teacher forcing style conditioning
+                        all_render_images = []
+                        for i in range(B):
+                            assert f % self.opt.chunk_size == 0
+                            num_chunks = f // self.opt.chunk_size
+                            all_render_images_chunk, all_points, all_colors = [], None, None
+                            for ci in range(num_chunks-1):
+                                chunk_idxs = torch.arange(ci * self.opt.chunk_size, (ci + 1) * self.opt.chunk_size).to(device=device, dtype=torch.long)
+                                next_chunk_idxs = torch.arange((ci + 1) * self.opt.chunk_size, (ci + 2) * self.opt.chunk_size).to(device=device, dtype=torch.long)
+                                points, colors = filter_da3_points(
+                                    images_f[i, chunk_idxs], depths[i, chunk_idxs], confs[i, chunk_idxs], C2W[i, chunk_idxs], fxfycxcy[i, chunk_idxs],
+                                    conf_thresh_percentile=self.opt.conf_thresh_percentile,
+                                    random_sample_ratio=self.opt.rand_pcrender_ratio,
+                                    min_num_points=self.opt.min_num_points,
+                                    max_num_points=self.opt.max_num_points,
+                                )
+                                if all_points is None:
+                                    all_points, all_colors = points, colors
+                                else:
+                                    all_points = torch.cat([all_points, points], dim=0)
+                                    all_colors = torch.cat([all_colors, colors], dim=0)
+                                render_images = render_pt3d_points(H, W, all_points, all_colors, C2W[i, next_chunk_idxs], fxfycxcy[i, next_chunk_idxs]).to(dtype)  # (f_chunk, 3, H, W) in [0, 1]
+                                all_render_images_chunk.append(render_images)
+                            all_render_images_chunk = torch.cat(all_render_images_chunk, dim=0)  # (f-f_chunk, 3, H, W)
+
+                            if cond_latents is not None:
+                                points, colors = filter_da3_points(
+                                    images_f[i, 0:1], depths[i, 0:1], confs[i, 0:1], C2W[i, 0:1], fxfycxcy[i, 0:1],
+                                    conf_thresh_percentile=self.opt.conf_thresh_percentile,
+                                    random_sample_ratio=self.opt.rand_pcrender_ratio,
+                                    min_num_points=self.opt.min_num_points,
+                                    max_num_points=self.opt.max_num_points,
+                                )
+                                all_render_images_chunk = torch.cat([
+                                    render_pt3d_points(H, W, points, colors, C2W[i, :self.opt.chunk_size], fxfycxcy[i, :self.opt.chunk_size]).to(dtype),
+                                    all_render_images_chunk,
+                                ], dim=0)  # (f, 3, H, W)
+                            else:
+                                all_render_images_chunk = torch.cat([
+                                    torch.zeros_like(all_render_images_chunk[:self.opt.chunk_size, ...]),
+                                    all_render_images_chunk,
+                                ], dim=0)  # (f, 3, H, W)
+
+                            all_render_images.append(all_render_images_chunk)
+                        render_images = torch.stack(all_render_images, dim=0)  # (B, f, 3, H, W)
+            else:
+                render_images = None
 
             denoising_step_list = torch.tensor(self.opt.denoising_step_list, dtype=torch.long)
             if self.opt.warp_denoising_step:
@@ -587,12 +680,15 @@ class DMD_Wan(Wan):
                 prompt_embeds,
                 plucker=plucker,
                 C2W=C2W, fxfycxcy=fxfycxcy,  # for DA3
+                extra_condition=render_images,
             )
             model_outputs, da3_outputs = \
                 model_outputs if self.opt.load_da3 else (model_outputs, None)
             pred_x0 = self.diffusion._convert_flow_pred_to_x0(model_outputs, noisy_latents, timesteps).to(dtype)
             if da3_outputs is not None:
                 da3_outputs["timesteps"] = timesteps
+            if render_images is not None:
+                da3_outputs["images_render"] = render_images
 
         gradient_mask = None  # TODO: handle generating long videos
         # if self.opt.first_latent_cond:
