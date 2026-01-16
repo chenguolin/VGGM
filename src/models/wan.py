@@ -134,14 +134,14 @@ class Wan(nn.Module):
                 self.diffusion.requires_grad_(False)
                 self.diffusion.da3_adapter.requires_grad_(True)
                 self.diffusion.da3_model.requires_grad_(True)
-            if opt.only_train_resdit:
-                self.diffusion.requires_grad_(False)
-                for i, block in enumerate(self.diffusion.model.blocks):
-                    if i >= len(self.diffusion.model.blocks) - 24:  #  `24`: hard-coded for da3-large
-                        block.requires_grad_(True)
             if opt.fix_da3_heads:
                 self.diffusion.da3_model.head.requires_grad_(False)
                 self.diffusion.da3_model.cam_dec.requires_grad_(False)
+        if opt.only_train_resdit:
+            self.diffusion.requires_grad_(False)
+            for i, block in enumerate(self.diffusion.model.blocks):
+                if i >= len(self.diffusion.model.blocks) - 24:  #  `24`: hard-coded for da3-large
+                    block.requires_grad_(True)
 
             self.ray_loss_fn, self.depth_loss_fn, self.camera_loss_fn = \
                 XYZLoss(opt), DepthLoss(opt), CameraLoss(opt)
