@@ -356,4 +356,7 @@ opt_dict["wan2.1_t2v_1.3b_dmd"] = Options(
     num_inference_steps=4,
     cfg_scale=(1.,),
     deterministic_inference=False,
+    #
+    # load_conf=True,
+    # input_pcrender=True,
 )
