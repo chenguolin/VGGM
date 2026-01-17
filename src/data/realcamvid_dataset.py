@@ -83,15 +83,18 @@ class RealcamvidDataset(BaseDataset):
 
             assert not self.opt.load_depth
 
-        # Load video
-        images = {
-            idx: tvT.ToTensor()(vr[idx].asnumpy())
-            for idx in input_frame_idxs
-        }
-        images = torch.stack([images[idx] for idx in input_frame_idxs]).float()  # (F, 3, H, W)
+        if self.opt.load_image:
+            # Load video
+            images = {
+                idx: tvT.ToTensor()(vr[idx].asnumpy())
+                for idx in input_frame_idxs
+            }
+            images = torch.stack([images[idx] for idx in input_frame_idxs]).float()  # (F, 3, H, W)
 
-        # Data augmentation
-        images, depths, confs, fxfycxcy = self._data_augment(images, depths, confs, fxfycxcy)
+            # Data augmentation
+            images, depths, confs, fxfycxcy = self._data_augment(images, depths, confs, fxfycxcy)
+        else:
+            images = None
 
         # Camera normalization
         C2W = self._camera_normalize(C2W)
@@ -108,11 +111,12 @@ class RealcamvidDataset(BaseDataset):
         return_dict = {
             "uid": uid,            # str
             "prompt": prompt,      # str
-            "image": images,       # (F, 3, H, W) in [0, 1]
             "C2W": C2W,            # (F, 4, 4)
             "fxfycxcy": fxfycxcy,  # (F, 4)
             "scaling_factor": torch.tensor(scaling_factor),  # (1,)
         }
+        if images is not None:
+            return_dict["image"] = images  # (F, 3, H, W) in [0, 1]
         if depths is not None:
             return_dict["depth"] = depths  # (F, H, W)
         if confs is not None:

@@ -29,6 +29,7 @@ class Options:
     crop_resize_ratio: Tuple[float, float] = (0.77, 1.)
     pingpong_threshold: int = 64
     load_da3_cam: bool = True
+    load_image: bool = True
     load_depth: bool = True
     load_conf: bool = False
     normalize_xyz: bool = False
