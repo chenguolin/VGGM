@@ -157,9 +157,9 @@ class Options:
         ## Losses
     conf_alpha: float = 0.2
     gradient_loss_scale: int = 4
-    xyz_loss_threshold: float = 1.
-    depth_loss_threshold: float = 1.
-    camera_loss_threshold: float = 1.
+    xyz_loss_threshold: float = 10.
+    depth_loss_threshold: float = 10.
+    camera_loss_threshold: float = 10.
         ## LR scheduler
     name_lr_mult: Optional[str] = None
     exclude_name_lr_mult: Optional[str] = None
