@@ -23,7 +23,6 @@ def render_pt3d_points(
     colors: Tensor,    # (M, 3)
     C2W: Tensor,       # (f, 4, 4)
     fxfycxcy: Tensor,  # (f, 4)
-    return_masks: bool = False,
 ):
     f = C2W.shape[0]
     cameras = setup_pt3d_cameras(H, W, C2W.float(), fxfycxcy.float())
@@ -32,11 +31,7 @@ def render_pt3d_points(
 
     point_cloud = Pointclouds(points=[points.float()] * f, features=[colors.float()] * f)
 
-    render_images = renderer(point_cloud).permute(0, 3, 1, 2)  # (f, 4, H, W)
-    if not return_masks:
-        return render_images[:, :3, ...]  # (f, 3, H, W) in [0, 1]
-    else:
-        return render_images[:, :3, ...], render_images[:, 3, ...]  # (f, 3, H, W) in [0, 1], (f, H, W)
+    return renderer(point_cloud).permute(0, 3, 1, 2)  # (f, 3, H, W)
 
 
 def setup_pt3d_renderer(cameras: PerspectiveCameras, image_size: int | Tuple[int, int]):

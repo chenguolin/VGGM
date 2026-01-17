@@ -222,6 +222,9 @@ class DMD_Wan(Wan):
                 if "camera_loss" in da3_outputs:
                     outputs["camera_loss"] = da3_outputs["camera_loss"]
                     generator_loss = generator_loss + da3_outputs["camera_loss"]
+                if "render_loss" in da3_outputs:
+                    outputs["render_loss"] = da3_outputs["render_loss"]
+                    generator_loss = generator_loss + da3_outputs["render_loss"]
 
         else:
             generator_loss = 0.
