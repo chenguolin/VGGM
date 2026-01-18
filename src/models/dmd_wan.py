@@ -253,6 +253,8 @@ class DMD_Wan(Wan):
             if "image" in data:
                 outputs["images_input"] = data["image"]
             if da3_outputs is not None:
+                if "depth_da3_wrapper" in da3_outputs:
+                    outputs["images_gt_depth"] = colorize_depth(1./da3_outputs["depth_da3_wrapper"], batch_mode=True)
                 if "depth" in da3_outputs:
                     outputs["images_pred_depth"] = colorize_depth(1./da3_outputs["depth"], batch_mode=True)
                 if "images_render" in da3_outputs:
@@ -743,7 +745,7 @@ class DMD_Wan(Wan):
         Here we encapsulate the inference code with a model-dependent outside function.
         We pass our FSDP/DeepSpeed-wrapped modules into the pipeline to save memory.
         """
-        self.inference_pipeline = SelfForcingTrainingPipeline(self.opt, self.diffusion, self.current_vae_decoder)
+        self.inference_pipeline = SelfForcingTrainingPipeline(self.opt, self.diffusion, self.current_vae_decoder, self.da3_wrapper)
 
     def _add_lora_to_fake_score(self, target_modules: List[str], lora_rank: int, lora_alpha: Optional[int] = None):
         if lora_alpha is None:

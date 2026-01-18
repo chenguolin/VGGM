@@ -2,15 +2,17 @@ from typing import *
 from torch import Tensor
 from src.models.wan import WanDiffusionWrapper, WanDiffusionDA3Wrapper
 from src.models.networks import VAEDecoderWrapper, TAEHV
+from src.models.networks.da3_wrapper import DA3Wrapper
 
 import torch
 import torch.distributed as dist
 import torch.nn.functional as tF
+from einops import rearrange
 
 from depth_anything_3.model.utils.transform import mat_to_quat
 
 from src.options import Options
-from src.models.losses import XYZLoss, CameraLoss
+from src.models.losses import XYZLoss, DepthLoss, CameraLoss
 from src.utils.constant import ZERO_VAE_CACHE
 from src.utils import plucker_ray, filter_da3_points, render_pt3d_points
 
@@ -20,6 +22,7 @@ class SelfForcingTrainingPipeline:
         opt: Options,
         diffusion: WanDiffusionWrapper | WanDiffusionDA3Wrapper,
         current_vae_decoder: Optional[VAEDecoderWrapper | TAEHV] = None,
+        da3_wrapper: Optional[DA3Wrapper] = None,
     ):
         super().__init__()
 
@@ -37,9 +40,11 @@ class SelfForcingTrainingPipeline:
         self.crossattn_cache_pos = None
         self.kv_cache_pos_da3 = None
 
-        self.ray_loss_fn, self.camera_loss_fn = XYZLoss(opt), CameraLoss(opt)
+        self.ray_loss_fn, self.depth_loss_fn, self.camera_loss_fn = \
+            XYZLoss(opt), DepthLoss(opt), CameraLoss(opt)
 
         self.current_vae_decoder = current_vae_decoder
+        self.da3_wrapper = da3_wrapper
 
     def generate_and_sync_list(self, num_chunks: int, num_denoising_steps: int, device: torch.device):
         rank = dist.get_rank() if dist.is_initialized() else 0
@@ -113,7 +118,7 @@ class SelfForcingTrainingPipeline:
             render_images = None
 
         # Temporal denoising loop
-        all_da3_outputs, all_points, all_colors = [None] * num_chunks, [None] * B, [None] * B
+        all_da3_outputs, all_points, all_colors, images_f = [None] * num_chunks, [None] * B, [None] * B, []
         for chunk_idx in range(num_chunks):
             this_chunk_latents = noises[:, :, chunk_idx * self.opt.chunk_size:(chunk_idx + 1) * self.opt.chunk_size, ...]
             if self.opt.input_plucker:
@@ -244,54 +249,57 @@ class SelfForcingTrainingPipeline:
                     if memory_tokens is not None:
                         model_outputs, memory_tokens = model_outputs  # NOTE: update `memory_tokens` here
 
-                # (Optional) Update render images for next chunks
-                if self.opt.extra_condition_dim > 0 and chunk_idx < num_chunks - 1:
-                    assert self.current_vae_decoder is not None and self.opt.load_da3
+            # (Optional) Decode images
+            if self.opt.da3_loss_in_sf or (self.opt.extra_condition_dim > 0 and chunk_idx < num_chunks - 1):
+                assert self.current_vae_decoder is not None
 
-                    with torch.no_grad():
-                        current_images_f, vae_cache = self.current_vae_decoder(pred_x0, *vae_cache)
-                        current_images_f = (current_images_f.clamp(-1., 1.) + 1.) / 2.
-                        _idxs = torch.arange(3, current_images_f.shape[2], 4).to(device=device, dtype=torch.long)
-                        current_images_f = current_images_f[:, :, _idxs, :, :].transpose(1, 2)  # (B, f_chunk, 3, H, W)
-                        assert current_images_f.shape[1] == self.opt.chunk_size
+                with torch.no_grad():
+                    current_images_f, vae_cache = self.current_vae_decoder(pred_x0, *vae_cache)
+                    current_images_f = (current_images_f.clamp(-1., 1.) + 1.) / 2.
+                    _idxs = torch.arange(3, current_images_f.shape[2], 4).to(device=device, dtype=torch.long)
+                    current_images_f = current_images_f[:, :, _idxs, :, :].transpose(1, 2)  # (B, f_chunk, 3, H, W)
+                    assert current_images_f.shape[1] == self.opt.chunk_size
+                    images_f.append(current_images_f)
 
-                    current_depths = all_da3_outputs[chunk_idx]["depth"]  # (B, f_chunk, H, W)
-                    current_confs = all_da3_outputs[chunk_idx]["depth_conf"]  # (B, f_chunk, H, W)
-                    current_C2W = all_da3_outputs[chunk_idx]["C2W"]  # (B, f_chunk, 4, 4)
-                    current_fxfycxcy = all_da3_outputs[chunk_idx]["fxfycxcy"]  # (B, f_chunk, 4)
+            # (Optional) Update render images for next chunks
+            if self.opt.extra_condition_dim > 0 and chunk_idx < num_chunks - 1:
+                assert self.opt.load_da3
 
-                    if self.opt.da3_loss_in_sf:
-                        _render_loss = tF.mse_loss(current_images_f, render_images, reduction="none")
-                        _render_loss = (_render_loss * render_masks.unsqueeze(2)).sum() / (render_masks.sum() + 1e-8)
-                        render_loss += _render_loss.to(dtype)
+                current_depths = all_da3_outputs[chunk_idx]["depth"]  # (B, f_chunk, H, W)
+                current_confs = all_da3_outputs[chunk_idx]["depth_conf"]  # (B, f_chunk, H, W)
+                current_C2W = all_da3_outputs[chunk_idx]["C2W"]  # (B, f_chunk, 4, 4)
+                current_fxfycxcy = all_da3_outputs[chunk_idx]["fxfycxcy"]  # (B, f_chunk, 4)
 
-                    all_render_images = []
-                    for i in range(B):
-                        points, colors = filter_da3_points(
-                            current_images_f[i], current_depths[i], current_confs[i], current_C2W[i], current_fxfycxcy[i],
-                            conf_thresh_percentile=self.opt.conf_thresh_percentile,
-                            random_sample_ratio=self.opt.rand_pcrender_ratio,
-                            min_num_points=self.opt.min_num_points,
-                            max_num_points=self.opt.max_num_points,
-                        )
-                        if points.shape[0] > 0:
-                            if all_points[i] is None:
-                                all_points[i], all_colors[i] = points, colors
-                            else:
-                                all_points[i] = torch.cat([all_points[i], points], dim=0)
-                                all_colors[i] = torch.cat([all_colors[i], colors], dim=0)
-                            with torch.no_grad():
-                                render_images = render_pt3d_points(h*8, w*8, all_points[i], all_colors[i],  # `*8`: hard-coded for Wan2.1
-                                    C2W[i, (chunk_idx + 1) * self.opt.chunk_size:(chunk_idx + 2) * self.opt.chunk_size, ...],
-                                    fxfycxcy[i, (chunk_idx + 1) * self.opt.chunk_size:(chunk_idx + 2) * self.opt.chunk_size, ...],
-                                ).to(dtype)
-                            render_masks = (render_images > 10 / 255.0).to(dtype)  # consider pixels with value > 10 as valid
-                        else:  # no valid points
-                            render_images = torch.zeros((self.opt.chunk_size, 3, h*8, w*8), dtype=dtype, device=device)
-                            render_masks = torch.zeros((self.opt.chunk_size, h*8, w*8), dtype=dtype, device=device)
-                        all_render_images.append(render_images)
-                    render_images = torch.stack(all_render_images, dim=0)  # (B, f_chunk, 3, H, W)
-                    render_images_vis = torch.cat([render_images_vis, render_images], dim=1)
+                if self.opt.da3_loss_in_sf:
+                    pass  # TODO: render loss
+
+                all_render_images = []
+                for i in range(B):
+                    points, colors = filter_da3_points(
+                        current_images_f[i], current_depths[i], current_confs[i], current_C2W[i], current_fxfycxcy[i],
+                        conf_thresh_percentile=self.opt.conf_thresh_percentile,
+                        random_sample_ratio=self.opt.rand_pcrender_ratio,
+                        min_num_points=self.opt.min_num_points,
+                        max_num_points=self.opt.max_num_points,
+                    )
+                    if points.shape[0] > 0:
+                        if all_points[i] is None:
+                            all_points[i], all_colors[i] = points, colors
+                        else:
+                            all_points[i] = torch.cat([all_points[i], points], dim=0)
+                            all_colors[i] = torch.cat([all_colors[i], colors], dim=0)
+                        with torch.no_grad():
+                            render_images = render_pt3d_points(h*8, w*8, all_points[i], all_colors[i],  # `*8`: hard-coded for Wan2.1
+                                C2W[i, (chunk_idx + 1) * self.opt.chunk_size:(chunk_idx + 2) * self.opt.chunk_size, ...],
+                                fxfycxcy[i, (chunk_idx + 1) * self.opt.chunk_size:(chunk_idx + 2) * self.opt.chunk_size, ...],
+                            ).to(dtype)
+                        render_masks = (render_images > 10 / 255.0).to(dtype)  # consider pixels with value > 10 as valid
+                    else:  # no valid points
+                        render_images = torch.zeros((self.opt.chunk_size, 3, h*8, w*8), dtype=dtype, device=device)
+                        render_masks = torch.zeros((self.opt.chunk_size, h*8, w*8), dtype=dtype, device=device)
+                    all_render_images.append(render_images)
+                render_images = torch.stack(all_render_images, dim=0)  # (B, f_chunk, 3, H, W)
+                render_images_vis = torch.cat([render_images_vis, render_images], dim=1)
 
         if self.opt.load_da3:
             assert da3_outputs is not None
@@ -301,6 +309,26 @@ class SelfForcingTrainingPipeline:
             }
 
         if self.opt.da3_loss_in_sf:
+            assert self.da3_wrapper is not None
+            images_f = torch.cat(images_f, dim=1).to(dtype)  # (B, f, 3, H, W)
+            assert images_f.shape[1] == f
+
+            # Run DA3 wrapper for depth loss
+            with torch.no_grad():
+                images_f = rearrange(tF.interpolate(
+                    rearrange(images_f, "b f ... -> (b f) ..."),
+                    size=(280, 504), mode="bilinear", align_corners=False  # TODO: hard-coded res
+                ), "(b f) c h w -> b f c h w", b=B)
+                da3_wrapper_outputs = self.da3_wrapper(images_f)
+                da3_wrapper_outputs["depth"] = rearrange(tF.interpolate(
+                    rearrange(da3_wrapper_outputs["depth"], "b f ... -> (b f) ...").unsqueeze(1),
+                    size=(288, 512), mode="bilinear", align_corners=False  # TODO: hard-coded res
+                ), "(b f) ... -> b f ...", b=B).squeeze(2)
+
+            da3_outputs["depth_da3_wrapper"] = da3_wrapper_outputs["depth"]
+            da3_outputs["depth_loss"] = self.depth_loss_fn(
+                da3_outputs["depth"], da3_wrapper_outputs["depth"], confs=da3_outputs["depth_conf"]).mean()
+
             assert C2W is not None and fxfycxcy is not None
             H, W = self.opt.input_res
 
@@ -317,11 +345,12 @@ class SelfForcingTrainingPipeline:
 
             # Compute geometry losses
             ray_loss = self.ray_loss_fn(da3_outputs["ray"], gt_raymaps, confs=da3_outputs["ray_conf"])  # (B, f)
-            camera_loss = self.camera_loss_fn(da3_outputs["pose_enc"], gt_pose_enc)  # (B, f)
+            camera_loss = self.camera_loss_fn(da3_outputs["pose_enc"], gt_pose_enc) + \
+                self.camera_loss_fn(da3_wrapper_outputs["pose_enc"], gt_pose_enc)  # (B, f)
             da3_outputs["ray_loss"] = ray_loss.mean()
             da3_outputs["camera_loss"] = camera_loss.mean()
-            if self.opt.extra_condition_dim > 0:
-                da3_outputs["render_loss"] = render_loss
+            # if self.opt.extra_condition_dim > 0:
+            #     da3_outputs["render_loss"] = render_loss  # TODO: render loss
 
         if render_images is not None:
             da3_outputs["images_render"] = render_images_vis

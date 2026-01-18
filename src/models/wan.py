@@ -23,6 +23,7 @@ from src.models.networks import (
     WanDiffusionDA3Wrapper,
     VAEDecoderWrapper,
     TAEHV,
+    DA3Wrapper,
 )
 from src.models.losses import XYZLoss, DepthLoss, CameraLoss
 from src.utils.constant import ZERO_VAE_CACHE
@@ -64,6 +65,16 @@ class Wan(nn.Module):
                 convert_to_buffer(self.current_vae_decoder, persistent=False)  # no gradient & not save to checkpoint
         else:
             self.current_vae_decoder = None
+
+        # (Optional) DA3 Wrapper
+        if opt.da3_loss_in_sf:
+            self.da3_wrapper = DA3Wrapper(opt)
+            if opt.use_deepspeed_zero3:
+                self.da3_wrapper.requires_grad_(False)  # for ZeRO3 parameter split
+            else:
+                convert_to_buffer(self.da3_wrapper, persistent=False)  # no gradient & not save to checkpoint
+        else:
+            self.da3_wrapper = None
 
         # Text encoder
         if opt.load_text_encoder:

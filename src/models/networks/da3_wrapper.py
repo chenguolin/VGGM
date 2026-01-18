@@ -1,16 +1,15 @@
 from typing import *
 from torch import Tensor
-from depth_anything_3.model.da3 import DepthAnything3Net
+from depth_anything_3.model.da3 import NestedDepthAnything3Net
 
 import torch
 from torch import nn
-from einops import rearrange
-
-from src.options import Options
 
 from depth_anything_3.api import DepthAnything3
-from depth_anything_3.model.utils.transform import quat_to_mat
-from depth_anything_3.utils.ray_utils import get_extrinsic_from_camray
+from depth_anything_3.model.utils.transform import mat_to_quat
+
+from src.options import Options
+from src.utils import inverse_c2w, intrinsics_to_fxfycxcy
 
 
 class DA3Wrapper(nn.Module):
@@ -19,9 +18,9 @@ class DA3Wrapper(nn.Module):
 
         self.opt = opt
 
-        _da3 = DepthAnything3.from_pretrained(f"depth-anything/{(self.opt.model_name.upper())}")
+        _da3 = DepthAnything3.from_pretrained(f"depth-anything/DA3NESTED-GIANT-LARGE-1.1")  # TODO: make it configurable
         self.config, self.model = _da3.config, _da3.model
-        self.model: DepthAnything3Net
+        self.model: NestedDepthAnything3Net
         self.model.eval()
 
         del _da3
@@ -29,47 +28,33 @@ class DA3Wrapper(nn.Module):
     def forward(self, images: Tensor):
         H, W = images.shape[-2:]
 
-        # Depth & Raymap
-        feats, _ = self.model.backbone(images)
-        head_outputs = self.model.head(feats, H, W, patch_start_idx=0, chunk_size=self.opt.da3_chunk_size)
-        depths, depths_conf = head_outputs["depth"], head_outputs["depth_conf"]  # (B, F, H, W), (B, F, H, W)
-        rays, rays_conf = head_outputs["ray"], head_outputs["ray_conf"]  # (B, F, H, W, 6), (B, F, H, W)
+        outputs = self.model(images)
+        depths, depths_conf = outputs.depth, outputs.depth_conf  # (B, F, H, W), (B, F, H, W)
+        extrinsics, intrinsics = outputs.extrinsics, outputs.intrinsics  # (B, F, 3, 4), (B, F, 3, 3)
+        extrinsics = torch.cat([
+            extrinsics,
+            torch.tensor([0, 0, 0, 1], dtype=extrinsics.dtype, device=extrinsics.device)
+            .view(1, 1, 1, 4).repeat(extrinsics.shape[0], extrinsics.shape[1], 1, 1)
+        ], dim=2)  # (B, F, 4, 4)
 
-        # Camera
-        pose_enc = self.model.cam_dec(feats[-1][1])  # (B, F, 9)
-        with torch.no_grad():
-            ## Camera decoder
-            if not self.opt.use_ray_pose:
-                R, T = quat_to_mat(pose_enc[..., 3:7]), pose_enc[..., :3]
-                C2W = torch.cat([R, T[..., None]], dim=-1)  # (B, F, 3, 4)
-                C2W = torch.cat([C2W, torch.zeros_like(C2W[..., :1, :])], dim=-2)  # (B, F, 4, 4)
-                C2W[..., 3, 3] = 1.  # (B, F, 4, 4)
+        C2W = inverse_c2w(extrinsics)  # (B, F, 4, 4)
+        C2W = inverse_c2w(C2W[:, 0:1, ...]) @ C2W  # align to the first frame
+        fxfycxcy = intrinsics_to_fxfycxcy(intrinsics)  # (B, F, 4)
+        fxfycxcy[:, :, 0] /= W
+        fxfycxcy[:, :, 1] /= H
+        fxfycxcy[:, :, 2] /= W
+        fxfycxcy[:, :, 3] /= H
+        pose_enc = torch.cat([
+            C2W[:, :, :3, 3].float(),  # (B, f, 3)
+            mat_to_quat(C2W[:, :, :3, :3].float()),  # (B, f, 4)
+            2. * torch.atan(1. / (2. * fxfycxcy[:, :, 1:2])),  # (B, f, 1); fy -> fov_h
+            2. * torch.atan(1. / (2. * fxfycxcy[:, :, 0:1])),  # (B, f, 1); fx -> fov_w
+        ], dim=-1).to(C2W.dtype)  # (B, f, 9)
 
-                fov_h, fov_w = pose_enc[..., 7], pose_enc[..., 8]
-                fx, fy = 0.5 / torch.clamp(torch.tan(fov_w / 2.), 1e-6), 0.5 / torch.clamp(torch.tan(fov_h / 2.), 1e-6)
-                cx, cy = 0.5 * torch.ones_like(fov_h), 0.5 * torch.ones_like(fov_w)
-                fxfycxcy = torch.stack([fx, fy, cx, cy], dim=-1)  # (B, F, 4)
-            ## Raymap
-            else:
-                pred_extrinsic, pred_focal_lengths, pred_principal_points = \
-                    get_extrinsic_from_camray(rays, rays_conf, rays.shape[-3], rays.shape[-2])
-
-                C2W = pred_extrinsic  # (B, F, 4, 4)
-                fxfycxcy = torch.stack([
-                    pred_focal_lengths[:, :, 0] / 2,
-                    pred_focal_lengths[:, :, 1] / 2,
-                    pred_principal_points[:, :, 0] / 2,
-                    pred_principal_points[:, :, 1] / 2,
-                ], dim=-1)  # (B, F, 4)
-
-        rays = rearrange(rays, "b f h w c -> b f c h w")  # (B, F, 6, H/2, W/2)
         return {
             "depth": depths,            # (B, F, H, W)
             "depth_conf": depths_conf,  # (B, F, H, W)
-            "ray": rays,                # (B, F, 6, H/2, W/2)
-            "ray_conf": rays_conf,      # (B, F, H/2, W/2)
             "pose_enc": pose_enc,       # (B, F, 9)
-            #
             "C2W": C2W,                 # (B, F, 4, 4)
             "fxfycxcy": fxfycxcy,       # (B, F, 4)
         }
