@@ -118,7 +118,7 @@ class SelfForcingTrainingPipeline:
             render_images = None
 
         # Temporal denoising loop
-        all_da3_outputs, all_points, all_colors, images_f = [None] * num_chunks, [None] * B, [None] * B, []
+        all_da3_outputs, all_points, all_colors, images_f, all_timesteps = [None] * num_chunks, [None] * B, [None] * B, [], []
         for chunk_idx in range(num_chunks):
             this_chunk_latents = noises[:, :, chunk_idx * self.opt.chunk_size:(chunk_idx + 1) * self.opt.chunk_size, ...]
             if self.opt.input_plucker:
@@ -216,6 +216,7 @@ class SelfForcingTrainingPipeline:
             # Record this chunk generated latents
             outputs[:, :, chunk_idx * self.opt.chunk_size:(chunk_idx + 1) * self.opt.chunk_size, ...] = pred_x0
             all_da3_outputs[chunk_idx] = da3_outputs
+            all_timesteps.append(timesteps)
 
             # Rerun with timestep `context_timestep` to update KV cache
             if self.opt.is_causal and chunk_idx < num_chunks - 1:
@@ -309,12 +310,13 @@ class SelfForcingTrainingPipeline:
             }
 
         if self.opt.da3_loss_in_sf:
+            all_timesteps = torch.cat(all_timesteps, dim=1)  # (B, f)
             if self.opt.da3_weight_type == "uniform":
                 da3_weights = 1.
             elif self.opt.da3_weight_type == "diffusion":
-                da3_weights = self.diffusion.scheduler.training_weight(timesteps.flatten(0, 1))
+                da3_weights = self.diffusion.scheduler.training_weight(all_timesteps.flatten(0, 1))
             elif self.opt.da3_weight_type == "inverse_timestep":
-                da3_weights = 1. / (timesteps.flatten(0, 1) + 0.1)
+                da3_weights = 1. / (all_timesteps.flatten(0, 1) + 0.1)
             else:
                 da3_weights = 1.
 
