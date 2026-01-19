@@ -4,8 +4,6 @@ import os
 import torch
 from torch.utils.data import Dataset
 
-from src.options import ROOT
-
 
 class OdepairDataset(Dataset):
     def __init__(self, root: str):
