@@ -32,7 +32,7 @@ class Options:
     load_image: bool = True
     load_depth: bool = True
     load_conf: bool = False
-    normalize_xyz: bool = False
+    normalize_xyz: bool = True
     use_vidprom: bool = False
     use_short_caption: bool = False
         ## Camera normalization
@@ -52,7 +52,7 @@ class Options:
     load_da3: bool = False
         ### Model
     da3_model_name: str = "da3-large-1.1"
-    fix_da3_heads: bool = False
+    fix_da3_heads: bool = True
     only_train_da3: bool = False
     only_train_resdit: bool = False
     no_noise_for_da3: bool = False
@@ -261,6 +261,7 @@ opt_dict["wan2.1_t2v_1.3b_causal"] = Options(
     #
     # load_conf=True,
     # input_pcrender=True,
+    # load_tae=True,
 )
 
 # Self-Forcing reproduction
@@ -360,4 +361,5 @@ opt_dict["wan2.1_t2v_1.3b_dmd"] = Options(
     #
     # load_conf=True,
     # input_pcrender=True,
+    # load_tae=True,
 )
