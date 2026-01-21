@@ -253,7 +253,7 @@ opt_dict["wan2.1_t2v_1.3b_causal"] = Options(
     rope_outside=True,
     #
     generator_path=f"{ROOT}/projects/VGGM/.pth",
-    # exclude_name_lr_mult="da3",
+    exclude_name_lr_mult="plucker_embed,extra_condition_embed,da3",
     #
     # num_input_frames=201,
     num_input_frames_test=201,
