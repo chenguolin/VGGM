@@ -319,6 +319,7 @@ opt_dict["wan2.1_t2v_1.3b_ode"] = Options(
 # Self-Forcing DMD
 opt_dict["wan2.1_t2v_1.3b_dmd"] = Options(
     use_vidprom=False,
+    use_short_caption=False,
     first_latent_cond=False,
     input_plucker=True,
     #
