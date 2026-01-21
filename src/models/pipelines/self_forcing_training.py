@@ -257,7 +257,7 @@ class SelfForcingTrainingPipeline:
             if self.opt.input_pcrender:
                 assert self.current_vae_decoder is not None
 
-                with torch.enable_grad() if self.opt.da3_loss_in_sf else torch.no_grad():
+                with torch.enable_grad() if self.opt.render_loss_in_sf else torch.no_grad():
                     if self.opt.load_tae:
                         if vae_cache is None:
                             vae_cache = pred_x0
@@ -282,7 +282,7 @@ class SelfForcingTrainingPipeline:
                     assert current_images_f.shape[1] == self.opt.chunk_size
                     images_f.append(current_images_f)
 
-                if self.opt.da3_loss_in_sf:
+                if self.opt.render_loss_in_sf:
                     render_loss = render_loss + (
                         tF.mse_loss(current_images_f, render_images, reduction="none") * render_masks.unsqueeze(2)
                     ).sum() / (render_masks.sum() * 3 + 1e-8)
@@ -382,7 +382,7 @@ class SelfForcingTrainingPipeline:
             # camera_loss += (da3_weights * self.camera_loss_fn(da3_wrapper_outputs["pose_enc"], gt_pose_enc)).flatten(0, 1)  # (B*f,)
             da3_outputs["ray_loss"] = ray_loss.mean()
             da3_outputs["camera_loss"] = camera_loss.mean()
-            if self.opt.input_pcrender:
+            if self.opt.input_pcrender and self.opt.render_loss_in_sf:
                 da3_outputs["render_loss"] = render_loss / num_chunks
 
         if render_images is not None:

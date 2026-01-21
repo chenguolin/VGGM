@@ -70,6 +70,7 @@ class Options:
     da3_use_ray_pose: bool = False
         ## Self Geometry Forcing
     da3_loss_in_sf: bool = False
+    render_loss_in_sf: bool = True
 
     # VAE
     vae_path: str = f"{ROOT}/.cache/huggingface/hub/Wan-AI/Wan2.1-T2V-1.3B/Wan2.1_VAE.pth"
@@ -327,7 +328,8 @@ opt_dict["wan2.1_t2v_1.3b_dmd"] = Options(
     da3_interactive=True,
     da3_weight_type="inverse_timestep",
     da3_down_ratio=1,
-    da3_loss_in_sf=False,
+    da3_loss_in_sf=True,
+    render_loss_in_sf=True,
     # only_train_resdit=True,
     #
     is_causal=True,
