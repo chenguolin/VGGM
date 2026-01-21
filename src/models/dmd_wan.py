@@ -590,7 +590,7 @@ class DMD_Wan(Wan):
             device, dtype = noises.device, noises.dtype
 
             # (Optional) Point cloud rendering
-            if self.opt.extra_condition_dim > 0:
+            if self.opt.input_pcrender:
                 assert depths is not None and confs is not None and images_f is not None
                 H, W = images_f.shape[3], images_f.shape[4]
                 with torch.no_grad():

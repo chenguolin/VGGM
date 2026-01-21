@@ -56,13 +56,27 @@ class Wan(nn.Module):
                     if "decoder." in key or "conv2" in key:
                         decoder_state_dict[key] = value
                 self.current_vae_decoder.load_state_dict(decoder_state_dict)
-            else:  # TODO: support TAE
-                self.current_vae_decoder = TAEHV(opt.tae_path)
-
-            if opt.use_deepspeed_zero3:
-                self.current_vae_decoder.requires_grad_(False)  # for ZeRO3 parameter split
             else:
-                convert_to_buffer(self.current_vae_decoder, persistent=False)  # no gradient & not save to checkpoint
+                class DotDict(dict):
+                    __getattr__ = dict.__getitem__
+                    __setattr__ = dict.__setitem__
+                class TAEHVDiffusersWrapper(nn.Module):
+                    def __init__(self):
+                        super().__init__()
+                        self.taehv = TAEHV(checkpoint_path=opt.tae_path)
+                        self.config = DotDict(scaling_factor=1.)
+                    def decode(self, latents: Tensor):
+                        # n, c, t, h, w = latents.shape
+                        # low-memory, set parallel=True for faster + higher memory
+                        latents = rearrange(latents, "b c f h w -> b f c h w")
+                        return self.taehv.decode_video(latents, parallel=False).clamp(0., 1.)
+                self.current_vae_decoder = TAEHVDiffusersWrapper()
+
+            # if opt.use_deepspeed_zero3:
+            self.current_vae_decoder.requires_grad_(False)  # for ZeRO3 parameter split
+            # else:
+            #     convert_to_buffer(self.current_vae_decoder, persistent=False)  # no gradient & not save to checkpoint
+            self.current_vae_decoder.eval()
         else:
             self.current_vae_decoder = None
 
@@ -267,7 +281,7 @@ class Wan(nn.Module):
         cond_latents = cond_latents if torch.rand(1).item() < self.opt.random_i2v_prob else None
 
         # (Optional) Point cloud rendering
-        if self.opt.extra_condition_dim > 0:
+        if self.opt.input_pcrender:
             assert "depth" in data and "conf" in data and C2W is not None and fxfycxcy is not None
             depths = data["depth"].to(dtype)[:, idxs, ...]  # (B, f, H, W)
             confs = data["conf"].to(dtype)[:, idxs, ...]  # (B, f, H, W)
@@ -516,7 +530,7 @@ class Wan(nn.Module):
         cond_latents = cond_latents if torch.rand(1).item() < self.opt.random_i2v_prob else None
 
         # (Optional) Point cloud rendering
-        if self.opt.extra_condition_dim > 0:
+        if self.opt.input_pcrender:
             assert depths is not None and confs is not None and C2W is not None and fxfycxcy is not None
             all_render_images = []
             for i in range(B):
@@ -709,7 +723,7 @@ class Wan(nn.Module):
         cond_latents = cond_latents if torch.rand(1).item() < self.opt.random_i2v_prob else None
 
         # (Optional) Point cloud rendering
-        if self.opt.extra_condition_dim > 0:
+        if self.opt.input_pcrender:
             if cond_latents is not None:
                 assert depths is not None and confs is not None and C2W is not None and fxfycxcy is not None
                 all_render_images = []
@@ -729,9 +743,12 @@ class Wan(nn.Module):
             render_images_vis = render_images
 
             if self.opt.load_da3:
-                vae_cache = ZERO_VAE_CACHE
-                for i in range(len(vae_cache)):
-                    vae_cache[i] = vae_cache[i].to(device=device, dtype=dtype)
+                if self.opt.load_tae:
+                    vae_cache = None
+                else:
+                    vae_cache = ZERO_VAE_CACHE
+                    for i in range(len(vae_cache)):
+                        vae_cache[i] = vae_cache[i].to(device=device, dtype=dtype)
         else:
             render_images = None
 
@@ -915,14 +932,32 @@ class Wan(nn.Module):
                 latents[:, :, chunk_idx * self.opt.chunk_size:(chunk_idx + 1) * self.opt.chunk_size, ...] = this_chunk_latents
 
                 # (Optional) Update render images for next chunks
-                if self.opt.extra_condition_dim > 0 and chunk_idx < num_chunks - 1:
+                if self.opt.input_pcrender and chunk_idx < num_chunks - 1:
                     if self.opt.load_da3:
                         assert self.current_vae_decoder is not None
 
-                        current_images_f, vae_cache = self.current_vae_decoder(this_chunk_latents, *vae_cache)
-                        current_images_f = (current_images_f.clamp(-1., 1.) + 1.) / 2.
-                        _idxs = torch.arange(3, current_images_f.shape[2], 4).to(device=device, dtype=torch.long)
-                        current_images_f = current_images_f[:, :, _idxs, :, :].transpose(1, 2)  # (B, f_chunk, 3, H, W)
+                        if self.opt.load_tae:
+                            if vae_cache is None:
+                                vae_cache = this_chunk_latents
+                            else:
+                                this_chunk_latents = torch.cat([vae_cache, this_chunk_latents], dim=2)
+                                vae_cache = this_chunk_latents[:, :, -3:, :, :]
+                            current_images_f = self.current_vae_decoder.decode(this_chunk_latents)
+                            if chunk_idx == 0:
+                                current_images_f = current_images_f[:, 3:, :, :, :]  # skip the first 3 frames of first block
+                            else:
+                                current_images_f = current_images_f[:, 12:, :, :, :]
+                        else:
+                            current_images_f, vae_cache = self.current_vae_decoder(this_chunk_latents, *vae_cache)
+                            current_images_f = (current_images_f.clamp(-1., 1.) + 1.) / 2.
+                            current_images_f = current_images_f.transpose(1, 2)  # (B, f', 3, H, W)
+                            if chunk_idx == 0:
+                                current_images_f = current_images_f[:, 3:, :, :, :]  # skip the first 3 frames of first block
+                        if chunk_idx == 0:
+                            _idxs = torch.arange(0, current_images_f.shape[1], 4).to(device=device, dtype=torch.long)
+                        else:
+                            _idxs = torch.arange(3, current_images_f.shape[1], 4).to(device=device, dtype=torch.long)
+                        current_images_f = current_images_f[:, _idxs, :, :, :]  # (B, f_chunk, 3, H, W)
                         assert current_images_f.shape[1] == self.opt.chunk_size
 
                         current_depths = all_da3_outputs[chunk_idx]["depth"]  # (B, f_chunk, H, W)
