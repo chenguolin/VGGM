@@ -272,13 +272,14 @@ class SelfForcingTrainingPipeline:
                     else:
                         current_images_f, vae_cache = self.current_vae_decoder(pred_x0, *vae_cache)
                         current_images_f = (current_images_f.clamp(-1., 1.) + 1.) / 2.
+                        current_images_f = current_images_f.transpose(1, 2)  # (B, f', 3, H, W)
                         if chunk_idx == 0:
                             current_images_f = current_images_f[:, 3:, :, :, :]  # skip the first 3 frames of first block
                     if chunk_idx == 0:
                         _idxs = torch.arange(0, current_images_f.shape[1], 4).to(device=device, dtype=torch.long)
                     else:
                         _idxs = torch.arange(3, current_images_f.shape[1], 4).to(device=device, dtype=torch.long)
-                    current_images_f = current_images_f[:, _idxs, :, :]  # (B, f_chunk, 3, H, W)
+                    current_images_f = current_images_f[:, _idxs, :, :, :]  # (B, f_chunk, 3, H, W)
                     assert current_images_f.shape[1] == self.opt.chunk_size
                     images_f.append(current_images_f)
 
@@ -296,7 +297,7 @@ class SelfForcingTrainingPipeline:
                     current_C2W = all_da3_outputs[chunk_idx]["C2W"]  # (B, f_chunk, 4, 4)
                     current_fxfycxcy = all_da3_outputs[chunk_idx]["fxfycxcy"]  # (B, f_chunk, 4)
 
-                    all_render_images = []
+                    all_render_images, all_render_masks = [], []
                     for i in range(B):
                         points, colors = filter_da3_points(
                             current_images_f[i], current_depths[i], current_confs[i], current_C2W[i], current_fxfycxcy[i],
@@ -316,12 +317,14 @@ class SelfForcingTrainingPipeline:
                                     C2W[i, (chunk_idx + 1) * self.opt.chunk_size:(chunk_idx + 2) * self.opt.chunk_size, ...],
                                     fxfycxcy[i, (chunk_idx + 1) * self.opt.chunk_size:(chunk_idx + 2) * self.opt.chunk_size, ...],
                                 ).to(dtype)
-                            render_masks = (render_images > 10/255).to(dtype)  # consider pixels with value > 10 as valid
+                            render_masks = (render_images.mean(dim=1) > 50/255).to(dtype)  # consider pixels with value > 10 as valid
                         else:  # no valid points
                             render_images = torch.zeros((self.opt.chunk_size, 3, h*8, w*8), dtype=dtype, device=device)
                             render_masks = torch.zeros((self.opt.chunk_size, h*8, w*8), dtype=dtype, device=device)
                         all_render_images.append(render_images)
+                        all_render_masks.append(render_masks)
                     render_images = torch.stack(all_render_images, dim=0)  # (B, f_chunk, 3, H, W)
+                    render_masks = torch.stack(all_render_masks, dim=0)  # (B, f_chunk, H, W)
                     render_images_vis = torch.cat([render_images_vis, render_images], dim=1)
 
         if self.opt.load_da3:
