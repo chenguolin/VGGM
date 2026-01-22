@@ -72,10 +72,10 @@ class Wan(nn.Module):
                         return self.taehv.decode_video(latents, parallel=False).clamp(0., 1.)
                 self.current_vae_decoder = TAEHVDiffusersWrapper()
 
-            # if opt.use_deepspeed_zero3:
-            self.current_vae_decoder.requires_grad_(False)  # for ZeRO3 parameter split
-            # else:
-            #     convert_to_buffer(self.current_vae_decoder, persistent=False)  # no gradient & not save to checkpoint
+            if opt.use_deepspeed_zero3 or opt.da3_loss_in_sf:
+                self.current_vae_decoder.requires_grad_(False)  # for ZeRO3 parameter split
+            else:
+                convert_to_buffer(self.current_vae_decoder, persistent=False)  # no gradient & not save to checkpoint
             self.current_vae_decoder.eval()
         else:
             self.current_vae_decoder = None
