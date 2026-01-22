@@ -2,7 +2,6 @@ from typing import *
 from torch import Tensor
 from src.models.wan import WanDiffusionWrapper, WanDiffusionDA3Wrapper
 from src.models.networks import VAEDecoderWrapper, TAEHV
-from src.models.networks.da3_wrapper import DA3Wrapper
 
 import torch
 import torch.distributed as dist
@@ -22,7 +21,6 @@ class SelfForcingTrainingPipeline:
         opt: Options,
         diffusion: WanDiffusionWrapper | WanDiffusionDA3Wrapper,
         current_vae_decoder: Optional[VAEDecoderWrapper | TAEHV] = None,
-        da3_wrapper: Optional[DA3Wrapper] = None,
     ):
         super().__init__()
 
@@ -44,7 +42,6 @@ class SelfForcingTrainingPipeline:
             XYZLoss(opt), DepthLoss(opt), CameraLoss(opt)
 
         self.current_vae_decoder = current_vae_decoder
-        self.da3_wrapper = da3_wrapper
 
     def generate_and_sync_list(self, num_chunks: int, num_denoising_steps: int, device: torch.device):
         rank = dist.get_rank() if dist.is_initialized() else 0
@@ -345,26 +342,6 @@ class SelfForcingTrainingPipeline:
             else:
                 da3_weights = 1.
 
-            # assert self.da3_wrapper is not None
-            # images_f = torch.cat(images_f, dim=1).to(dtype)  # (B, f, 3, H, W)
-            # assert images_f.shape[1] == f
-
-            # # Run DA3 wrapper for depth loss
-            # with torch.no_grad():
-            #     images_f = rearrange(tF.interpolate(
-            #         rearrange(images_f, "b f ... -> (b f) ..."),
-            #         size=(280, 504), mode="bilinear", align_corners=False  # TODO: hard-coded res
-            #     ), "(b f) c h w -> b f c h w", b=B)
-            #     da3_wrapper_outputs = self.da3_wrapper(images_f)
-            #     da3_wrapper_outputs["depth"] = rearrange(tF.interpolate(
-            #         rearrange(da3_wrapper_outputs["depth"], "b f ... -> (b f) ...").unsqueeze(1),
-            #         size=(288, 512), mode="bilinear", align_corners=False  # TODO: hard-coded res
-            #     ), "(b f) ... -> b f ...", b=B).squeeze(2)
-
-            # da3_outputs["depth_da3_wrapper"] = da3_wrapper_outputs["depth"]
-            # da3_outputs["depth_loss"] = (da3_weights * self.depth_loss_fn(
-            #     da3_outputs["depth"], da3_wrapper_outputs["depth"], confs=da3_outputs["depth_conf"]).flatten(0, 1)).mean()
-
             assert C2W is not None and fxfycxcy is not None
             H, W = self.opt.input_res
 
@@ -382,7 +359,6 @@ class SelfForcingTrainingPipeline:
             # Compute geometry losses
             ray_loss = (da3_weights * self.ray_loss_fn(da3_outputs["ray"], gt_raymaps, confs=da3_outputs["ray_conf"])).flatten(0, 1)  # (B*f,)
             camera_loss = (da3_weights * self.camera_loss_fn(da3_outputs["pose_enc"], gt_pose_enc)).flatten(0, 1)
-            # camera_loss += (da3_weights * self.camera_loss_fn(da3_wrapper_outputs["pose_enc"], gt_pose_enc)).flatten(0, 1)  # (B*f,)
             da3_outputs["ray_loss"] = ray_loss.mean()
             da3_outputs["camera_loss"] = camera_loss.mean()
             if self.opt.input_pcrender and self.opt.render_loss_in_sf:
