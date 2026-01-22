@@ -38,8 +38,7 @@ class SelfForcingTrainingPipeline:
         self.crossattn_cache_pos = None
         self.kv_cache_pos_da3 = None
 
-        self.ray_loss_fn, self.depth_loss_fn, self.camera_loss_fn = \
-            XYZLoss(opt), DepthLoss(opt), CameraLoss(opt)
+        self.ray_loss_fn, self.camera_loss_fn = XYZLoss(opt), CameraLoss(opt)
 
         self.current_vae_decoder = current_vae_decoder
 
@@ -105,7 +104,7 @@ class SelfForcingTrainingPipeline:
             else:
                 render_images = torch.zeros((B, self.opt.chunk_size, 3, h*8, w*8), dtype=dtype, device=device)  # `8`: hard-coded for Wan2.1
                 render_masks = torch.zeros((B, self.opt.chunk_size, h*8, w*8), dtype=dtype, device=device)
-                render_loss = 0.
+                render_loss = []
             render_images_vis = render_images
 
             if self.opt.load_tae:
@@ -281,9 +280,9 @@ class SelfForcingTrainingPipeline:
                     images_f.append(current_images_f)
 
                 if self.opt.render_loss_in_sf:
-                    render_loss = render_loss + (
-                        tF.mse_loss(current_images_f, render_images, reduction="none") * render_masks.unsqueeze(2)
-                    ).sum() / (render_masks.sum() * 3 + 1e-8)
+                    _render_loss = tF.mse_loss(current_images_f, render_images, reduction="none")* render_masks.unsqueeze(2)
+                    _render_loss = _render_loss.mean(dim=(2, 3, 4))  # (B, f_chunk)
+                    render_loss.append(_render_loss)
 
                 # (Optional) Update render images for next chunks
                 if chunk_idx < num_chunks - 1:
@@ -357,12 +356,13 @@ class SelfForcingTrainingPipeline:
             ], dim=-1).to(dtype)  # (B, f, 9)
 
             # Compute geometry losses
-            ray_loss = (da3_weights * self.ray_loss_fn(da3_outputs["ray"], gt_raymaps, confs=da3_outputs["ray_conf"])).flatten(0, 1)  # (B*f,)
-            camera_loss = (da3_weights * self.camera_loss_fn(da3_outputs["pose_enc"], gt_pose_enc)).flatten(0, 1)
+            ray_loss = da3_weights * (self.ray_loss_fn(da3_outputs["ray"], gt_raymaps, confs=da3_outputs["ray_conf"])).flatten(0, 1)  # (B*f,)
+            camera_loss = da3_weights * (self.camera_loss_fn(da3_outputs["pose_enc"], gt_pose_enc)).flatten(0, 1)  # (B*f,)
             da3_outputs["ray_loss"] = ray_loss.mean()
             da3_outputs["camera_loss"] = camera_loss.mean()
             if self.opt.input_pcrender and self.opt.render_loss_in_sf:
-                da3_outputs["render_loss"] = render_loss / num_chunks
+                render_loss = torch.cat(render_loss, dim=1).flatten(0, 1)  # (B*f,)
+                da3_outputs["render_loss"] = (da3_weights * render_loss).mean()
 
         if render_images is not None:
             da3_outputs["images_render"] = render_images_vis
