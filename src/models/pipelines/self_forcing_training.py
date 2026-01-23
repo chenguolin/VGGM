@@ -284,7 +284,7 @@ class SelfForcingTrainingPipeline:
                     assert self.opt.load_da3
 
                     _render_loss = (tF.mse_loss(current_images_f, render_images, reduction="none") *
-                        render_masks.unsqueeze(2)).mean() / (render_masks.sum() + 1e-6)
+                        render_masks.unsqueeze(2)).sum() / (render_masks.sum() * 3 + 1e-6)
                     _render_depth_loss = 0.
                     for i in range(B):
                         if render_masks[i].sum() > 0:
