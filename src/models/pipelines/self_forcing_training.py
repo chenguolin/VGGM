@@ -283,10 +283,21 @@ class SelfForcingTrainingPipeline:
                 if self.opt.render_loss_in_sf:
                     assert self.opt.load_da3
 
-                    # _render_loss = tF.mse_loss(current_images_f, render_images, reduction="none")
-                    _render_loss = tF.mse_loss(all_da3_outputs[chunk_idx]["depth"], render_depths, reduction="none").unsqueeze(2)
-                    _render_loss = (_render_loss * render_masks.unsqueeze(2)).sum(dim=(2, 3, 4)) / \
-                        render_masks.unsqueeze(2).sum(dim=(2, 3, 4)).clamp(min=1e-4)  # (B, f_chunk)
+                    _render_loss = (tF.mse_loss(current_images_f, render_images, reduction="none") *
+                        render_masks.unsqueeze(2)).mean() / (render_masks.sum() + 1e-6)
+                    _render_depth_loss = 0.
+                    for i in range(B):
+                        if render_masks[i].sum() > 0:
+                            valid_pred_depths = all_da3_outputs[chunk_idx]["depth"][i][render_masks[i].bool()]  # (M,)
+                            valid_render_depths = render_depths[i][render_masks[i].bool()]  # (M,)
+                            _render_depth_loss = _render_depth_loss + tF.mse_loss(
+                                (valid_pred_depths - valid_pred_depths.min()) / (valid_pred_depths.max() - valid_pred_depths.min() + 1e-6),
+                                (valid_render_depths - valid_render_depths.min()) / (valid_render_depths.max() - valid_render_depths.min() + 1e-6),
+                            )
+                        else:
+                            _render_depth_loss = _render_depth_loss + 0.
+                    _render_depth_loss = _render_depth_loss / B
+                    _render_loss = (_render_loss + _render_depth_loss)[None, None].repeat(B, self.opt.chunk_size)  # (B, f_chunk)
                     render_loss.append(_render_loss)
 
                 # (Optional) Update render images for next chunks
@@ -314,27 +325,27 @@ class SelfForcingTrainingPipeline:
                                 all_points[i] = torch.cat([all_points[i], points], dim=0)
                                 all_colors[i] = torch.cat([all_colors[i], colors], dim=0)
                             with torch.no_grad():
-                                # render_images, render_depths = render_pt3d_points(
-                                #     h*8, w*8, all_points[i], all_colors[i],  # `*8`: hard-coded for Wan2.1
-                                #     C2W[i, (chunk_idx + 1) * self.opt.chunk_size:(chunk_idx + 2) * self.opt.chunk_size, ...],
-                                #     fxfycxcy[i, (chunk_idx + 1) * self.opt.chunk_size:(chunk_idx + 2) * self.opt.chunk_size, ...],
-                                #     return_depth=True,
-                                # )
-                                # render_images, render_depths = render_images.to(dtype), render_depths.to(dtype)
-                                render_images = render_pt3d_points(
+                                render_images, render_depths = render_pt3d_points(
                                     h*8, w*8, all_points[i], all_colors[i],  # `*8`: hard-coded for Wan2.1
                                     C2W[i, (chunk_idx + 1) * self.opt.chunk_size:(chunk_idx + 2) * self.opt.chunk_size, ...],
                                     fxfycxcy[i, (chunk_idx + 1) * self.opt.chunk_size:(chunk_idx + 2) * self.opt.chunk_size, ...],
-                                ).to(dtype)
-                                render_depths = project_points(
-                                    all_points[i],
-                                    C2W[i, (chunk_idx + 1) * self.opt.chunk_size:(chunk_idx + 2) * self.opt.chunk_size, ...],
-                                    fxfycxcy[i, (chunk_idx + 1) * self.opt.chunk_size:(chunk_idx + 2) * self.opt.chunk_size, ...],
-                                    h*8, w*8,
-                                ).to(dtype)
+                                    return_depth=True,
+                                )
+                                render_images, render_depths = render_images.to(dtype), render_depths.to(dtype)
+                                # render_images = render_pt3d_points(
+                                #     h*8, w*8, all_points[i], all_colors[i],  # `*8`: hard-coded for Wan2.1
+                                #     C2W[i, (chunk_idx + 1) * self.opt.chunk_size:(chunk_idx + 2) * self.opt.chunk_size, ...],
+                                #     fxfycxcy[i, (chunk_idx + 1) * self.opt.chunk_size:(chunk_idx + 2) * self.opt.chunk_size, ...],
+                                # ).to(dtype)
+                                # render_depths = project_points(
+                                #     all_points[i],
+                                #     C2W[i, (chunk_idx + 1) * self.opt.chunk_size:(chunk_idx + 2) * self.opt.chunk_size, ...],
+                                #     fxfycxcy[i, (chunk_idx + 1) * self.opt.chunk_size:(chunk_idx + 2) * self.opt.chunk_size, ...],
+                                #     h*8, w*8,
+                                # ).to(dtype)
+                            render_masks = (render_depths != 0.).to(dtype)  # empty areas are set to 0 depth
                             # render_masks = (render_images.mean(dim=1) > 50/255).to(dtype)  # consider pixels with value > 50 as valid
-                            # render_masks = (render_depths != 0.).to(dtype)  # empty areas are set to 0 depth
-                            render_masks = ((1e-3 < render_depths) & (render_depths < 100.)).to(dtype)  # empty areas are set to 1e4 depth
+                            # render_masks = ((1e-3 < render_depths) & (render_depths < 100.)).to(dtype)  # empty areas are set to 1e4 depth
                         else:  # no valid points
                             render_images = torch.zeros((self.opt.chunk_size, 3, h*8, w*8), dtype=dtype, device=device)
                             render_depths = torch.zeros((self.opt.chunk_size, h*8, w*8), dtype=dtype, device=device)

@@ -46,30 +46,6 @@ def save_xyz_rgb_as_ply(filename: str, xyz: Tensor, rgb: Optional[Tensor] = None
     ply.write(filename)
 
 
-def normalize_among_last_dims(
-        tensors: Tensor,
-        num_dims: int,
-        normalize_type: Literal[
-            "min_max",
-        ] = "min_max",
-    ) -> Tensor:
-    """Normalize (range in `[0, 1]`) among the last `num_dims` dimensions of a tensor and keep the original shape.
-
-    For example, `(..., C, F, H, W) -> (..., C, F*H*W)`, then normalize on `C`, then reshape back to `(..., C, F, H, W)`.
-    """
-    last_shape = tensors.shape[-num_dims:]
-    tensors = tensors.flatten(start_dim=-num_dims)  # e.g., (..., C, F, H, W) -> (..., C, F*H*W)
-
-    if normalize_type == "min_max":
-        tensors = (tensors - tensors.min(dim=-1, keepdim=True)[0]) / \
-            (tensors.max(dim=-1, keepdim=True)[0] - tensors.min(dim=-1, keepdim=True)[0] + 1e-6)  # [0, 1]
-    else:
-        raise ValueError(f"Invalid normalize_type: [{normalize_type}]")
-
-    tensors = tensors.reshape(list(tensors.shape[:-1]) + list(last_shape))  # e.g., (..., C, F*H*W) -> (..., C, F, H, W)
-    return tensors
-
-
 def colorize_depth(
         depths: Tensor,
         cmap: str = "inferno",
@@ -97,6 +73,30 @@ def colorize_depth(
     depths = colormap[depths].permute(0, 3, 1, 2)  # (F, H, W, 3) -> (F, 3, H, W)
 
     return depths
+
+
+def normalize_among_last_dims(
+        tensors: Tensor,
+        num_dims: int,
+        normalize_type: Literal[
+            "min_max",
+        ] = "min_max",
+    ) -> Tensor:
+    """Normalize (range in `[0, 1]`) among the last `num_dims` dimensions of a tensor and keep the original shape.
+
+    For example, `(..., C, F, H, W) -> (..., C, F*H*W)`, then normalize on `C`, then reshape back to `(..., C, F, H, W)`.
+    """
+    last_shape = tensors.shape[-num_dims:]
+    tensors = tensors.flatten(start_dim=-num_dims)  # e.g., (..., C, F, H, W) -> (..., C, F*H*W)
+
+    if normalize_type == "min_max":
+        tensors = (tensors - tensors.min(dim=-1, keepdim=True)[0]) / \
+            (tensors.max(dim=-1, keepdim=True)[0] - tensors.min(dim=-1, keepdim=True)[0] + 1e-6)  # [0, 1]
+    else:
+        raise ValueError(f"Invalid normalize_type: [{normalize_type}]")
+
+    tensors = tensors.reshape(list(tensors.shape[:-1]) + list(last_shape))  # e.g., (..., C, F*H*W) -> (..., C, F, H, W)
+    return tensors
 
 
 def wandb_video_log(outputs: Dict[str, Tensor], max_num: int = 4, max_frame: int = 1024, fps: int = 16, format: str = "mp4") -> List[WandbImage]:
