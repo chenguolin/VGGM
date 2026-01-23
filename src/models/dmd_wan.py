@@ -257,6 +257,8 @@ class DMD_Wan(Wan):
                     outputs["images_pred_depth"] = colorize_depth(1./da3_outputs["depth"], batch_mode=True)
                 if "images_render" in da3_outputs:
                     outputs["images_render"] = da3_outputs["images_render"]
+                if "images_render_depth" in da3_outputs:
+                    outputs["images_render_depth"] = da3_outputs["images_render_depth"]
 
         return outputs
 

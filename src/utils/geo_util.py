@@ -23,15 +23,26 @@ def render_pt3d_points(
     colors: Tensor,    # (M, 3)
     C2W: Tensor,       # (f, 4, 4)
     fxfycxcy: Tensor,  # (f, 4)
+    return_depth: bool = False,
 ):
     f = C2W.shape[0]
     cameras = setup_pt3d_cameras(H, W, C2W.float(), fxfycxcy.float())
     render_setup = setup_pt3d_renderer(cameras, (H, W))
+
     renderer = render_setup["renderer"]
+    rasterizer = render_setup["rasterizer"]
 
     point_cloud = Pointclouds(points=[points.float()] * f, features=[colors.float()] * f)
 
-    return renderer(point_cloud).permute(0, 3, 1, 2)  # (f, 3, H, W)
+    rgb = renderer(point_cloud).permute(0, 3, 1, 2)  # (f, 3, H, W)
+
+    if not return_depth:
+        return rgb  # (f, 3, H, W)
+    else:
+        zbuf = rasterizer(point_cloud).zbuf  # (f, H, W, K)
+        depth = zbuf[..., 0]  # (f, H, W); nearest point
+        depth[torch.isinf(depth)] = 0.  # background depth set to 0
+        return rgb, depth  # (f, 3, H, W), (f, H, W)
 
 
 def setup_pt3d_renderer(cameras: PerspectiveCameras, image_size: int | Tuple[int, int]):
@@ -43,12 +54,15 @@ def setup_pt3d_renderer(cameras: PerspectiveCameras, image_size: int | Tuple[int
         bin_size=0,
     )
 
-    renderer = PointsRenderer(
-        rasterizer=PointsRasterizer(cameras=cameras, raster_settings=raster_settings),
-        compositor=AlphaCompositor(),
-    )
+    rasterizer = PointsRasterizer(cameras=cameras, raster_settings=raster_settings)
+    renderer = PointsRenderer(rasterizer=rasterizer, compositor=AlphaCompositor())
 
-    render_setup =  {"cameras": cameras, "raster_settings": raster_settings, "renderer": renderer}
+    render_setup =  {
+        "cameras": cameras,
+        "raster_settings": raster_settings,
+        "rasterizer": rasterizer,
+        "renderer": renderer,
+    }
 
     return render_setup
 
@@ -110,6 +124,7 @@ def filter_da3_points(
         rand_idxs = torch.randperm(valid_points.shape[0], device=valid_points.device)[:sample_size]
         valid_points, valid_colors = valid_points[rand_idxs, :], valid_colors[rand_idxs, :]
     return valid_points, valid_colors
+
 
 def torch_quantile(
     input: Tensor,
@@ -197,8 +212,8 @@ def project_points(
 
     Inputs:
         - `xyz_world`: (N, 3)
-        - `C2W`: (4, 4)
-        - `fxfycxcy`: (4,)
+        - `C2W`: (F, 4, 4)
+        - `fxfycxcy`: (F, 4,)
         - `H`: image height
         - `W`: image width
         - `znear`: near plane
@@ -206,34 +221,42 @@ def project_points(
         - `margin`: margin for valid mask
 
     Outputs:
-        - `depth_map`: (H, W); Tensor
+        - `depth_map`: (F, H, W); Tensor
     """
+    F = C2W.shape[0]
+
     W2C = inverse_c2w(C2W)
     homo_xyz_world = homogenize_points(xyz_world)  # (N, 4)
-    xyz_camera = homo_xyz_world @ W2C.T  # (N, 4)
-    xyz_camera = xyz_camera[..., :3] / xyz_camera[..., 3:]  # (N, 3)
+    xyz_camera = homo_xyz_world @ W2C.transpose(-2, -1)  # (F, N, 4)
+    xyz_camera = xyz_camera[..., :3] / xyz_camera[..., 3:]  # (F, N, 3)
 
-    x, y, z = xyz_camera.unbind(dim=-1)  # (N,)
-    valid_z = (z > znear) & (z < zfar)
+    x, y, z = xyz_camera.unbind(dim=-1)  # (F, N)
+    z = z.clamp(znear, zfar)
+    valid_z = (z >= znear) & (z <= zfar) & torch.isfinite(z)
 
-    fx, fy, cx, cy = fxfycxcy.unbind(dim=-1)  # (1,)
+    fx, fy, cx, cy = fxfycxcy[:, None, :].unbind(dim=-1)  # (F, 1)
     u = (fx * x + cx * z) / z
     v = (fy * y + cy * z) / z
-    u_round = (u * W).round().long()  # (N,)
-    v_round = (v * H).round().long()  # (N,)
+    u_round = (u * W).round().long()  # (F, N)
+    v_round = (v * H).round().long()  # (F, N)
 
-    valid_mask = (u_round >= margin) & (u_round <= W-1-margin) & (v_round >= margin) & (v_round <= H-1-margin) & valid_z
+    valid_mask = (u_round >= margin) & (u_round <= W-1-margin) & (v_round >= margin) & (v_round <= H-1-margin) & valid_z  # (F, N)
 
-    # Considering occlusion, only keep the closest points
-    u_valid = u_round[valid_mask]  # (M,)
-    v_valid = v_round[valid_mask]  # (M,)
-    z_valid = z[valid_mask]  # (M,)
+    depth_buffer = torch.full((F, H * W,), 1e4, device=z.device, dtype=z.dtype)
+    for f in range(F):
+        if not valid_mask[f].any():
+            continue
 
-    linear_idx = v_valid * W + u_valid  # (M,)
-    depth_buffer = torch.full((H * W,), float("inf"), device=z.device)
-    depth_buffer.scatter_reduce_(dim=0, index=linear_idx, src=z_valid, reduce="amin", include_self=True)
+        u_valid = u_round[f][valid_mask[f]]  # (M_f,)
+        v_valid = v_round[f][valid_mask[f]]  # (M_f,)
+        z_valid = z[f][valid_mask[f]]  # (M_f,)
+        z_valid = torch.where(torch.isfinite(z_valid), z_valid, torch.tensor(1e4, device=z.device, dtype=z.dtype))
 
-    return depth_buffer.view(H, W)
+        # Considering occlusion, only keep the closest points
+        linear_idx = v_valid * W + u_valid  # (M_f,)
+        depth_buffer[f].scatter_reduce_(dim=0, index=linear_idx, src=z_valid, reduce="amin", include_self=True)
+
+    return depth_buffer.view(F, H, W)
 
 
 def unproject_depth(
