@@ -285,7 +285,7 @@ class SelfForcingTrainingPipeline:
 
                     _render_loss = (tF.mse_loss(current_images_f, render_images, reduction="none") *
                         render_masks.unsqueeze(2)).sum() / (render_masks.sum() * 3 + 1e-6)
-                    _render_depth_loss = 0.
+                    _render_depth_loss = torch.tensor(0., dtype=dtype, device=device)
                     for i in range(B):
                         if render_masks[i].sum() > 0:
                             valid_pred_depths = all_da3_outputs[chunk_idx]["depth"][i][render_masks[i].bool()]  # (M,)
@@ -294,8 +294,6 @@ class SelfForcingTrainingPipeline:
                                 (valid_pred_depths - valid_pred_depths.min()) / (valid_pred_depths.max() - valid_pred_depths.min() + 1e-6),
                                 (valid_render_depths - valid_render_depths.min()) / (valid_render_depths.max() - valid_render_depths.min() + 1e-6),
                             )
-                        else:
-                            _render_depth_loss = _render_depth_loss + 0.
                     _render_depth_loss = _render_depth_loss / B
                     _render_loss = (_render_loss + _render_depth_loss)[None, None].repeat(B, self.opt.chunk_size)  # (B, f_chunk)
                     render_loss.append(_render_loss)
