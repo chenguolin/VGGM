@@ -30,6 +30,10 @@ class RealcamvidDataset(BaseDataset):
         dataset_source = metadata["dataset_source"]  # "RealEstate10K", "DL3DV-10K", "MiraData9K"
         uid = metadata["video_path"].replace("/", "_").replace(".mp4", "")
 
+        if self.opt.only_static_data:
+            if "Mira" in uid:
+                return self.__getitem__(np.random.choice(self.valid_idxs))
+
         # Load prompt
         # if np.random.rand() < 0.75:  # TODO: make it configurable
         #     prompt = metadata["long_caption"]

@@ -2,7 +2,7 @@ opt_type: "wan2.1_t2v_1.3b_dmd"
 
 optimizer:
   name: "adamw"
-  lr: 0.0000005
+  lr: 0.000002
   betas:
     - 0.
     - 0.999
@@ -18,8 +18,8 @@ train:
   zero_stage: 2
   epochs: 10
   log_freq: 1
-  early_eval_freq: 100
-  early_eval: 1000
+  early_eval_freq: 20
+  early_eval: 200
   eval_freq: 100
   save_freq: 500
   eval_freq_epoch: 5

@@ -35,6 +35,7 @@ class Options:
     normalize_xyz: bool = True
     use_vidprom: bool = False
     use_short_caption: bool = False
+    only_static_data: bool = False
         ## Camera normalization
     camera_norm_type: Literal[
         "none",
@@ -157,6 +158,8 @@ class Options:
 
     # Training
         ## Losses
+    diffusion_loss_prob: float = 0.
+    no_denoising_loss: bool = True
     conf_alpha: float = 0.2
     gradient_loss_scale: int = 4
     xyz_loss_threshold: float = 10.
@@ -319,6 +322,7 @@ opt_dict["wan2.1_t2v_1.3b_ode"] = Options(
 
 # Self-Forcing DMD
 opt_dict["wan2.1_t2v_1.3b_dmd"] = Options(
+    only_static_data=False,
     use_vidprom=False,
     use_short_caption=False,
     first_latent_cond=False,
@@ -330,7 +334,7 @@ opt_dict["wan2.1_t2v_1.3b_dmd"] = Options(
     da3_down_ratio=1,
     da3_loss_in_sf=True,
     render_loss_in_sf=True,
-    # only_train_resdit=True,
+    diffusion_loss_prob=0.,
     #
     is_causal=True,
     use_teacher_forcing=False,

@@ -212,6 +212,24 @@ class DMD_Wan(Wan):
             outputs["generator_loss"] = generator_loss
             outputs["dmd_grad_norm"] = dmd_grad_norm
 
+            if np.random.rand() < self.opt.diffusion_loss_prob:
+                diffusion_loss, da3_outputs_diffusion = self.diffusion_loss(
+                    latents,
+                    prompt_embeds,
+                    cond_latents,
+                    plucker,
+                    #
+                    C2W=C2W,
+                    fxfycxcy=fxfycxcy,
+                    depths=depths,
+                    confs=confs,
+                    images_f=images_f,
+                )
+                outputs["diffusion_loss"] = diffusion_loss
+                generator_loss = generator_loss + self.opt.diffusion_loss_weight * diffusion_loss
+            else:
+                da3_outputs_diffusion = None
+
             if da3_outputs is not None:
                 if "depth_loss" in da3_outputs:
                     outputs["depth_loss"] = da3_outputs["depth_loss"]
@@ -225,6 +243,26 @@ class DMD_Wan(Wan):
                 if "render_loss" in da3_outputs:
                     outputs["render_loss"] = da3_outputs["render_loss"]
                     generator_loss = generator_loss + da3_outputs["render_loss"]
+
+            if da3_outputs_diffusion is not None:
+                if "depth_loss" in da3_outputs_diffusion:
+                    if "depth_loss" in outputs:
+                        outputs["depth_loss"] = outputs["depth_loss"] + da3_outputs_diffusion["depth_loss"]
+                    else:
+                        outputs["depth_loss"] = da3_outputs_diffusion["depth_loss"]
+                    generator_loss = generator_loss + da3_outputs_diffusion["depth_loss"]
+                if "ray_loss" in da3_outputs_diffusion:
+                    if "ray_loss" in outputs:
+                        outputs["ray_loss"] = outputs["ray_loss"] + da3_outputs_diffusion["ray_loss"]
+                    else:
+                        outputs["ray_loss"] = da3_outputs_diffusion["ray_loss"]
+                    generator_loss = generator_loss + da3_outputs_diffusion["ray_loss"]
+                if "camera_loss" in da3_outputs_diffusion:
+                    if "camera_loss" in outputs:
+                        outputs["camera_loss"] = outputs["camera_loss"] + da3_outputs_diffusion["camera_loss"]
+                    else:
+                        outputs["camera_loss"] = da3_outputs_diffusion["camera_loss"]
+                    generator_loss = generator_loss + da3_outputs_diffusion["camera_loss"]
 
         else:
             generator_loss = 0.
@@ -263,6 +301,168 @@ class DMD_Wan(Wan):
         return outputs
 
     ################################ Helper functions ################################
+
+    def diffusion_loss(self,
+        clean_latents: Tensor,
+        prompt_embeds: Tensor,
+        cond_latents: Optional[Tensor] = None,
+        plucker: Optional[Tensor] = None,
+        #
+        C2W: Optional[Tensor] = None,
+        fxfycxcy: Optional[Tensor] = None,
+        depths: Optional[Tensor] = None,
+        confs: Optional[Tensor] = None,
+        images_f: Optional[Tensor] = None,
+    ):
+        noises = torch.randn_like(clean_latents)
+        B, f = noises.shape[0], noises.shape[2]
+        device, dtype = noises.device, noises.dtype
+
+        # (Optional) Point cloud rendering
+        if self.opt.input_pcrender:
+            assert depths is not None and confs is not None and images_f is not None
+            H, W = images_f.shape[3], images_f.shape[4]
+            with torch.no_grad():
+                if not self.opt.is_causal:
+                    all_render_images = []
+                    for i in range(B):
+                        points, colors = filter_da3_points(
+                            images_f[i], depths[i], confs[i], C2W[i], fxfycxcy[i],
+                            conf_thresh_percentile=self.opt.conf_thresh_percentile,
+                            random_sample_ratio=self.opt.rand_pcrender_ratio,
+                            min_num_points=self.opt.min_num_points,
+                            max_num_points=self.opt.max_num_points,
+                        )
+                        render_images = render_pt3d_points(H, W, points, colors, C2W[i], fxfycxcy[i])  # (f, 3, H, W) in [0, 1]
+                        all_render_images.append(render_images.to(dtype))
+                    render_images = torch.stack(all_render_images, dim=0)  # (B, f, 3, H, W) in [0, 1]
+                else:  # teacher forcing style conditioning
+                    all_render_images = []
+                    for i in range(B):
+                        assert f % self.opt.chunk_size == 0
+                        num_chunks = f // self.opt.chunk_size
+                        all_render_images_chunk, all_points, all_colors = [], None, None
+                        for ci in range(num_chunks-1):
+                            chunk_idxs = torch.arange(ci * self.opt.chunk_size, (ci + 1) * self.opt.chunk_size).to(device=device, dtype=torch.long)
+                            next_chunk_idxs = torch.arange((ci + 1) * self.opt.chunk_size, (ci + 2) * self.opt.chunk_size).to(device=device, dtype=torch.long)
+                            points, colors = filter_da3_points(
+                                images_f[i, chunk_idxs], depths[i, chunk_idxs], confs[i, chunk_idxs], C2W[i, chunk_idxs], fxfycxcy[i, chunk_idxs],
+                                conf_thresh_percentile=self.opt.conf_thresh_percentile,
+                                random_sample_ratio=self.opt.rand_pcrender_ratio,
+                                min_num_points=self.opt.min_num_points,
+                                max_num_points=self.opt.max_num_points,
+                            )
+                            if all_points is None:
+                                all_points, all_colors = points, colors
+                            else:
+                                all_points = torch.cat([all_points, points], dim=0)
+                                all_colors = torch.cat([all_colors, colors], dim=0)
+                            render_images = render_pt3d_points(H, W, all_points, all_colors, C2W[i, next_chunk_idxs], fxfycxcy[i, next_chunk_idxs]).to(dtype)  # (f_chunk, 3, H, W) in [0, 1]
+                            all_render_images_chunk.append(render_images)
+                        all_render_images_chunk = torch.cat(all_render_images_chunk, dim=0)  # (f-f_chunk, 3, H, W)
+
+                        if cond_latents is not None:
+                            points, colors = filter_da3_points(
+                                images_f[i, 0:1], depths[i, 0:1], confs[i, 0:1], C2W[i, 0:1], fxfycxcy[i, 0:1],
+                                conf_thresh_percentile=self.opt.conf_thresh_percentile,
+                                random_sample_ratio=self.opt.rand_pcrender_ratio,
+                                min_num_points=self.opt.min_num_points,
+                                max_num_points=self.opt.max_num_points,
+                            )
+                            all_render_images_chunk = torch.cat([
+                                render_pt3d_points(H, W, points, colors, C2W[i, :self.opt.chunk_size], fxfycxcy[i, :self.opt.chunk_size]).to(dtype),
+                                all_render_images_chunk,
+                            ], dim=0)  # (f, 3, H, W)
+                        else:
+                            all_render_images_chunk = torch.cat([
+                                torch.zeros_like(all_render_images_chunk[:self.opt.chunk_size, ...]),
+                                all_render_images_chunk,
+                            ], dim=0)  # (f, 3, H, W)
+
+                        all_render_images.append(all_render_images_chunk)
+                    render_images = torch.stack(all_render_images, dim=0)  # (B, f, 3, H, W)
+        else:
+            render_images = None
+
+        denoising_step_list = torch.tensor(self.opt.denoising_step_list, dtype=torch.long)
+        if self.opt.warp_denoising_step:
+            timesteps = torch.cat((self.diffusion.scheduler.timesteps.cpu(), torch.tensor([0], dtype=torch.float32)))
+            denoising_step_list = timesteps[self.opt.num_train_timesteps - denoising_step_list]
+
+        if not self.opt.is_causal:
+            timesteps_id = torch.randint(0, len(denoising_step_list), (1,))  # (1,); batch share the same timestep for simpler time scheduler
+            timesteps_id = timesteps_id.unsqueeze(1).repeat(B, f)  # (B, f)
+        else:  # teacher / diffusion forcing
+            assert f % self.opt.chunk_size == 0
+            num_chunks = f // self.opt.chunk_size
+
+            timesteps_id = torch.randint(0, len(denoising_step_list), (num_chunks,))  # (num_chunks,); each chunk in different noise level
+            timesteps_id = timesteps_id.repeat_interleave(self.opt.chunk_size, dim=0).repeat(B, 1)  # (B, f); batch share the same timestep for simpler time scheduler
+        timesteps = denoising_step_list[timesteps_id].to(dtype=dtype, device=device)
+        if cond_latents is not None and self.opt.teacher_first_latent_cond:
+            timesteps = torch.cat([torch.zeros_like(timesteps[:, :1]), timesteps[:, 1:]], dim=1)
+        # timesteps = torch.zeros_like(timesteps)  # only use clean latents for DA3 supervision
+
+        noisy_latents = self.diffusion.scheduler.add_noise(
+            clean_latents.transpose(1, 2).flatten(0, 1),  # (B*f, D, h, w)
+            noises.transpose(1, 2).flatten(0, 1),        # (B*f, D, h, w)
+            timesteps.flatten(0, 1),                 # (B*f,)
+        ).unflatten(0, (B, f)).transpose(1, 2).to(dtype)  # (B, D, f, h, w)
+        targets = self.diffusion.scheduler.training_target(clean_latents, noises)
+
+        model_outputs = self.diffusion(
+            noisy_latents,
+            timesteps,
+            prompt_embeds,
+            plucker=plucker,
+            C2W=C2W, fxfycxcy=fxfycxcy,  # for DA3
+            extra_condition=render_images,
+        )
+        model_outputs, da3_outputs = \
+            model_outputs if self.opt.load_da3 else (model_outputs, None)
+
+        diffusion_loss = tF.mse_loss(model_outputs.float(), targets.float(), reduction="none")  # (B, D, f, h, w)
+        diffusion_loss = self.diffusion.scheduler.training_weight(timesteps.flatten(0, 1)).reshape(-1, 1, 1, 1) * \
+            diffusion_loss.transpose(1, 2).flatten(0, 1)  # (B*f, D, h, w)
+        diffusion_loss = diffusion_loss.unflatten(0, (B, f)).transpose(1, 2)  # (B, D, f, h, w)
+        if self.opt.no_denoising_loss:
+            diffusion_loss = torch.zeros_like(diffusion_loss)
+
+        if self.opt.da3_weight_type == "uniform":
+            da3_weights = 1.
+        elif self.opt.da3_weight_type == "diffusion":
+            da3_weights = self.diffusion.scheduler.training_weight(timesteps.flatten(0, 1))
+        elif self.opt.da3_weight_type == "inverse_timestep":
+            da3_weights = 1. / (timesteps.flatten(0, 1) + 0.1)
+        else:
+            da3_weights = 1.
+
+        if da3_outputs is not None:
+            if render_images is not None:
+                da3_outputs["images_render"] = render_images
+
+            assert depths is not None
+            depth_loss = self.depth_loss_fn(da3_outputs["depth"], depths, confs=da3_outputs["depth_conf"])  # (B, f)
+            da3_outputs["depth_loss"] = (da3_weights * depth_loss.flatten(0, 1)).mean()
+
+            assert C2W is not None and fxfycxcy is not None
+            H, W = noises.shape[-2] * 8, noises.shape[-1] * 8  # `8`: hard-coded for Wan2.1
+            _, (ray_o, ray_d) = plucker_ray(H//2//self.opt.da3_down_ratio, W//2//self.opt.da3_down_ratio,
+                C2W.float(), fxfycxcy.float(), normalize_ray_d=False)
+            gt_raymaps = torch.cat([ray_d, ray_o], dim=2).to(noises.dtype)  # (B, f, 6, H/2, W/2)
+            gt_pose_enc = torch.cat([
+                C2W[:, :, :3, 3].float(),  # (B, f, 3)
+                mat_to_quat(C2W[:, :, :3, :3].float()),  # (B, f, 4)
+                2. * torch.atan(1. / (2. * fxfycxcy[:, :, 1:2])),  # (B, f, 1); fy -> fov_h
+                2. * torch.atan(1. / (2. * fxfycxcy[:, :, 0:1])),  # (B, f, 1); fx -> fov_w
+            ], dim=-1).to(noises.dtype)  # (B, f, 9)
+                ## Compute geometry losses
+            ray_loss = self.ray_loss_fn(da3_outputs["ray"], gt_raymaps, confs=da3_outputs["ray_conf"])  # (B, f)
+            camera_loss = self.camera_loss_fn(da3_outputs["pose_enc"], gt_pose_enc)  # (B, f)
+            da3_outputs["ray_loss"] = (da3_weights * ray_loss.flatten(0, 1)).mean()
+            da3_outputs["camera_loss"] = (da3_weights * camera_loss.flatten(0, 1)).mean()
+
+        return diffusion_loss.mean(), da3_outputs
 
     def critic_loss(self,
         noises: Tensor,
