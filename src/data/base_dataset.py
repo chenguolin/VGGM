@@ -10,8 +10,6 @@ from src.options import Options
 from src.utils.geo_util import inverse_c2w
 from src.data.easy_dataset import EasyDataset
 
-os.environ["HDF5_USE_FILE_LOCKING"] = "FALSE"
-
 
 class BaseDataset(EasyDataset):
     def __init__(self, opt: Options, name: str, training: bool):
