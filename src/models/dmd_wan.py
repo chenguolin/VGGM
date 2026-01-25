@@ -227,7 +227,7 @@ class DMD_Wan(Wan):
                     images_f=images_f,
                 )
                 outputs["diffusion_loss"] = diffusion_loss
-                generator_loss = generator_loss + self.opt.diffusion_loss_weight * diffusion_loss
+                generator_loss = generator_loss + diffusion_loss
             else:
                 da3_outputs_diffusion = None
 
