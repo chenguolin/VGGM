@@ -127,8 +127,9 @@ class DMD_Wan(Wan):
 
         # CausVid or Self-Forcing
         self.use_self_forcing = use_self_forcing = np.random.rand() <= self.opt.self_forcing_prob
+        use_diffusion_loss = np.random.rand() < self.opt.diffusion_loss_prob
 
-        if "image" in data and (not use_self_forcing or self.opt.first_latent_cond or self.opt.teacher_first_latent_cond):
+        if "image" in data:
             images = data["image"].to(dtype)  # (B, F, 3, H, W)
             (B, F, _, H, W), device = images.shape, images.device
         else:
@@ -138,7 +139,7 @@ class DMD_Wan(Wan):
 
         # Text encoder
         if self.text_encoder is not None:
-            if self.prompt_list is None or not self.use_self_forcing:
+            if self.prompt_list is None or not self.use_self_forcing or use_diffusion_loss or np.random.rand() >= self.opt.vidprom_prob:
                 prompts = data["prompt"]  # a list of strings
             else:
                 prompts = np.random.choice(self.prompt_list, B, replace=False).tolist()
@@ -150,7 +151,7 @@ class DMD_Wan(Wan):
             raise NotImplementedError
 
         # VAE
-        if "image" in data and self.prompt_list is None and (not use_self_forcing or self.opt.first_latent_cond or self.opt.teacher_first_latent_cond):
+        if "image" in data:
             with torch.no_grad(), torch.autocast(device_type="cuda", dtype=dtype):
                 latents = self.encode(images * 2. - 1., vae)  # (B, D, f, h, w)
                 if self.opt.first_latent_cond:
@@ -212,7 +213,7 @@ class DMD_Wan(Wan):
             outputs["generator_loss"] = generator_loss
             outputs["dmd_grad_norm"] = dmd_grad_norm
 
-            if np.random.rand() < self.opt.diffusion_loss_prob:
+            if use_diffusion_loss:
                 diffusion_loss, da3_outputs_diffusion = self.diffusion_loss(
                     latents,
                     prompt_embeds,
@@ -401,7 +402,9 @@ class DMD_Wan(Wan):
         timesteps = denoising_step_list[timesteps_id].to(dtype=dtype, device=device)
         if cond_latents is not None and self.opt.teacher_first_latent_cond:
             timesteps = torch.cat([torch.zeros_like(timesteps[:, :1]), timesteps[:, 1:]], dim=1)
-        # timesteps = torch.zeros_like(timesteps)  # only use clean latents for DA3 supervision
+
+        if self.opt.no_noise_for_da3:
+            timesteps = torch.zeros_like(timesteps)  # only use clean latents for DA3 supervision
 
         noisy_latents = self.diffusion.scheduler.add_noise(
             clean_latents.transpose(1, 2).flatten(0, 1),  # (B*f, D, h, w)
@@ -425,17 +428,18 @@ class DMD_Wan(Wan):
         diffusion_loss = self.diffusion.scheduler.training_weight(timesteps.flatten(0, 1)).reshape(-1, 1, 1, 1) * \
             diffusion_loss.transpose(1, 2).flatten(0, 1)  # (B*f, D, h, w)
         diffusion_loss = diffusion_loss.unflatten(0, (B, f)).transpose(1, 2)  # (B, D, f, h, w)
-        if self.opt.no_denoising_loss:
-            diffusion_loss = torch.zeros_like(diffusion_loss)
 
-        if self.opt.da3_weight_type == "uniform":
+        if self.opt.no_noise_for_da3:
             da3_weights = 1.
-        elif self.opt.da3_weight_type == "diffusion":
-            da3_weights = self.diffusion.scheduler.training_weight(timesteps.flatten(0, 1))
-        elif self.opt.da3_weight_type == "inverse_timestep":
-            da3_weights = 1. / (timesteps.flatten(0, 1) + 0.1)
         else:
-            da3_weights = 1.
+            if self.opt.da3_weight_type == "uniform":
+                da3_weights = 1.
+            elif self.opt.da3_weight_type == "diffusion":
+                da3_weights = self.diffusion.scheduler.training_weight(timesteps.flatten(0, 1))
+            elif self.opt.da3_weight_type == "inverse_timestep":
+                da3_weights = 1. / (timesteps.flatten(0, 1) + 0.1)
+            else:
+                da3_weights = 1.
 
         if da3_outputs is not None:
             if render_images is not None:

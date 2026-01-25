@@ -34,6 +34,7 @@ class Options:
     load_conf: bool = False
     normalize_xyz: bool = True
     use_vidprom: bool = False
+    vidprom_prob: float = 0.5
     use_short_caption: bool = False
     only_static_data: bool = False
         ## Camera normalization
@@ -159,7 +160,6 @@ class Options:
     # Training
         ## Losses
     diffusion_loss_prob: float = 0.
-    no_denoising_loss: bool = True
     conf_alpha: float = 0.2
     gradient_loss_scale: int = 4
     xyz_loss_threshold: float = 10.
@@ -323,18 +323,20 @@ opt_dict["wan2.1_t2v_1.3b_ode"] = Options(
 # Self-Forcing DMD
 opt_dict["wan2.1_t2v_1.3b_dmd"] = Options(
     only_static_data=False,
-    use_vidprom=False,
+    use_vidprom=True,
+    vidprom_prob=0.5,
     use_short_caption=False,
     first_latent_cond=False,
     input_plucker=True,
     #
-    load_da3=False,
+    load_da3=True,
     da3_interactive=True,
     da3_weight_type="uniform",
     da3_down_ratio=1,
     da3_loss_in_sf=True,
-    render_loss_in_sf=True,
-    diffusion_loss_prob=0.,
+    no_noise_for_da3=True,
+    render_loss_in_sf=False,
+    diffusion_loss_prob=0.2,
     #
     is_causal=True,
     use_teacher_forcing=False,
@@ -366,7 +368,7 @@ opt_dict["wan2.1_t2v_1.3b_dmd"] = Options(
     cfg_scale=(1.,),
     deterministic_inference=False,
     #
-    # load_conf=True,
-    # input_pcrender=True,
-    # load_tae=True,
+    load_conf=True,
+    input_pcrender=True,
+    load_tae=True,
 )

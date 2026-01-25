@@ -501,7 +501,7 @@ class Wan(nn.Module):
 
         # Text encoder
         if self.text_encoder is not None:
-            if self.prompt_list is None:
+            if self.prompt_list is None or np.random.rand() >= self.opt.vidprom_prob:
                 prompts = data["prompt"]  # a list of strings
             else:
                 prompts = np.random.choice(self.prompt_list, B, replace=False).tolist()
@@ -694,7 +694,7 @@ class Wan(nn.Module):
 
         # Text encoder
         if self.text_encoder is not None:
-            if self.prompt_list is None:
+            if self.prompt_list is None or np.random.rand() >= self.opt.vidprom_prob:
                 prompts = data["prompt"]  # a list of strings
             else:
                 prompts = np.random.choice(self.prompt_list, B, replace=False).tolist()
@@ -1081,7 +1081,7 @@ class Wan(nn.Module):
 
         # Text encoder
         if self.text_encoder is not None:
-            if self.prompt_list is None:
+            if self.prompt_list is None or np.random.rand() >= self.opt.vidprom_prob:
                 prompts = data["prompt"]  # a list of strings
             else:
                 prompts = np.random.choice(self.prompt_list, B, replace=False).tolist()
