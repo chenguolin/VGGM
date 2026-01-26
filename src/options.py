@@ -367,7 +367,6 @@ opt_dict["wan2.1_t2v_1.3b_dmd"] = Options(
     #
     # name_lr_mult="fake_score",
     # lr_mult=0.2,
-    exclude_name_lr_mult="plucker_embed,extra_condition_embed,da3,fake_score",
     #
     num_input_frames_test=201,
     num_inference_steps=4,
