@@ -340,7 +340,7 @@ opt_dict["wan2.1_t2v_1.3b_dmd"] = Options(
     da3_loss_in_sf=True,
     render_loss_in_sf=False,
     #
-    diffusion_loss_prob=0.2,
+    diffusion_loss_prob=0.,
     no_noise_for_da3=True,
     #
     is_causal=True,
@@ -365,8 +365,8 @@ opt_dict["wan2.1_t2v_1.3b_dmd"] = Options(
     context_noise=0,
     same_step_across_chunks=True,
     #
-    # name_lr_mult="fake_score",
-    # lr_mult=0.2,
+    name_lr_mult="fake_score",
+    lr_mult=0.2,
     #
     num_input_frames_test=201,
     num_inference_steps=4,
