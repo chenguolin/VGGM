@@ -338,7 +338,7 @@ opt_dict["wan2.1_t2v_1.3b_dmd"] = Options(
     fix_shared_dit_layers=True,
     #
     da3_loss_in_sf=True,
-    render_loss_in_sf=True,
+    render_loss_in_sf=False,
     #
     diffusion_loss_prob=0.2,
     no_noise_for_da3=True,
@@ -365,8 +365,9 @@ opt_dict["wan2.1_t2v_1.3b_dmd"] = Options(
     context_noise=0,
     same_step_across_chunks=True,
     #
-    name_lr_mult="fake_score",
-    lr_mult=0.2,
+    # name_lr_mult="fake_score",
+    # lr_mult=0.2,
+    exclude_name_lr_mult="plucker_embed,extra_condition_embed,da3",
     #
     num_input_frames_test=201,
     num_inference_steps=4,
