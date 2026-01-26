@@ -340,7 +340,7 @@ opt_dict["wan2.1_t2v_1.3b_dmd"] = Options(
     da3_loss_in_sf=True,
     render_loss_in_sf=True,
     #
-    diffusion_loss_prob=0.,
+    diffusion_loss_prob=0.2,
     no_noise_for_da3=True,
     #
     is_causal=True,
