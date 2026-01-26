@@ -162,7 +162,7 @@ class Wan(nn.Module):
                 if i >= len(self.diffusion.model.blocks) - 24:  #  `24`: hard-coded for da3-large
                     block.requires_grad_(True)
 
-        if opt.fix_dit_layers:
+        if opt.fix_shared_dit_layers:
             for i, block in enumerate(self.diffusion.model.blocks):
                 if i < len(self.diffusion.model.blocks) - 24:  #  `24`: hard-coded for da3-large
                     block.requires_grad_(False)
