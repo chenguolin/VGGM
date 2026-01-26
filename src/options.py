@@ -334,8 +334,6 @@ opt_dict["wan2.1_t2v_1.3b_dmd"] = Options(
     da3_interactive=True,
     da3_weight_type="uniform",
     da3_down_ratio=1,
-    only_train_resdit=False,
-    fix_shared_dit_layers=True,
     #
     da3_loss_in_sf=True,
     render_loss_in_sf=False,
