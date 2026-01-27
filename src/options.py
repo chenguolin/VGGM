@@ -4,9 +4,7 @@ import os
 from dataclasses import dataclass
 
 ROOT_LIST = [
-    "/apdcephfs_fsgm/share_303967936/cglin",
     "/apdcephfs_sgfd/share_303967936/cglin",
-    "/apdcephfs/share_gz/apdcephfs_fsgm/share_303967936/cglin",
     "/apdcephfs/share_sg/apdcephfs_sgfd/share_303967936/cglin",
 ]
 
