@@ -323,7 +323,7 @@ opt_dict["wan2.1_t2v_1.3b_ode"] = Options(
 
 # Self-Forcing DMD
 opt_dict["wan2.1_t2v_1.3b_dmd"] = Options(
-    only_static_data=True,
+    only_static_data=False,
     use_vidprom=False,
     vidprom_prob=0.5,
     use_short_caption=False,
@@ -338,8 +338,8 @@ opt_dict["wan2.1_t2v_1.3b_dmd"] = Options(
     da3_loss_in_sf=True,
     render_loss_in_sf=False,
     #
-    diffusion_loss_prob=0.,
-    no_noise_for_da3=True,
+    diffusion_loss_prob=0.5,
+    no_noise_for_da3=False,
     #
     is_causal=True,
     use_teacher_forcing=False,

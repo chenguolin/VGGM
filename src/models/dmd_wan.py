@@ -295,6 +295,10 @@ class DMD_Wan(Wan):
                 if da3_outputs_diffusion is not None:
                     if "depth" in da3_outputs_diffusion:
                         outputs["images_pred_depth"] = colorize_depth(1./da3_outputs_diffusion["depth"], batch_mode=True)
+                    if "images_render" in da3_outputs_diffusion:
+                        outputs["images_render"] = da3_outputs_diffusion["images_render"]
+                    if "images_render_depth" in da3_outputs_diffusion:
+                        outputs["images_render_depth"] = da3_outputs_diffusion["images_render_depth"]
             ## DMD
             else:
                 if da3_outputs is not None:
@@ -411,6 +415,14 @@ class DMD_Wan(Wan):
 
         if self.opt.no_noise_for_da3:
             timesteps = torch.zeros_like(timesteps)  # only use clean latents for DA3 supervision
+        else:  # noisy inputs
+            if self.opt.is_causal:
+                chunk_id = np.random.randint(1, num_chunks)  # randomly choice one chunk to be noisy, others are clean
+                timesteps = torch.cat([
+                    torch.zeros_like(timesteps[:, :chunk_id*self.opt.chunk_size]),
+                    timesteps[:, chunk_id*self.opt.chunk_size:(chunk_id+1)*self.opt.chunk_size],
+                    torch.zeros_like(timesteps[:, (chunk_id+1)*self.opt.chunk_size:]),
+                ], dim=1)  # (B, f)
 
         noisy_latents = self.diffusion.scheduler.add_noise(
             clean_latents.transpose(1, 2).flatten(0, 1),  # (B*f, D, h, w)
