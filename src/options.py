@@ -107,6 +107,7 @@ class Options:
     max_window_size: int = None  # if None, then `(num_input_frames - 1) // 4 + 1`
     max_kvcache_size: int = 21  # set to a limited number to save memory
     rope_outside: bool = False
+    prefill_image: bool = True
         ## Load pre-trained models
     generator_path: Optional[str] = None
     teacher_path: Optional[str] = None

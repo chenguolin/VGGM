@@ -651,7 +651,7 @@ class Wan(nn.Module):
                 outputs[f"images_pred_depth_{cfg_scale}"] = colorize_depth(1./da3_outputs["depth"], batch_mode=True)
 
         if self.opt.load_da3 and depths is not None:
-            outputs[f"images_gt_depth"] = colorize_depth(1./depths, batch_mode=True)
+            outputs["images_gt_depth"] = colorize_depth(1./depths, batch_mode=True)
 
         if render_images is not None:
             outputs["images_render"] = render_images
@@ -1042,11 +1042,11 @@ class Wan(nn.Module):
                 # For visualization
                 outputs[f"images_pred_depth_{cfg_scale}"] = colorize_depth(1./da3_outputs["depth"], batch_mode=True)
 
-        if self.opt.load_da3 and depths is not None:
-            outputs[f"images_gt_depth"] = colorize_depth(1./depths, batch_mode=True)
+            if render_images is not None:
+                outputs[f"images_render_{cfg_scale}"] = render_images_vis
 
-        if render_images is not None:
-            outputs["images_render"] = render_images_vis
+        if self.opt.load_da3 and depths is not None:
+            outputs["images_gt_depth"] = colorize_depth(1./depths, batch_mode=True)
 
         return outputs
 
@@ -1376,6 +1376,368 @@ class Wan(nn.Module):
         outputs["images_predx0"] = (self.decode_latent(pred_x0, vae).clamp(-1., 1.) + 1.) / 2.
         outputs["images_target"] = (self.decode_latent(target_latents, vae).clamp(-1., 1.) + 1.) / 2.
         outputs["loss"] = tF.mse_loss(pred_x0, target_latents)
+
+        return outputs
+
+
+    @torch.no_grad()
+    @torch.autocast(device_type="cuda", dtype=torch.bfloat16)
+    def infer_causal(self,
+        prompts: List[str],
+        C2W: Tensor,  # (B, f, 4, 4)
+        fxfycxcy: Tensor,  # (B, f, 4)
+        #
+        images: Optional[Tensor] = None,  # (B, 1, 3, H, W)
+        depths: Optional[Tensor] = None,  # (B, 1, H, W)
+        confs: Optional[Tensor] = None,  # (B, 1, H, W)
+        #
+        cfg_scale: Optional[float] = None,
+        #
+        dtype: torch.dtype = torch.bfloat16,
+        verbose: bool = True,
+        vae: Optional[WanVAEWrapper] = None,
+    ):
+        outputs = {}
+
+        self.diffusion.eval()
+        self.diffusion.scheduler.set_timesteps(self.opt.num_inference_steps, training=False)
+
+        if cfg_scale is None:
+            cfg_scale = self.opt.cfg_scale[-1]
+
+        B = len(prompts)
+        F, H, W = (C2W.shape[1] - 1) * 4 + 1, self.opt.input_res[0], self.opt.input_res[1]
+        device = self.diffusion.model.device
+
+        C2W = C2W.to(dtype)  # (B, f, 4, 4)
+        fxfycxcy = fxfycxcy.to(dtype)  # (B, f, 4)
+        plucker = plucker_ray(H, W, C2W.float(), fxfycxcy.float())[0].to(dtype)  # (B, f, 6, H, W)
+        if depths is not None:
+            depths = depths.to(dtype)  # (B, 1, H, W)
+        if confs is not None:
+            confs = confs.to(dtype)  # (B, 1, H, W)
+
+        f = 1 + (F - 1) // self.opt.compression_ratio[0]
+        h = H // self.opt.compression_ratio[1]
+        w = W // self.opt.compression_ratio[2]
+
+        # Text encoder
+        if self.text_encoder is not None:
+            self.text_encoder.eval()
+            prompt_embeds = self.text_encoder(prompts)  # (B, N=512, D')
+            negative_prompt_embeds = self.text_encoder([self.opt.negative_prompt]).repeat(B, 1, 1)  # (B, N=512, D')
+        else:
+            raise NotImplementedError
+
+        # VAE
+        if images is not None:
+            images = images.to(dtype)  # (B, 1, 3, H, W)
+            if self.opt.prefill_image:
+                cond_latents = self.encode(images.repeat(1, 1 + 4 * (self.opt.chunk_size - 1), 1, 1, 1) * 2. - 1., vae)  # (B, D, f_chunk, h, w)
+                assert cond_latents.shape[2] == self.opt.chunk_size
+            else:
+                cond_latents = self.encode(images * 2. - 1., vae)  # (B, D, 1, h, w)
+        else:
+            cond_latents = None
+
+        # (Optional) Point cloud rendering
+        if self.opt.input_pcrender:
+            if cond_latents is not None:
+                assert depths is not None and confs is not None and C2W is not None and fxfycxcy is not None
+                all_render_images = []
+                for i in range(B):
+                    points, colors = filter_da3_points(
+                        images[i, 0:1], depths[i, 0:1], confs[i, 0:1], C2W[i, 0:1], fxfycxcy[i, 0:1],
+                        conf_thresh_percentile=self.opt.conf_thresh_percentile,
+                        random_sample_ratio=self.opt.rand_pcrender_ratio,
+                        min_num_points=self.opt.min_num_points,
+                        max_num_points=self.opt.max_num_points,
+                    )
+                    all_render_images_chunk = render_pt3d_points(H, W, points, colors, C2W[i, :self.opt.chunk_size], fxfycxcy[i, :self.opt.chunk_size]).to(dtype)
+                    all_render_images.append(all_render_images_chunk)
+                render_images = torch.stack(all_render_images, dim=0)  # (B, f_chunk, 3, H, W)
+            else:
+                render_images = torch.zeros((B, self.opt.chunk_size, 3, H, W), dtype=dtype, device=device)
+            render_images_vis = render_images
+
+            if self.opt.load_da3:
+                if self.opt.load_tae:
+                    vae_cache = None
+                else:
+                    vae_cache = ZERO_VAE_CACHE
+                    for i in range(len(vae_cache)):
+                        vae_cache[i] = vae_cache[i].to(device=device, dtype=dtype)
+        else:
+            render_images = None
+
+        # Denoising
+        latents = torch.randn(B, self.opt.latent_dim, f, h, w, device=device, dtype=dtype)
+        if not self.opt.prefill_image and cond_latents is not None:
+            latents = torch.cat([cond_latents, latents[:, :, 1:, ...]], dim=2)
+
+        ## Set KV cache
+        self._initialize_kv_cache(B, device=device, dtype=dtype)
+        self._initialize_crossattn_cache(B, device=device, dtype=dtype)
+
+        ## Auto-regression steps
+        assert f % self.opt.chunk_size == 0
+        num_chunks = f // self.opt.chunk_size
+        frame_seqlen = h * w // 4  # `4`: hard-coded for 2x2 patch embedding in DiT
+
+        # (Optional) Prefill cache with cond_latents
+        if self.opt.prefill_image and cond_latents is not None:
+            self.diffusion(
+                cond_latents,
+                torch.zeros((B, self.opt.chunk_size), device=device, dtype=dtype),
+                prompt_embeds,
+                plucker=plucker[:, 0:1, ...].repeat(1, self.opt.chunk_size, 1, 1, 1),
+                C2W=C2W[:, 0:1, ...].repeat(1, self.opt.chunk_size, 1, 1),  # for DA3
+                fxfycxcy=fxfycxcy[:, 0:1, ...].repeat(1, self.opt.chunk_size, 1),  # for DA3
+                extra_condition=render_images,
+                #
+                kv_cache=self.kv_cache_pos,
+                crossattn_cache=self.crossattn_cache_pos,
+                current_start=0,
+                #
+                kv_cache_da3=self.kv_cache_pos_da3,
+                current_start_da3=0,
+            )
+            if cfg_scale > 1.:
+                self.diffusion(
+                    cond_latents,
+                    torch.zeros((B, self.opt.chunk_size), device=device, dtype=dtype),
+                    negative_prompt_embeds,  # torch.zeros_like(prompt_embeds)
+                    plucker=plucker[:, 0:1, ...].repeat(1, self.opt.chunk_size, 1, 1, 1),
+                    C2W=C2W[:, 0:1, ...].repeat(1, self.opt.chunk_size, 1, 1),  # for DA3
+                    fxfycxcy=fxfycxcy[:, 0:1, ...].repeat(1, self.opt.chunk_size, 1),  # for DA3
+                    extra_condition=render_images,
+                    #
+                    kv_cache=self.kv_cache_neg,
+                    crossattn_cache=self.crossattn_cache_neg,
+                    current_start=0,
+                    #
+                    kv_cache_da3=self.kv_cache_neg_da3,
+                    current_start_da3=0,
+                )
+            cache_start_chunk_idx = 1
+        else:
+            cache_start_chunk_idx = 0
+
+        ## Temporal denoising loop
+        all_da3_outputs, all_points, all_colors = [None] * num_chunks, [None] * B, [None] * B
+        for chunk_idx in tqdm(range(num_chunks), ncols=125, disable=not verbose, desc="[Chunk]"):
+            this_chunk_latents = latents[:, :, chunk_idx * self.opt.chunk_size:(chunk_idx + 1) * self.opt.chunk_size, ...]
+            if self.opt.input_plucker:
+                this_chunk_plucker = plucker[:, chunk_idx * self.opt.chunk_size:(chunk_idx + 1) * self.opt.chunk_size, ...]
+            else:
+                this_chunk_plucker = None
+            this_chunk_C2W = C2W[:, chunk_idx * self.opt.chunk_size:(chunk_idx + 1) * self.opt.chunk_size, ...]
+            this_chunk_fxfycxcy = fxfycxcy[:, chunk_idx * self.opt.chunk_size:(chunk_idx + 1) * self.opt.chunk_size, ...]
+
+            ### Spatial denoising loop
+            for ti, timestep in tqdm(enumerate(self.diffusion.scheduler.timesteps),
+                total=len(self.diffusion.scheduler.timesteps), ncols=125, disable=not verbose, desc="[Denoise]"):
+                timesteps = timestep[None, None].repeat(B, self.opt.chunk_size).to(dtype=dtype, device=device)
+                if not self.opt.prefill_image and chunk_idx == 0 and cond_latents is not None:
+                    timesteps = torch.cat([torch.zeros_like(timesteps[:, :1]), timesteps[:, 1:]], dim=1)
+
+                #### Diffusion model
+                model_outputs = self.diffusion(
+                    this_chunk_latents,
+                    timesteps,
+                    prompt_embeds,
+                    plucker=this_chunk_plucker,
+                    C2W=this_chunk_C2W, fxfycxcy=this_chunk_fxfycxcy,  # for DA3
+                    extra_condition=render_images,
+                    #
+                    kv_cache=self.kv_cache_pos,
+                    crossattn_cache=self.crossattn_cache_pos,
+                    current_start=(cache_start_chunk_idx + chunk_idx) * self.opt.chunk_size * frame_seqlen,
+                    #
+                    kv_cache_da3=self.kv_cache_pos_da3,
+                    current_start_da3=(cache_start_chunk_idx + chunk_idx) * self.opt.chunk_size * (frame_seqlen // (self.opt.da3_down_ratio * self.opt.da3_down_ratio) + 1),  # `+1` for camera token
+                )
+
+                #### CFG
+                if cfg_scale > 1.:
+                    model_outputs_neg = self.diffusion(
+                        this_chunk_latents,
+                        timesteps,
+                        negative_prompt_embeds,  # torch.zeros_like(prompt_embeds)
+                        plucker=this_chunk_plucker,
+                        C2W=this_chunk_C2W, fxfycxcy=this_chunk_fxfycxcy,  # for DA3
+                        extra_condition=render_images,
+                        #
+                        kv_cache=self.kv_cache_neg,
+                        crossattn_cache=self.crossattn_cache_neg,
+                        current_start=(cache_start_chunk_idx + chunk_idx) * self.opt.chunk_size * frame_seqlen,
+                        #
+                        kv_cache_da3=self.kv_cache_neg_da3,
+                        current_start_da3=(cache_start_chunk_idx + chunk_idx) * self.opt.chunk_size * (frame_seqlen // (self.opt.da3_down_ratio * self.opt.da3_down_ratio) + 1),  # `+1` for camera token
+                    )
+
+                    if not self.opt.load_da3:
+                        model_outputs = model_outputs_neg + cfg_scale * (model_outputs - model_outputs_neg)
+                    else:
+                        model_outputs, da3_outputs = model_outputs
+                        model_outputs_neg, _ = model_outputs_neg
+                        model_outputs = model_outputs_neg + cfg_scale * (model_outputs - model_outputs_neg)
+                        model_outputs = (model_outputs, da3_outputs)
+
+                model_outputs, da3_outputs = \
+                    model_outputs if self.opt.load_da3 else (model_outputs, None)
+
+                if self.opt.deterministic_inference:
+                    this_chunk_latents = self.diffusion.scheduler.step(
+                        model_outputs.transpose(1, 2).flatten(0, 1),
+                        timesteps.flatten(0, 1),
+                        this_chunk_latents.transpose(1, 2).flatten(0, 1),
+                    ).unflatten(0, (B, self.opt.chunk_size)).transpose(1, 2)  # (B, D, f_chunk, h, w)
+                else:
+                    pred_x0 = self.diffusion._convert_flow_pred_to_x0(model_outputs, this_chunk_latents, timesteps)
+                    if ti < len(self.diffusion.scheduler.timesteps) - 1:
+                        next_timesteps = self.diffusion.scheduler.timesteps[ti + 1] * torch.ones_like(timesteps)
+                        if not self.opt.prefill_image and chunk_idx == 0 and cond_latents is not None:
+                            next_timesteps = torch.cat([torch.zeros_like(next_timesteps[:, :1]), next_timesteps[:, 1:]], dim=1)
+
+                        this_chunk_latents = self.diffusion.scheduler.add_noise(
+                            pred_x0.transpose(1, 2).flatten(0, 1),
+                            torch.randn_like(pred_x0.transpose(1, 2).flatten(0, 1)),
+                            next_timesteps.flatten(0, 1),
+                        ).unflatten(0, (B, self.opt.chunk_size)).transpose(1, 2).to(dtype)  # (B, D, f_chunk, h, w)
+                    else:
+                        this_chunk_latents = pred_x0
+
+            # Rerun with timestep zero to update KV cache
+            # TODO: add noise on KV cache, except the first chunk
+            model_outputs = self.diffusion(
+                this_chunk_latents,
+                timesteps * 0.,
+                prompt_embeds,
+                plucker=this_chunk_plucker,
+                C2W=this_chunk_C2W, fxfycxcy=this_chunk_fxfycxcy,  # for DA3
+                extra_condition=render_images,
+                #
+                kv_cache=self.kv_cache_pos,
+                crossattn_cache=self.crossattn_cache_pos,
+                current_start=(cache_start_chunk_idx + chunk_idx) * self.opt.chunk_size * frame_seqlen,
+                #
+                kv_cache_da3=self.kv_cache_pos_da3,
+                current_start_da3=(cache_start_chunk_idx + chunk_idx) * self.opt.chunk_size * (frame_seqlen // (self.opt.da3_down_ratio * self.opt.da3_down_ratio) + 1),  # `+1` for camera token
+            )
+
+            if cfg_scale > 1.:
+                model_outputs_neg = self.diffusion(
+                    this_chunk_latents,
+                    timesteps * 0.,
+                    negative_prompt_embeds,  # torch.zeros_like(prompt_embeds)
+                    plucker=this_chunk_plucker,
+                    C2W=this_chunk_C2W, fxfycxcy=this_chunk_fxfycxcy,  # for DA3
+                    extra_condition=render_images,
+                    #
+                    kv_cache=self.kv_cache_neg,
+                    crossattn_cache=self.crossattn_cache_neg,
+                    current_start=(cache_start_chunk_idx + chunk_idx) * self.opt.chunk_size * frame_seqlen,
+                    #
+                    kv_cache_da3=self.kv_cache_neg_da3,
+                    current_start_da3=(cache_start_chunk_idx + chunk_idx) * self.opt.chunk_size * (frame_seqlen // (self.opt.da3_down_ratio * self.opt.da3_down_ratio) + 1),  # `+1` for camera token
+                )
+
+                if not self.opt.load_da3:
+                    model_outputs = model_outputs_neg + cfg_scale * (model_outputs - model_outputs_neg)
+                else:
+                    model_outputs, da3_outputs = model_outputs
+                    model_outputs_neg, _ = model_outputs_neg
+                    model_outputs = model_outputs_neg + cfg_scale * (model_outputs - model_outputs_neg)
+                    model_outputs = (model_outputs, da3_outputs)
+
+            model_outputs, da3_outputs = \
+                model_outputs if self.opt.load_da3 else (model_outputs, None)
+            all_da3_outputs[chunk_idx] = da3_outputs
+
+            if self.opt.deterministic_inference:
+                this_chunk_latents = self.diffusion.scheduler.step(
+                    model_outputs.transpose(1, 2).flatten(0, 1),
+                    timesteps.flatten(0, 1) * 0.,
+                    this_chunk_latents.transpose(1, 2).flatten(0, 1),
+                ).unflatten(0, (B, self.opt.chunk_size)).transpose(1, 2)  # (B, D, f_chunk, h, w)
+            else:
+                pred_x0 = self.diffusion._convert_flow_pred_to_x0(model_outputs, this_chunk_latents, timesteps * 0.)
+                this_chunk_latents = pred_x0
+
+            # Record this chunk generated latents
+            latents[:, :, chunk_idx * self.opt.chunk_size:(chunk_idx + 1) * self.opt.chunk_size, ...] = this_chunk_latents
+
+            # (Optional) Update render images for next chunks
+            if self.opt.input_pcrender and chunk_idx < num_chunks - 1:
+                assert self.opt.load_da3
+                assert self.current_vae_decoder is not None
+
+                if self.opt.load_tae:
+                    if vae_cache is None:
+                        vae_cache = this_chunk_latents
+                    else:
+                        this_chunk_latents = torch.cat([vae_cache, this_chunk_latents], dim=2)
+                        vae_cache = this_chunk_latents[:, :, -3:, :, :]
+                    current_images_f = self.current_vae_decoder.decode(this_chunk_latents)
+                    if chunk_idx == 0:
+                        current_images_f = current_images_f[:, 3:, :, :, :]  # skip the first 3 frames of first block
+                    else:
+                        current_images_f = current_images_f[:, 12:, :, :, :]
+                else:
+                    current_images_f, vae_cache = self.current_vae_decoder(this_chunk_latents, *vae_cache)
+                    current_images_f = (current_images_f.clamp(-1., 1.) + 1.) / 2.
+                    current_images_f = current_images_f.transpose(1, 2)  # (B, f', 3, H, W)
+                    if chunk_idx == 0:
+                        current_images_f = current_images_f[:, 3:, :, :, :]  # skip the first 3 frames of first block
+                if chunk_idx == 0:
+                    _idxs = torch.arange(0, current_images_f.shape[1], 4).to(device=device, dtype=torch.long)
+                else:
+                    _idxs = torch.arange(3, current_images_f.shape[1], 4).to(device=device, dtype=torch.long)
+                current_images_f = current_images_f[:, _idxs, :, :, :]  # (B, f_chunk, 3, H, W)
+                assert current_images_f.shape[1] == self.opt.chunk_size
+
+                current_depths = all_da3_outputs[chunk_idx]["depth"]  # (B, f_chunk, H, W)
+                current_confs = all_da3_outputs[chunk_idx]["depth_conf"]  # (B, f_chunk, H, W)
+                current_C2W = all_da3_outputs[chunk_idx]["C2W"]  # (B, f_chunk, 4, 4)
+                current_fxfycxcy = all_da3_outputs[chunk_idx]["fxfycxcy"]  # (B, f_chunk, 4)
+
+                all_render_images = []
+                for i in range(B):
+                    points, colors = filter_da3_points(
+                        current_images_f[i], current_depths[i], current_confs[i], current_C2W[i], current_fxfycxcy[i],
+                        conf_thresh_percentile=self.opt.conf_thresh_percentile,
+                        random_sample_ratio=self.opt.rand_pcrender_ratio,
+                        min_num_points=self.opt.min_num_points,
+                        max_num_points=self.opt.max_num_points,
+                    )
+                    if points.shape[0] > 0:
+                        if all_points[i] is None:
+                            all_points[i], all_colors[i] = points, colors
+                        else:
+                            all_points[i] = torch.cat([all_points[i], points], dim=0)
+                            all_colors[i] = torch.cat([all_colors[i], colors], dim=0)
+                        render_images = render_pt3d_points(H, W, all_points[i], all_colors[i],
+                            C2W[i, (chunk_idx + 1) * self.opt.chunk_size:(chunk_idx + 2) * self.opt.chunk_size, ...],
+                            fxfycxcy[i, (chunk_idx + 1) * self.opt.chunk_size:(chunk_idx + 2) * self.opt.chunk_size, ...],
+                        ).to(dtype)
+                    else:  # no valid points
+                        render_images = torch.zeros((self.opt.chunk_size, 3, H, W), dtype=dtype, device=device)
+                    all_render_images.append(render_images)
+                render_images = torch.stack(all_render_images, dim=0)  # (B, f_chunk, 3, H, W)
+                render_images_vis = torch.cat([render_images_vis, render_images], dim=1)
+
+        # Decode
+        if self.opt.prefill_image and cond_latents is not None:
+            latents = torch.cat([cond_latents, latents], dim=2)
+        pred_images = (self.decode_latent(latents, vae).clamp(-1., 1.) + 1.) / 2.  # (B, D, f, h, w) -> (B, F, 3, H, W)
+        # pred_images = torch.cat([images, pred_images[:, 1 + 4 * cache_start_chunk_idx * self.opt.chunk_size:, :, :, :]], dim=1)
+        pred_images = pred_images[:, 4 * cache_start_chunk_idx * self.opt.chunk_size:, :, :, :]
+        assert pred_images.shape[1] == F
+        outputs["images_pred"] = pred_images
+
+        if render_images is not None:
+            outputs["images_render"] = render_images_vis
 
         return outputs
 
