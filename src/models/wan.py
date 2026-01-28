@@ -326,6 +326,7 @@ class Wan(nn.Module):
                                 random_sample_ratio=self.opt.rand_pcrender_ratio,
                                 min_num_points=self.opt.min_num_points,
                                 max_num_points=self.opt.max_num_points,
+                                all_valid=True,  # save all points for image conditioning
                             )
                             all_render_images_chunk = torch.cat([
                                 render_pt3d_points(H, W, points, colors, C2W[i, :self.opt.chunk_size], fxfycxcy[i, :self.opt.chunk_size]).to(dtype),
@@ -524,6 +525,7 @@ class Wan(nn.Module):
         cond_latents = cond_latents if torch.rand(1).item() < self.opt.random_i2v_prob else None
 
         # (Optional) Point cloud rendering
+        all_points, all_colors = [None] * B, [None] * B
         if self.opt.input_pcrender:
             assert depths is not None and confs is not None and C2W is not None and fxfycxcy is not None
             all_render_images = []
@@ -534,7 +536,9 @@ class Wan(nn.Module):
                     random_sample_ratio=self.opt.rand_pcrender_ratio,
                     min_num_points=self.opt.min_num_points,
                     max_num_points=self.opt.max_num_points,
+                    all_valid=True,  # save all points for image conditioning
                 )
+                all_points[i], all_colors[i] = points, colors
                 render_images = render_pt3d_points(H, W, points, colors, C2W[i], fxfycxcy[i]).to(dtype)  # (f, 3, H, W) in [0, 1]
                 all_render_images.append(render_images.to(dtype))
             render_images = torch.stack(all_render_images, dim=0)  # (B, f, 3, H, W) in [0, 1]
@@ -717,6 +721,7 @@ class Wan(nn.Module):
         cond_latents = cond_latents if torch.rand(1).item() < self.opt.random_i2v_prob else None
 
         # (Optional) Point cloud rendering
+        all_points, all_colors = [None] * B, [None] * B
         if self.opt.input_pcrender:
             if cond_latents is not None:
                 assert depths is not None and confs is not None and C2W is not None and fxfycxcy is not None
@@ -728,7 +733,9 @@ class Wan(nn.Module):
                         random_sample_ratio=self.opt.rand_pcrender_ratio,
                         min_num_points=self.opt.min_num_points,
                         max_num_points=self.opt.max_num_points,
+                        all_valid=True,  # save all points for image conditioning
                     )
+                    all_points[i], all_colors[i] = points, colors
                     all_render_images_chunk = render_pt3d_points(H, W, points, colors, C2W[i, :self.opt.chunk_size], fxfycxcy[i, :self.opt.chunk_size]).to(dtype)
                     all_render_images.append(all_render_images_chunk)
                 render_images = torch.stack(all_render_images, dim=0)  # (B, f_chunk, 3, H, W)
@@ -767,7 +774,7 @@ class Wan(nn.Module):
             frame_seqlen = h * w // 4  # `4`: hard-coded for 2x2 patch embedding in DiT
 
             ## Temporal denoising loop
-            all_da3_outputs, all_points, all_colors = [None] * num_chunks, [None] * B, [None] * B
+            all_da3_outputs = [None] * num_chunks
             for chunk_idx in tqdm(range(num_chunks), ncols=125, disable=not verbose, desc="[Chunk]"):
                 this_chunk_latents = latents[:, :, chunk_idx * self.opt.chunk_size:(chunk_idx + 1) * self.opt.chunk_size, ...]
                 if self.opt.input_plucker:
@@ -1441,6 +1448,7 @@ class Wan(nn.Module):
             cond_latents = None
 
         # (Optional) Point cloud rendering
+        all_points, all_colors = [None] * B, [None] * B
         if self.opt.input_pcrender:
             if cond_latents is not None:
                 assert depths is not None and confs is not None and C2W is not None and fxfycxcy is not None
@@ -1452,7 +1460,9 @@ class Wan(nn.Module):
                         random_sample_ratio=self.opt.rand_pcrender_ratio,
                         min_num_points=self.opt.min_num_points,
                         max_num_points=self.opt.max_num_points,
+                        all_valid=True,  # save all points for image conditioning
                     )
+                    all_points[i], all_colors[i] = points, colors
                     all_render_images_chunk = render_pt3d_points(H, W, points, colors, C2W[i, :self.opt.chunk_size], fxfycxcy[i, :self.opt.chunk_size]).to(dtype)
                     all_render_images.append(all_render_images_chunk)
                 render_images = torch.stack(all_render_images, dim=0)  # (B, f_chunk, 3, H, W)
@@ -1493,7 +1503,7 @@ class Wan(nn.Module):
                 plucker=plucker[:, 0:1, ...].repeat(1, self.opt.chunk_size, 1, 1, 1),
                 C2W=C2W[:, 0:1, ...].repeat(1, self.opt.chunk_size, 1, 1),  # for DA3
                 fxfycxcy=fxfycxcy[:, 0:1, ...].repeat(1, self.opt.chunk_size, 1),  # for DA3
-                extra_condition=render_images,
+                extra_condition=torch.zeros_like(render_images),  # align with t2v
                 #
                 kv_cache=self.kv_cache_pos,
                 crossattn_cache=self.crossattn_cache_pos,
@@ -1510,7 +1520,7 @@ class Wan(nn.Module):
                     plucker=plucker[:, 0:1, ...].repeat(1, self.opt.chunk_size, 1, 1, 1),
                     C2W=C2W[:, 0:1, ...].repeat(1, self.opt.chunk_size, 1, 1),  # for DA3
                     fxfycxcy=fxfycxcy[:, 0:1, ...].repeat(1, self.opt.chunk_size, 1),  # for DA3
-                    extra_condition=render_images,
+                    extra_condition=torch.zeros_like(render_images),  # align with t2v
                     #
                     kv_cache=self.kv_cache_neg,
                     crossattn_cache=self.crossattn_cache_neg,
@@ -1524,7 +1534,7 @@ class Wan(nn.Module):
             cache_start_chunk_idx = 0
 
         ## Temporal denoising loop
-        all_da3_outputs, all_points, all_colors = [None] * num_chunks, [None] * B, [None] * B
+        all_da3_outputs = [None] * num_chunks
         for chunk_idx in tqdm(range(num_chunks), ncols=125, disable=not verbose, desc="[Chunk]"):
             this_chunk_latents = latents[:, :, chunk_idx * self.opt.chunk_size:(chunk_idx + 1) * self.opt.chunk_size, ...]
             if self.opt.input_plucker:

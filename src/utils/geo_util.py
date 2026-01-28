@@ -49,8 +49,8 @@ def setup_pt3d_renderer(cameras: PerspectiveCameras, image_size: int | Tuple[int
     # Define the settings for rasterization and shading.
     raster_settings = PointsRasterizationSettings(
         image_size=image_size,
-        radius=0.01,
-        points_per_pixel=10,
+        radius=0.008,
+        points_per_pixel=8,
         bin_size=0,
     )
 
@@ -99,31 +99,32 @@ def filter_da3_points(
     conf_thresh_percentile: float = 0.4,
     ensure_thresh_percentile: float = 0.9,
     random_sample_ratio: float = -1.,
-    min_num_points: int = 10000,
-    max_num_points: int = 1000000,
+    min_num_points: int = 100000,
+    max_num_points: int = 10000000,
+    all_valid: bool = False,
 ):
-    if filter_black_bg:
-        confs[(images < 16/255).all(dim=1, keepdim=True)] = 1.  # black pixels
-    if filter_white_bg:
-        confs[(images >= 240/255).all(dim=1, keepdim=True)] = 1.  # white pixels
-
-    lower = torch_quantile(confs, conf_thresh_percentile).item()
-    upper = torch_quantile(confs, ensure_thresh_percentile).item()
-    conf_thresh = min(max(conf_thresh, lower), upper)
-    valid_masks = confs >= conf_thresh  # (f, H, W)
-
     points = unproject_depth(depths[None], C2W[None], fxfycxcy[None])[0]  # (f, 3, H, W)
-
     points = rearrange(points, "f c h w -> (f h w) c")
     colors = rearrange(images, "f c h w -> (f h w) c")
-    valid_masks = rearrange(valid_masks, "f h w -> (f h w)")  # (M,)
-    valid_points, valid_colors = points[valid_masks, :], colors[valid_masks, :]  # (M, 3), (M, 3)
+
+    if not all_valid:
+        if filter_black_bg:
+            confs[(images < 16/255).all(dim=1, keepdim=True)] = 1.  # black pixels
+        if filter_white_bg:
+            confs[(images >= 240/255).all(dim=1, keepdim=True)] = 1.  # white pixels
+        lower = torch_quantile(confs, conf_thresh_percentile).item()
+        upper = torch_quantile(confs, ensure_thresh_percentile).item()
+        conf_thresh = min(max(conf_thresh, lower), upper)
+        valid_masks = confs >= conf_thresh  # (f, H, W)
+        valid_masks = rearrange(valid_masks, "f h w -> (f h w)")  # (M,)
+        points, colors = points[valid_masks, :], colors[valid_masks, :]  # (M, 3), (M, 3)
 
     if random_sample_ratio > 0. and random_sample_ratio <= 1.:
-        sample_size = min(max_num_points, max(min_num_points, int(random_sample_ratio * valid_points.shape[0])))
-        rand_idxs = torch.randperm(valid_points.shape[0], device=valid_points.device)[:sample_size]
-        valid_points, valid_colors = valid_points[rand_idxs, :], valid_colors[rand_idxs, :]
-    return valid_points, valid_colors
+        sample_size = min(max_num_points, max(min_num_points, int(random_sample_ratio * points.shape[0])))
+        rand_idxs = torch.randperm(points.shape[0], device=points.device)[:sample_size]
+        points, colors = points[rand_idxs, :], colors[rand_idxs, :]
+
+    return points, colors
 
 
 def torch_quantile(
