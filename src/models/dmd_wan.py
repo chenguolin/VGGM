@@ -197,7 +197,7 @@ class DMD_Wan(Wan):
         # Diffusion
         if use_diffusion_loss:
             ## Diffusion loss (+ DA3 loss)
-            diffusion_loss, da3_outputs_diffusion = self.diffusion_loss(
+            diffusion_loss, pred_x0, da3_outputs_diffusion = self.diffusion_loss(
                 latents,
                 prompt_embeds,
                 cond_latents,
@@ -222,7 +222,6 @@ class DMD_Wan(Wan):
                     outputs["camera_loss"] = da3_outputs_diffusion["camera_loss"]
                     diffusion_loss = diffusion_loss + da3_outputs_diffusion["camera_loss"]
 
-            pred_x0 = None
             outputs["loss"] = diffusion_loss
 
         # DMD
@@ -441,9 +440,10 @@ class DMD_Wan(Wan):
         )
         model_outputs, da3_outputs = \
             model_outputs if self.opt.load_da3 else (model_outputs, None)
+        pred_x0 = self.diffusion._convert_flow_pred_to_x0(model_outputs, noisy_latents, timesteps).to(dtype)
 
         diffusion_loss = tF.mse_loss(model_outputs.float(), targets.float(), reduction="none")  # (B, D, f, h, w)
-        diffusion_loss = self.diffusion.scheduler.training_weight(timesteps.flatten(0, 1)).reshape(-1, 1, 1, 1) * \
+        diffusion_loss = (self.diffusion.scheduler.training_weight(timesteps.flatten(0, 1)).reshape(-1, 1, 1, 1) + 1e-3) * \
             diffusion_loss.transpose(1, 2).flatten(0, 1)  # (B*f, D, h, w)
         diffusion_loss = diffusion_loss.unflatten(0, (B, f)).transpose(1, 2)  # (B, D, f, h, w)
 
@@ -484,7 +484,7 @@ class DMD_Wan(Wan):
             da3_outputs["ray_loss"] = (da3_weights * ray_loss.flatten(0, 1)).mean()
             da3_outputs["camera_loss"] = (da3_weights * camera_loss.flatten(0, 1)).mean()
 
-        return diffusion_loss.mean(), da3_outputs
+        return diffusion_loss.mean(), pred_x0, da3_outputs
 
     def critic_loss(self,
         noises: Tensor,
