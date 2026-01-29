@@ -195,7 +195,7 @@ class DMD_Wan(Wan):
         self.diffusion.scheduler.set_timesteps(self.opt.num_train_timesteps, training=True)
 
         # Diffusion
-        if use_diffusion_loss:
+        if use_diffusion_loss and train_generator:
             ## Diffusion loss (+ DA3 loss)
             diffusion_loss, pred_x0, da3_outputs_diffusion = self.diffusion_loss(
                 latents,
