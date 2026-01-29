@@ -3,6 +3,7 @@ build/
 *.egg-info/
 dump/
 out/
+archive/
 temp/
 log/
 temp*/

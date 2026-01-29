@@ -1389,7 +1389,7 @@ class Wan(nn.Module):
 
     @torch.no_grad()
     @torch.autocast(device_type="cuda", dtype=torch.bfloat16)
-    def infer_causal(self,
+    def infer(self,
         prompts: List[str],
         C2W: Tensor,  # (B, f, 4, 4)
         fxfycxcy: Tensor,  # (B, f, 4)
@@ -1427,6 +1427,9 @@ class Wan(nn.Module):
         f = 1 + (F - 1) // self.opt.compression_ratio[0]
         h = H // self.opt.compression_ratio[1]
         w = W // self.opt.compression_ratio[2]
+
+        if not self.opt.is_causal:
+            assert self.opt.chunk_size == f  # for non-causal model, chunk_size should cover the full frame length
 
         # Text encoder
         if self.text_encoder is not None:
@@ -1503,7 +1506,7 @@ class Wan(nn.Module):
                 plucker=plucker[:, 0:1, ...].repeat(1, self.opt.chunk_size, 1, 1, 1),
                 C2W=C2W[:, 0:1, ...].repeat(1, self.opt.chunk_size, 1, 1),  # for DA3
                 fxfycxcy=fxfycxcy[:, 0:1, ...].repeat(1, self.opt.chunk_size, 1),  # for DA3
-                extra_condition=torch.zeros_like(render_images),  # align with t2v
+                extra_condition=torch.zeros_like(render_images) if render_images is not None else None,  # align with the original t2v first chunk conditioning
                 #
                 kv_cache=self.kv_cache_pos,
                 crossattn_cache=self.crossattn_cache_pos,
@@ -1520,7 +1523,7 @@ class Wan(nn.Module):
                     plucker=plucker[:, 0:1, ...].repeat(1, self.opt.chunk_size, 1, 1, 1),
                     C2W=C2W[:, 0:1, ...].repeat(1, self.opt.chunk_size, 1, 1),  # for DA3
                     fxfycxcy=fxfycxcy[:, 0:1, ...].repeat(1, self.opt.chunk_size, 1),  # for DA3
-                    extra_condition=torch.zeros_like(render_images),  # align with t2v
+                    extra_condition=torch.zeros_like(render_images) if render_images is not None else None,  # align with the original t2v first chunk conditioning
                     #
                     kv_cache=self.kv_cache_neg,
                     crossattn_cache=self.crossattn_cache_neg,
