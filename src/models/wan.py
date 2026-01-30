@@ -276,8 +276,9 @@ class Wan(nn.Module):
             confs = data["conf"].to(dtype)[:, idxs, ...]  # (B, f, H, W)
             images_f = images[:, idxs, ...]  # (B, f, 3, H, W)
             with torch.no_grad():
+                ## Bidirectional rendering
                 if not self.opt.is_causal:
-                    all_render_images = []
+                    all_render_images, all_render_depths = [], []
                     for i in range(B):
                         points, colors = filter_da3_points(
                             images_f[i], depths[i], confs[i], C2W[i], fxfycxcy[i],
@@ -286,15 +287,21 @@ class Wan(nn.Module):
                             min_num_points=self.opt.min_num_points,
                             max_num_points=self.opt.max_num_points,
                         )
-                        render_images = render_pt3d_points(H, W, points, colors, C2W[i], fxfycxcy[i])  # (f, 3, H, W) in [0, 1]
+                        render_images, render_depths = render_pt3d_points(
+                            H, W, points, colors, C2W[i], fxfycxcy[i],
+                            return_depth=True,
+                        )  # (f, 3, H, W) in [0, 1]; (f, H, W)
                         all_render_images.append(render_images.to(dtype))
+                        all_render_depths.append(render_depths.to(dtype))
                     render_images = torch.stack(all_render_images, dim=0)  # (B, f, 3, H, W) in [0, 1]
-                else:  # teacher forcing style conditioning
-                    all_render_images = []
+                    render_depths = torch.stack(all_render_depths, dim=0)  # (B, f, H, W)
+                ## Teacher forcing style rendering
+                else:
+                    all_render_images, all_render_depths = [], []
                     for i in range(B):
                         assert f % self.opt.chunk_size == 0
                         num_chunks = f // self.opt.chunk_size
-                        all_render_images_chunk, all_points, all_colors = [], None, None
+                        all_render_images_chunk, all_render_depths_chunk, all_points, all_colors = [], [], None, None
                         for ci in range(num_chunks-1):
                             chunk_idxs = torch.arange(ci * self.opt.chunk_size, (ci + 1) * self.opt.chunk_size).to(device=device, dtype=torch.long)
                             next_chunk_idxs = torch.arange((ci + 1) * self.opt.chunk_size, (ci + 2) * self.opt.chunk_size).to(device=device, dtype=torch.long)
@@ -310,10 +317,17 @@ class Wan(nn.Module):
                             else:
                                 all_points = torch.cat([all_points, points], dim=0)
                                 all_colors = torch.cat([all_colors, colors], dim=0)
-                            render_images = render_pt3d_points(H, W, all_points, all_colors, C2W[i, next_chunk_idxs], fxfycxcy[i, next_chunk_idxs]).to(dtype)  # (f_chunk, 3, H, W) in [0, 1]
-                            all_render_images_chunk.append(render_images)
+                            render_images, render_depths = render_pt3d_points(
+                                H, W, all_points, all_colors,
+                                C2W[i, next_chunk_idxs], fxfycxcy[i, next_chunk_idxs],
+                                return_depth=True
+                            )  # (f_chunk, 3, H, W) in [0, 1]; (f_chunk, H, W)
+                            all_render_images_chunk.append(render_images.to(dtype))
+                            all_render_depths_chunk.append(render_depths.to(dtype))
                         all_render_images_chunk = torch.cat(all_render_images_chunk, dim=0)  # (f-f_chunk, 3, H, W)
+                        all_render_depths_chunk = torch.cat(all_render_depths_chunk, dim=0)  # (f-f_chunk, H, W)
 
+                        ### For the first chunk
                         if cond_latents is not None:
                             points, colors = filter_da3_points(
                                 images_f[i, 0:1], depths[i, 0:1], confs[i, 0:1], C2W[i, 0:1], fxfycxcy[i, 0:1],
@@ -323,20 +337,33 @@ class Wan(nn.Module):
                                 max_num_points=self.opt.max_num_points,
                                 all_valid=True,  # save all points for image conditioning
                             )
-                            all_render_images_chunk = torch.cat([
-                                render_pt3d_points(H, W, points, colors, C2W[i, :self.opt.chunk_size], fxfycxcy[i, :self.opt.chunk_size]).to(dtype),
-                                all_render_images_chunk,
-                            ], dim=0)  # (f, 3, H, W)
+                            first_render_images, first_render_depths = render_pt3d_points(
+                                    H, W, points, colors,
+                                    C2W[i, :self.opt.chunk_size], fxfycxcy[i, :self.opt.chunk_size],
+                                    return_depth=True
+                                )
                         else:
-                            all_render_images_chunk = torch.cat([
-                                torch.zeros_like(all_render_images_chunk[:self.opt.chunk_size, ...]),
-                                all_render_images_chunk,
-                            ], dim=0)  # (f, 3, H, W)
+                            first_render_images = torch.zeros_like(all_render_images_chunk[:self.opt.chunk_size, ...])
+                            first_render_depths = torch.zeros_like(all_render_depths_chunk[:self.opt.chunk_size, ...])
+
+                        all_render_images_chunk = torch.cat([first_render_images, all_render_images_chunk], dim=0)  # (f, 3, H, W)
+                        all_render_depths_chunk = torch.cat([first_render_depths, all_render_depths_chunk], dim=0)  # (f, H, W)
 
                         all_render_images.append(all_render_images_chunk)
+                        all_render_depths.append(all_render_depths_chunk)
                     render_images = torch.stack(all_render_images, dim=0)  # (B, f, 3, H, W)
+                    render_depths = torch.stack(all_render_depths, dim=0)  # (B, f, H, W)
         else:
-            render_images = None
+            render_images, render_depths = None, None
+
+        # (Optional) Extra conditioning: image + depth + mask
+        if render_images is not None:
+            input_extra_condition = torch.cat([
+                render_images, render_depths.unsqueeze(2),
+                (render_depths > 0.).unsqueeze(2).to(dtype),
+            ], dim=2)  # (B, f, 3+1+1, H, W)
+        else:
+            input_extra_condition = None
 
         # Diffusion
         self.diffusion.scheduler.set_timesteps(self.opt.num_train_timesteps, training=True)
@@ -377,7 +404,7 @@ class Wan(nn.Module):
             prompt_embeds,
             plucker=plucker if self.opt.input_plucker else None,
             C2W=C2W, fxfycxcy=fxfycxcy,  # for DA3
-            extra_condition=render_images,
+            extra_condition=input_extra_condition,
             #
             clean_x=latents if self.opt.use_teacher_forcing else None,
         )
@@ -520,7 +547,7 @@ class Wan(nn.Module):
         all_points, all_colors = [None] * B, [None] * B
         if self.opt.input_pcrender:
             assert depths is not None and confs is not None and C2W is not None and fxfycxcy is not None
-            all_render_images = []
+            all_render_images, all_render_depths = [], []
             for i in range(B):
                 points, colors = filter_da3_points(
                     images_f[i], depths[i], confs[i], C2W[i], fxfycxcy[i],
@@ -531,11 +558,25 @@ class Wan(nn.Module):
                     all_valid=True,  # save all points for image conditioning
                 )
                 all_points[i], all_colors[i] = points, colors
-                render_images = render_pt3d_points(H, W, points, colors, C2W[i], fxfycxcy[i]).to(dtype)  # (f, 3, H, W) in [0, 1]
+                render_images, render_depths = render_pt3d_points(
+                    H, W, points, colors, C2W[i], fxfycxcy[i],
+                    return_depth=True,
+                )  # (f, 3, H, W) in [0, 1]; (f, H, W)
                 all_render_images.append(render_images.to(dtype))
+                all_render_depths.append(render_depths.to(dtype))
             render_images = torch.stack(all_render_images, dim=0)  # (B, f, 3, H, W) in [0, 1]
+            render_depths = torch.stack(all_render_depths, dim=0)  # (B, f, H, W)
         else:
-            render_images = None
+            render_images, render_depths = None, None
+
+        # (Optional) Extra conditioning: image + depth + mask
+        if render_images is not None:
+            input_extra_condition = torch.cat([
+                render_images, render_depths.unsqueeze(2),
+                (render_depths > 0.).unsqueeze(2).to(dtype),
+            ], dim=2)  # (B, f, 3+1+1, H, W)
+        else:
+            input_extra_condition = None
 
         # Denoising
         for cfg_scale in self.opt.cfg_scale:
@@ -556,7 +597,7 @@ class Wan(nn.Module):
                     prompt_embeds,
                     plucker=plucker if self.opt.input_plucker else None,
                     C2W=C2W, fxfycxcy=fxfycxcy,  # for DA3
-                    extra_condition=render_images,
+                    extra_condition=input_extra_condition,
                 )
 
                 ## CFG
@@ -567,7 +608,7 @@ class Wan(nn.Module):
                         negative_prompt_embeds,  # torch.zeros_like(prompt_embeds)
                         plucker=plucker if self.opt.input_plucker else None,
                         C2W=C2W, fxfycxcy=fxfycxcy,  # for DA3
-                        extra_condition=render_images,
+                        extra_condition=input_extra_condition,
                     )
                     if not self.opt.load_da3:
                         model_outputs = model_outputs_neg + cfg_scale * (model_outputs - model_outputs_neg)
@@ -717,7 +758,7 @@ class Wan(nn.Module):
         if self.opt.input_pcrender:
             if cond_latents is not None:
                 assert depths is not None and confs is not None and C2W is not None and fxfycxcy is not None
-                all_render_images = []
+                all_render_images, all_render_depths = [], []
                 for i in range(B):
                     points, colors = filter_da3_points(
                         images[i, 0:1], depths[i, 0:1], confs[i, 0:1], C2W[i, 0:1], fxfycxcy[i, 0:1],
@@ -728,11 +769,19 @@ class Wan(nn.Module):
                         all_valid=True,  # save all points for image conditioning
                     )
                     all_points[i], all_colors[i] = points, colors
-                    all_render_images_chunk = render_pt3d_points(H, W, points, colors, C2W[i, :self.opt.chunk_size], fxfycxcy[i, :self.opt.chunk_size]).to(dtype)
-                    all_render_images.append(all_render_images_chunk)
-                render_images = torch.stack(all_render_images, dim=0)  # (B, f_chunk, 3, H, W)
+                    all_render_images_chunk, all_render_depths_chunk = render_pt3d_points(
+                        H, W, points, colors,
+                        C2W[i, :self.opt.chunk_size], fxfycxcy[i, :self.opt.chunk_size],
+                        return_depth=True,
+                    )  # (f_chunk, 3, H, W) in [0, 1]; (f_chunk, H, W)
+                    all_render_images.append(all_render_images_chunk.to(dtype))
+                    all_render_depths.append(all_render_depths_chunk.to(dtype))
+                all_render_images = torch.stack(all_render_images, dim=0)  # (B, f_chunk, 3, H, W) in [0, 1]
+                all_render_depths = torch.stack(all_render_depths, dim=0)  # (B, f_chunk, H, W)
+                render_images, render_depths = all_render_images, all_render_depths
             else:
                 render_images = torch.zeros((B, self.opt.chunk_size, 3, H, W), dtype=dtype, device=device)
+                render_depths = torch.zeros((B, self.opt.chunk_size, H, W), dtype=dtype, device=device)
             render_images_vis = render_images
 
             if self.opt.load_da3:
@@ -743,7 +792,16 @@ class Wan(nn.Module):
                     for i in range(len(vae_cache)):
                         vae_cache[i] = vae_cache[i].to(device=device, dtype=dtype)
         else:
-            render_images = None
+            render_images, render_depths = None, None
+
+        # (Optional) Extra conditioning: image + depth + mask
+        if render_images is not None:
+            input_extra_condition = torch.cat([
+                render_images, render_depths.unsqueeze(2),
+                (render_depths > 0.).unsqueeze(2).to(dtype),
+            ], dim=2)  # (B, f_chunk, 3+1+1, H, W)
+        else:
+            input_extra_condition = None
 
         # Denoising
         for cfg_scale in self.opt.cfg_scale:
@@ -785,7 +843,7 @@ class Wan(nn.Module):
                         prompt_embeds,
                         plucker=this_chunk_plucker,
                         C2W=this_chunk_C2W, fxfycxcy=this_chunk_fxfycxcy,  # for DA3
-                        extra_condition=render_images,
+                        extra_condition=input_extra_condition,
                         #
                         kv_cache=self.kv_cache_pos,
                         crossattn_cache=self.crossattn_cache_pos,
@@ -803,7 +861,7 @@ class Wan(nn.Module):
                             negative_prompt_embeds,  # torch.zeros_like(prompt_embeds)
                             plucker=this_chunk_plucker,
                             C2W=this_chunk_C2W, fxfycxcy=this_chunk_fxfycxcy,  # for DA3
-                            extra_condition=render_images,
+                            extra_condition=input_extra_condition,
                             #
                             kv_cache=self.kv_cache_neg,
                             crossattn_cache=self.crossattn_cache_neg,
@@ -853,7 +911,7 @@ class Wan(nn.Module):
                     prompt_embeds,
                     plucker=this_chunk_plucker,
                     C2W=this_chunk_C2W, fxfycxcy=this_chunk_fxfycxcy,  # for DA3
-                    extra_condition=render_images,
+                    extra_condition=input_extra_condition,
                     #
                     kv_cache=self.kv_cache_pos,
                     crossattn_cache=self.crossattn_cache_pos,
@@ -870,7 +928,7 @@ class Wan(nn.Module):
                         negative_prompt_embeds,  # torch.zeros_like(prompt_embeds)
                         plucker=this_chunk_plucker,
                         C2W=this_chunk_C2W, fxfycxcy=this_chunk_fxfycxcy,  # for DA3
-                        extra_condition=render_images,
+                        extra_condition=input_extra_condition,
                         #
                         kv_cache=self.kv_cache_neg,
                         crossattn_cache=self.crossattn_cache_neg,
@@ -948,7 +1006,7 @@ class Wan(nn.Module):
                         current_C2W = C2W[:, chunk_idxs, ...]  # (B, f_chunk, 4, 4)
                         current_fxfycxcy = fxfycxcy[:, chunk_idxs, ...]  # (B, f_chunk, 4)
 
-                    all_render_images = []
+                    all_render_images, all_render_depths = [], []
                     for i in range(B):
                         points, colors = filter_da3_points(
                             current_images_f[i], current_depths[i], current_confs[i], current_C2W[i], current_fxfycxcy[i],
@@ -963,15 +1021,26 @@ class Wan(nn.Module):
                             else:
                                 all_points[i] = torch.cat([all_points[i], points], dim=0)
                                 all_colors[i] = torch.cat([all_colors[i], colors], dim=0)
-                            render_images = render_pt3d_points(H, W, all_points[i], all_colors[i],
+                            render_images, render_depths = render_pt3d_points(
+                                H, W, all_points[i], all_colors[i],
                                 C2W[i, (chunk_idx + 1) * self.opt.chunk_size:(chunk_idx + 2) * self.opt.chunk_size, ...],
                                 fxfycxcy[i, (chunk_idx + 1) * self.opt.chunk_size:(chunk_idx + 2) * self.opt.chunk_size, ...],
-                            ).to(dtype)
+                                return_depth=True,
+                            )
                         else:  # no valid points
                             render_images = torch.zeros((self.opt.chunk_size, 3, H, W), dtype=dtype, device=device)
-                        all_render_images.append(render_images)
+                            render_depths = torch.zeros((self.opt.chunk_size, H, W), dtype=dtype, device=device)
+                        all_render_images.append(render_images.to(dtype))
+                        all_render_depths.append(render_depths.to(dtype))
                     render_images = torch.stack(all_render_images, dim=0)  # (B, f_chunk, 3, H, W)
+                    render_depths = torch.stack(all_render_depths, dim=0)  # (B, f_chunk, H, W)
                     render_images_vis = torch.cat([render_images_vis, render_images], dim=1)
+
+                    # (Optional) Extra conditioning: image + depth + mask
+                    input_extra_condition = torch.cat([
+                        render_images, render_depths.unsqueeze(2),
+                        (render_depths > 0.).unsqueeze(2).to(dtype),
+                    ], dim=2)  # (B, f_chunk, 3+1+1, H, W)
 
             # Decode
             pred_images = (self.decode_latent(latents, vae).clamp(-1., 1.) + 1.) / 2.  # (B, D, f, h, w) -> (B, F, 3, H, W)
@@ -1099,7 +1168,7 @@ class Wan(nn.Module):
         if self.opt.input_pcrender:
             if cond_latents is not None:
                 assert depths is not None and confs is not None and C2W is not None and fxfycxcy is not None
-                all_render_images = []
+                all_render_images, all_render_depths = [], []
                 for i in range(B):
                     points, colors = filter_da3_points(
                         images[i, 0:1], depths[i, 0:1], confs[i, 0:1], C2W[i, 0:1], fxfycxcy[i, 0:1],
@@ -1110,11 +1179,18 @@ class Wan(nn.Module):
                         all_valid=True,  # save all points for image conditioning
                     )
                     all_points[i], all_colors[i] = points, colors
-                    all_render_images_chunk = render_pt3d_points(H, W, points, colors, C2W[i, :self.opt.chunk_size], fxfycxcy[i, :self.opt.chunk_size]).to(dtype)
-                    all_render_images.append(all_render_images_chunk)
+                    all_render_images_chunk, all_render_depths_chunk = render_pt3d_points(
+                        H, W, points, colors,
+                        C2W[i, :self.opt.chunk_size], fxfycxcy[i, :self.opt.chunk_size],
+                        return_depth=True,
+                    )  # (f_chunk, 3, H, W) in [0, 1]; (f_chunk, H, W)
+                    all_render_images.append(all_render_images_chunk.to(dtype))
+                    all_render_depths.append(all_render_depths_chunk.to(dtype))
                 render_images = torch.stack(all_render_images, dim=0)  # (B, f_chunk, 3, H, W)
+                render_depths = torch.stack(all_render_depths, dim=0)  # (B, f_chunk, H, W)
             else:
                 render_images = torch.zeros((B, self.opt.chunk_size, 3, H, W), dtype=dtype, device=device)
+                render_depths = torch.zeros((B, self.opt.chunk_size, H, W), dtype=dtype, device=device)
             render_images_vis = render_images
 
             if self.opt.load_da3:
@@ -1125,7 +1201,16 @@ class Wan(nn.Module):
                     for i in range(len(vae_cache)):
                         vae_cache[i] = vae_cache[i].to(device=device, dtype=dtype)
         else:
-            render_images = None
+            render_images, render_depths = None, None
+
+        # (Optional) Extra conditioning: image + depth + mask
+        if render_images is not None:
+            input_extra_condition = torch.cat([
+                render_images, render_depths.unsqueeze(2),
+                (render_depths > 0.).unsqueeze(2).to(dtype),
+            ], dim=2)  # (B, f, 3+1+1, H, W)
+        else:
+            input_extra_condition = None
 
         # Denoising
         latents = torch.randn(B, self.opt.latent_dim, f, h, w, device=device, dtype=dtype)
@@ -1150,7 +1235,8 @@ class Wan(nn.Module):
                 plucker=plucker[:, 0:1, ...].repeat(1, self.opt.chunk_size, 1, 1, 1),
                 C2W=C2W[:, 0:1, ...].repeat(1, self.opt.chunk_size, 1, 1),  # for DA3
                 fxfycxcy=fxfycxcy[:, 0:1, ...].repeat(1, self.opt.chunk_size, 1),  # for DA3
-                extra_condition=torch.zeros_like(render_images) if render_images is not None else None,  # align with the original t2v first chunk conditioning
+                extra_condition=torch.zeros_like(input_extra_condition) \
+                    if input_extra_condition is not None else None,  # align with the original t2v first chunk conditioning
                 #
                 kv_cache=self.kv_cache_pos,
                 crossattn_cache=self.crossattn_cache_pos,
@@ -1167,7 +1253,8 @@ class Wan(nn.Module):
                     plucker=plucker[:, 0:1, ...].repeat(1, self.opt.chunk_size, 1, 1, 1),
                     C2W=C2W[:, 0:1, ...].repeat(1, self.opt.chunk_size, 1, 1),  # for DA3
                     fxfycxcy=fxfycxcy[:, 0:1, ...].repeat(1, self.opt.chunk_size, 1),  # for DA3
-                    extra_condition=torch.zeros_like(render_images) if render_images is not None else None,  # align with the original t2v first chunk conditioning
+                    extra_condition=torch.zeros_like(input_extra_condition) \
+                        if input_extra_condition is not None else None,  # align with the original t2v first chunk conditioning
                     #
                     kv_cache=self.kv_cache_neg,
                     crossattn_cache=self.crossattn_cache_neg,
@@ -1205,7 +1292,7 @@ class Wan(nn.Module):
                     prompt_embeds,
                     plucker=this_chunk_plucker,
                     C2W=this_chunk_C2W, fxfycxcy=this_chunk_fxfycxcy,  # for DA3
-                    extra_condition=render_images,
+                    extra_condition=input_extra_condition,
                     #
                     kv_cache=self.kv_cache_pos,
                     crossattn_cache=self.crossattn_cache_pos,
@@ -1223,7 +1310,7 @@ class Wan(nn.Module):
                         negative_prompt_embeds,  # torch.zeros_like(prompt_embeds)
                         plucker=this_chunk_plucker,
                         C2W=this_chunk_C2W, fxfycxcy=this_chunk_fxfycxcy,  # for DA3
-                        extra_condition=render_images,
+                        extra_condition=input_extra_condition,
                         #
                         kv_cache=self.kv_cache_neg,
                         crossattn_cache=self.crossattn_cache_neg,
@@ -1273,7 +1360,7 @@ class Wan(nn.Module):
                 prompt_embeds,
                 plucker=this_chunk_plucker,
                 C2W=this_chunk_C2W, fxfycxcy=this_chunk_fxfycxcy,  # for DA3
-                extra_condition=render_images,
+                extra_condition=input_extra_condition,
                 #
                 kv_cache=self.kv_cache_pos,
                 crossattn_cache=self.crossattn_cache_pos,
@@ -1290,7 +1377,7 @@ class Wan(nn.Module):
                     negative_prompt_embeds,  # torch.zeros_like(prompt_embeds)
                     plucker=this_chunk_plucker,
                     C2W=this_chunk_C2W, fxfycxcy=this_chunk_fxfycxcy,  # for DA3
-                    extra_condition=render_images,
+                    extra_condition=input_extra_condition,
                     #
                     kv_cache=self.kv_cache_neg,
                     crossattn_cache=self.crossattn_cache_neg,
@@ -1359,7 +1446,7 @@ class Wan(nn.Module):
                 current_C2W = all_da3_outputs[chunk_idx]["C2W"]  # (B, f_chunk, 4, 4)
                 current_fxfycxcy = all_da3_outputs[chunk_idx]["fxfycxcy"]  # (B, f_chunk, 4)
 
-                all_render_images = []
+                all_render_images, all_render_depths = [], []
                 for i in range(B):
                     points, colors = filter_da3_points(
                         current_images_f[i], current_depths[i], current_confs[i], current_C2W[i], current_fxfycxcy[i],
@@ -1374,15 +1461,26 @@ class Wan(nn.Module):
                         else:
                             all_points[i] = torch.cat([all_points[i], points], dim=0)
                             all_colors[i] = torch.cat([all_colors[i], colors], dim=0)
-                        render_images = render_pt3d_points(H, W, all_points[i], all_colors[i],
+                        render_images, render_depths = render_pt3d_points(
+                            H, W, all_points[i], all_colors[i],
                             C2W[i, (chunk_idx + 1) * self.opt.chunk_size:(chunk_idx + 2) * self.opt.chunk_size, ...],
                             fxfycxcy[i, (chunk_idx + 1) * self.opt.chunk_size:(chunk_idx + 2) * self.opt.chunk_size, ...],
-                        ).to(dtype)
+                            return_depth=True,
+                        )
                     else:  # no valid points
                         render_images = torch.zeros((self.opt.chunk_size, 3, H, W), dtype=dtype, device=device)
-                    all_render_images.append(render_images)
+                        render_depths = torch.zeros((self.opt.chunk_size, H, W), dtype=dtype, device=device)
+                    all_render_images.append(render_images.to(dtype))
+                    all_render_depths.append(render_depths.to(dtype))
                 render_images = torch.stack(all_render_images, dim=0)  # (B, f_chunk, 3, H, W)
+                render_depths = torch.stack(all_render_depths, dim=0)  # (B, f_chunk, H, W)
                 render_images_vis = torch.cat([render_images_vis, render_images], dim=1)
+
+                # (Optional) Extra conditioning: image + depth + mask
+                input_extra_condition = torch.cat([
+                    render_images, render_depths.unsqueeze(2),
+                    (render_depths > 0.).unsqueeze(2).to(dtype),
+                ], dim=2)  # (B, f_chunk, 3+1+1, H, W)
 
         # Decode
         if self.opt.prefill_image and cond_latents is not None:

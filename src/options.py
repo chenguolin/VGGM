@@ -188,8 +188,8 @@ class Options:
         }
 
         # Extra condition
-        self.extra_condition_dim = 3 if self.input_pcrender else 0
-        self.teacher_extra_condition_dim = 3 if self.teacher_input_pcrender else 0
+        self.extra_condition_dim = 5 if self.input_pcrender else 0
+        self.teacher_extra_condition_dim = 5 if self.teacher_input_pcrender else 0
 
         # VAE
         if "Wan2.2_VAE.pth" in self.vae_path:

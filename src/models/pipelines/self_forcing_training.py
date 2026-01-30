@@ -96,8 +96,8 @@ class SelfForcingTrainingPipeline:
             if cond_latents is not None:
                 raise NotImplementedError  # TODO
             else:
-                render_images = torch.zeros(
-                    (B, self.opt.chunk_size, 3, h*8, w*8), dtype=dtype, device=device)  # `8`: hard-coded for Wan2.1
+                render_images = torch.zeros((B, self.opt.chunk_size, 3, h*8, w*8), dtype=dtype, device=device)  # `8`: hard-coded for Wan2.1
+                render_depths = torch.zeros((B, self.opt.chunk_size, h*8, w*8), dtype=dtype, device=device)  # `8`: hard-coded for Wan2.1
                 render_loss = []
             render_images_vis = render_images
 
@@ -108,7 +108,16 @@ class SelfForcingTrainingPipeline:
                 for i in range(len(vae_cache)):
                     vae_cache[i] = vae_cache[i].to(device=device, dtype=dtype)
         else:
-            render_images = None
+            render_images, render_depths = None, None
+
+        # (Optional) Extra conditioning: image + depth + mask
+        if render_images is not None:
+            input_extra_condition = torch.cat([
+                render_images, render_depths.unsqueeze(2),
+                (render_depths > 0.).unsqueeze(2).to(dtype),
+            ], dim=2)  # (B, f_chunk, 3+1+1, H, W)
+        else:
+            input_extra_condition = None
 
         # Temporal denoising loop
         all_da3_outputs, all_points, all_colors, images_f, all_timesteps = [None] * num_chunks, [None] * B, [None] * B, [], []
@@ -142,7 +151,7 @@ class SelfForcingTrainingPipeline:
                             prompt_embeds,
                             plucker=this_chunk_plucker,
                             C2W=this_chunk_C2W, fxfycxcy=this_chunk_fxfycxcy,  # for DA3
-                            extra_condition=render_images,
+                            extra_condition=input_extra_condition,
                             #
                             kv_cache=self.kv_cache_pos,
                             crossattn_cache=self.crossattn_cache_pos,
@@ -182,7 +191,7 @@ class SelfForcingTrainingPipeline:
                         prompt_embeds,
                         plucker=this_chunk_plucker,
                         C2W=this_chunk_C2W, fxfycxcy=this_chunk_fxfycxcy,  # for DA3
-                        extra_condition=render_images,
+                        extra_condition=input_extra_condition,
                         #
                         kv_cache=self.kv_cache_pos,
                         crossattn_cache=self.crossattn_cache_pos,
@@ -221,7 +230,7 @@ class SelfForcingTrainingPipeline:
                         prompt_embeds,
                         plucker=this_chunk_plucker,
                         C2W=this_chunk_C2W, fxfycxcy=this_chunk_fxfycxcy,  # for DA3
-                        extra_condition=render_images,
+                        extra_condition=input_extra_condition,
                         #
                         kv_cache=self.kv_cache_pos,
                         crossattn_cache=self.crossattn_cache_pos,
@@ -264,9 +273,9 @@ class SelfForcingTrainingPipeline:
                 if self.opt.render_loss_in_sf:
                     assert self.opt.load_da3
 
-                    render_masks_rgb = render_images.mean(dim=2) > 50/255  # consider pixels with value > 50 as valid
-                    _render_loss = (tF.mse_loss(current_images_f, render_images, reduction="none") *
-                        render_masks_rgb.unsqueeze(2)).sum() / (render_masks_rgb.sum() * 3 + 1e-6)
+                    render_masks = input_extra_condition[:, :, -1:, :, :]  # (B, f_chunk, 1, H, W)
+                    _render_loss = (tF.mse_loss(current_images_f, render_images,
+                        reduction="none") * render_masks).sum() / (render_masks.sum() * 3 + 1e-6)
                     _render_loss = _render_loss[None, None].repeat(B, self.opt.chunk_size)  # (B, f_chunk)
                     render_loss.append(_render_loss)
 
@@ -279,7 +288,7 @@ class SelfForcingTrainingPipeline:
                     current_C2W = all_da3_outputs[chunk_idx]["C2W"]  # (B, f_chunk, 4, 4)
                     current_fxfycxcy = all_da3_outputs[chunk_idx]["fxfycxcy"]  # (B, f_chunk, 4)
 
-                    all_render_images = []
+                    all_render_images, all_render_depths = [], []
                     for i in range(B):
                         points, colors = filter_da3_points(
                             current_images_f[i], current_depths[i], current_confs[i], current_C2W[i], current_fxfycxcy[i],
@@ -295,16 +304,26 @@ class SelfForcingTrainingPipeline:
                                 all_points[i] = torch.cat([all_points[i], points], dim=0)
                                 all_colors[i] = torch.cat([all_colors[i], colors], dim=0)
                             with torch.no_grad():
-                                render_images = render_pt3d_points(
+                                render_images, render_depths = render_pt3d_points(
                                     h*8, w*8, all_points[i], all_colors[i],  # `*8`: hard-coded for Wan2.1
                                     C2W[i, (chunk_idx + 1) * self.opt.chunk_size:(chunk_idx + 2) * self.opt.chunk_size, ...],
                                     fxfycxcy[i, (chunk_idx + 1) * self.opt.chunk_size:(chunk_idx + 2) * self.opt.chunk_size, ...],
-                                ).to(dtype)
+                                    return_depth=True,
+                                )
                         else:  # no valid points
                             render_images = torch.zeros((self.opt.chunk_size, 3, h*8, w*8), dtype=dtype, device=device)
-                        all_render_images.append(render_images)
+                            render_depths = torch.zeros((self.opt.chunk_size, h*8, w*8), dtype=dtype, device=device)
+                        all_render_images.append(render_images.to(dtype))
+                        all_render_depths.append(render_depths.to(dtype))
                     render_images = torch.stack(all_render_images, dim=0)  # (B, f_chunk, 3, H, W)
+                    render_depths = torch.stack(all_render_depths, dim=0)  # (B, f_chunk, H, W)
                     render_images_vis = torch.cat([render_images_vis, render_images], dim=1)
+
+                    # (Optional) Extra conditioning: image + depth + mask
+                    input_extra_condition = torch.cat([
+                        render_images, render_depths.unsqueeze(2),
+                        (render_depths > 0.).unsqueeze(2).to(dtype),
+                    ], dim=2)  # (B, f_chunk, 3+1+1, H, W)
 
         if self.opt.load_da3:
             assert da3_outputs is not None
