@@ -57,7 +57,7 @@ class Options:
     only_train_da3: bool = False
     only_train_resdit: bool = False
     no_noise_for_da3: bool = False
-    da3_interactive: bool = True
+    da3_interactive: bool = False
     da3_input_cam: bool = True
         ## Train
     da3_weight_type: Literal[
@@ -239,7 +239,7 @@ opt_dict["wan2.1_t2v_1.3b_causal"] = Options(
     input_plucker=True,
     #
     # load_da3=True,
-    # da3_interactive=True,
+    # da3_interactive=False,
     # da3_weight_type="inverse_timestep",
     # da3_down_ratio=1,
     # only_train_da3=True,
@@ -307,7 +307,7 @@ opt_dict["wan2.1_t2v_1.3b_dmd"] = Options(
     input_plucker=True,
     #
     load_da3=True,
-    da3_interactive=True,
+    da3_interactive=False,
     da3_weight_type="uniform",
     da3_down_ratio=1,
     #
