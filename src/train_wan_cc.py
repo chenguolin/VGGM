@@ -747,10 +747,12 @@ def main():
 
                         # Visualization
                         wandb.log({
-                            "videos/training": vis_util.wandb_video_log(outputs, fps=16)
+                            "videos/training": vis_util.wandb_video_log(
+                                outputs, max_res=512, fps=16)  # resize videos to `512` for logging
                         }, step=global_update_step)
                         wandb.log({
-                            "videos/validation": vis_util.wandb_video_log(val_outputs, fps=16)
+                            "videos/validation": vis_util.wandb_video_log(
+                                val_outputs, max_res=512, fps=16)  # resize videos to `512` for logging
                         }, step=global_update_step)
 
                     torch.cuda.empty_cache()

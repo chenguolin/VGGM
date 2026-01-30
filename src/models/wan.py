@@ -23,7 +23,6 @@ from src.models.networks import (
     WanDiffusionDA3Wrapper,
     VAEDecoderWrapper,
     TAEHV,
-    DA3Wrapper,
 )
 from src.models.losses import XYZLoss, DepthLoss, CameraLoss
 from src.utils.constant import ZERO_VAE_CACHE
@@ -103,8 +102,6 @@ class Wan(nn.Module):
                 opt.input_plucker,
                 opt.extra_condition_dim,
                 #
-                opt.memory_num_tokens,
-                #
                 opt.use_gradient_checkpointing,
                 opt.use_gradient_checkpointing_offload,
                 #
@@ -125,8 +122,6 @@ class Wan(nn.Module):
                 #
                 opt.input_plucker,
                 opt.extra_condition_dim,
-                #
-                opt.memory_num_tokens,
                 #
                 opt.use_gradient_checkpointing,
                 opt.use_gradient_checkpointing_offload,
@@ -460,10 +455,7 @@ class Wan(nn.Module):
     def evaluate(self, data: Dict[str, Any], dtype: torch.dtype = torch.bfloat16, verbose: bool = True, vae: Optional[WanVAEWrapper] = None):
         verbose = verbose and (not dist.is_initialized() or dist.get_rank() == 0)
         if self.opt.is_causal:
-            if not self.opt.rolling:
-                return self.evaluate_causal(data, dtype, verbose, vae)
-            else:
-                return self.evaluate_causal_rolling(data, dtype, verbose, vae)
+            return self.evaluate_causal(data, dtype, verbose, vae)
         else:
             return self.evaluate_bidirectional(data, dtype, verbose, vae)
 
@@ -762,11 +754,6 @@ class Wan(nn.Module):
             ## Set KV cache
             self._initialize_kv_cache(B, device=device, dtype=dtype)
             self._initialize_crossattn_cache(B, device=device, dtype=dtype)
-            if self.opt.memory_num_tokens > 0:
-                memory_tokens = self.diffusion.init_state(torch.arange(self.opt.memory_num_tokens, device=device)).expand(B, -1, -1)
-                memory_tokens_neg = self.diffusion.init_state(torch.arange(self.opt.memory_num_tokens, device=device)).expand(B, -1, -1)
-            else:
-                memory_tokens, memory_tokens_neg = None, None
 
             ## Auto-regression steps
             assert f % self.opt.chunk_size == 0
@@ -804,13 +791,9 @@ class Wan(nn.Module):
                         crossattn_cache=self.crossattn_cache_pos,
                         current_start=chunk_idx * self.opt.chunk_size * frame_seqlen,
                         #
-                        memory_tokens=memory_tokens,
-                        #
                         kv_cache_da3=self.kv_cache_pos_da3,
                         current_start_da3=chunk_idx * self.opt.chunk_size * (frame_seqlen // (self.opt.da3_down_ratio * self.opt.da3_down_ratio) + 1),  # `+1` for camera token
                     )
-                    if memory_tokens is not None:
-                        model_outputs, memory_tokens_tmp = model_outputs  # NOTE: NOT update `memory_tokens` here
 
                     #### CFG
                     if cfg_scale > 1.:
@@ -826,13 +809,9 @@ class Wan(nn.Module):
                             crossattn_cache=self.crossattn_cache_neg,
                             current_start=chunk_idx * self.opt.chunk_size * frame_seqlen,
                             #
-                            memory_tokens=memory_tokens_neg,
-                            #
                             kv_cache_da3=self.kv_cache_neg_da3,
                             current_start_da3=chunk_idx * self.opt.chunk_size * (frame_seqlen // (self.opt.da3_down_ratio * self.opt.da3_down_ratio) + 1),  # `+1` for camera token
                         )
-                        if memory_tokens_neg is not None:
-                            model_outputs_neg, memory_tokens_neg_tmp = model_outputs_neg  # NOTE: NOT update `memory_tokens_neg` here
 
                         if not self.opt.load_da3:
                             model_outputs = model_outputs_neg + cfg_scale * (model_outputs - model_outputs_neg)
@@ -880,13 +859,9 @@ class Wan(nn.Module):
                     crossattn_cache=self.crossattn_cache_pos,
                     current_start=chunk_idx * self.opt.chunk_size * frame_seqlen,
                     #
-                    memory_tokens=memory_tokens,
-                    #
                     kv_cache_da3=self.kv_cache_pos_da3,
                     current_start_da3=chunk_idx * self.opt.chunk_size * (frame_seqlen // (self.opt.da3_down_ratio * self.opt.da3_down_ratio) + 1),  # `+1` for camera token
                 )
-                if memory_tokens is not None:
-                    model_outputs, memory_tokens = model_outputs  # NOTE: update `memory_tokens` here
 
                 if cfg_scale > 1.:
                     model_outputs_neg = self.diffusion(
@@ -904,8 +879,6 @@ class Wan(nn.Module):
                         kv_cache_da3=self.kv_cache_neg_da3,
                         current_start_da3=chunk_idx * self.opt.chunk_size * (frame_seqlen // (self.opt.da3_down_ratio * self.opt.da3_down_ratio) + 1),  # `+1` for camera token
                     )
-                    if memory_tokens_neg is not None:
-                        model_outputs_neg, memory_tokens_neg = model_outputs_neg  # NOTE: update `memory_tokens_neg` here
 
                     if not self.opt.load_da3:
                         model_outputs = model_outputs_neg + cfg_scale * (model_outputs - model_outputs_neg)
@@ -1054,335 +1027,6 @@ class Wan(nn.Module):
 
         if self.opt.load_da3 and depths is not None:
             outputs["images_gt_depth"] = colorize_depth(1./depths, batch_mode=True)
-
-        return outputs
-
-    def evaluate_causal_rolling(self, data: Dict[str, Any], dtype: torch.dtype, verbose: bool = True, vae: Optional[WanVAEWrapper] = None):
-        outputs = {}
-
-        self.diffusion.eval()
-        self.diffusion.scheduler.set_timesteps(self.opt.num_train_timesteps, training=False)
-
-        if "image" in data:
-            images = data["image"].to(dtype)  # (B, F, 3, H, W)
-            (B, F, _, H, W), device = images.shape, images.device
-
-            # For visualization
-            outputs["images_gt"] = images
-        else:
-            B = len(data["prompt"])
-            F, H, W = self.opt.num_input_frames_test, self.opt.input_res[0], self.opt.input_res[1]
-            device = self.diffusion.model.device
-            images = torch.zeros((B, F, 3, H, W), dtype=dtype, device=device)  # (B, F, 3, H, W); not really used
-
-        idxs = torch.arange(0, F, 4).to(device=device, dtype=torch.long)
-        if "C2W" in data and "fxfycxcy" in data:
-            C2W = data["C2W"].to(dtype)[:, idxs, ...]  # (B, f, 4, 4)
-            fxfycxcy = data["fxfycxcy"].to(dtype)[:, idxs, ...]  # (B, f, 4)
-            plucker = plucker_ray(H, W, C2W.float(), fxfycxcy.float())[0].to(dtype)  # (B, f, 6, H, W)
-        else:
-            C2W, fxfycxcy, plucker = None, None, None
-        if "depth" in data:
-            depths = data["depth"].to(dtype)[:, idxs, ...]  # (B, f, H, W)
-        else:
-            depths = None
-
-        f = 1 + (F - 1) // self.opt.compression_ratio[0]
-        h = H // self.opt.compression_ratio[1]
-        w = W // self.opt.compression_ratio[2]
-
-        # Text encoder
-        if self.text_encoder is not None:
-            if self.prompt_list is None or np.random.rand() >= self.opt.vidprom_prob:
-                prompts = data["prompt"]  # a list of strings
-            else:
-                prompts = np.random.choice(self.prompt_list, B, replace=False).tolist()
-            self.text_encoder.eval()
-            prompt_embeds = self.text_encoder(prompts)  # (B, N=512, D')
-            negative_prompt_embeds = self.text_encoder([self.opt.negative_prompt]).repeat(B, 1, 1)  # (B, N=512, D')
-        else:
-            raise NotImplementedError
-
-        # VAE
-        if self.opt.first_latent_cond and "image" in data:
-            cond_latents = self.encode(images[:, 0:1, ...] * 2. - 1., vae)  # (B, D, 1, h, w)
-        else:
-            cond_latents = None
-        cond_latents = cond_latents if torch.rand(1).item() < self.opt.random_i2v_prob else None
-
-        denoising_step_list = torch.tensor(self.opt.denoising_step_list, dtype=torch.long)
-        if self.opt.warp_denoising_step:
-            timesteps = torch.cat((self.diffusion.scheduler.timesteps.cpu(), torch.tensor([0], dtype=torch.float32)))
-            denoising_step_list = timesteps[self.opt.num_train_timesteps - denoising_step_list]
-        denoising_step_list = torch.cat([denoising_step_list, torch.tensor([0], dtype=torch.float32)])  # add the last step
-
-        if self.opt.load_da3:
-            all_da3_outputs = {
-                "depth": torch.zeros((B, f, h*8//self.opt.da3_down_ratio, w*8//self.opt.da3_down_ratio), dtype=dtype, device=device),
-                "depth_conf": torch.zeros((B, f, h*8//self.opt.da3_down_ratio, w*8//self.opt.da3_down_ratio), dtype=dtype, device=device),
-                "ray": torch.zeros((B, f, 6, h*4//self.opt.da3_down_ratio, w*4//self.opt.da3_down_ratio), dtype=dtype, device=device),
-                "ray_conf": torch.zeros((B, f, h*4//self.opt.da3_down_ratio, w*4//self.opt.da3_down_ratio), dtype=dtype, device=device),
-                "pose_enc": torch.zeros((B, f, 9), dtype=dtype, device=device),
-                #
-                "C2W": torch.zeros((B, f, 4, 4), dtype=dtype, device=device),
-                "fxfycxcy": torch.zeros((B, f, 4), dtype=dtype, device=device),
-            }
-
-        # Denoising
-        for cfg_scale in (1.,):
-            latents = torch.zeros(B, self.opt.latent_dim, f, h, w, device=device, dtype=dtype) 
-            noises = torch.randn(B, self.opt.latent_dim, f, h, w, device=device, dtype=dtype)
-
-            ## Set KV cache
-            self._initialize_kv_cache(B, device=device, dtype=dtype)
-            self._initialize_crossattn_cache(B, device=device, dtype=dtype)
-
-            ## Auto-regression steps
-            assert f % self.opt.chunk_size == 0
-            num_chunks = f // self.opt.chunk_size
-            frame_seqlen = h * w // 4  # `4`: hard-coded for 2x2 patch embedding in DiT
-
-            # Rolling Forcing
-            rolling_window_length = num_denoising_steps = len(denoising_step_list[:-1])
-            window_start_chunks, window_end_chunks = [], []
-            window_num = num_chunks + rolling_window_length - 1
-            for win_idx in range(window_num):
-                start_chunk = max(0, win_idx - rolling_window_length + 1)
-                end_chunk = min(num_chunks - 1, win_idx)
-                window_start_chunks.append(start_chunk)
-                window_end_chunks.append(end_chunk)
-
-            # Init noisy cache
-            noisy_cache = torch.zeros_like(noises)
-
-            # Init denoising timestep, same across windows
-            shared_timesteps = torch.ones(
-                [B, rolling_window_length * self.opt.chunk_size],
-                device=device,
-                dtype=torch.float32,
-            )
-            for idx, current_timestep in enumerate(reversed(denoising_step_list[:-1])):  # from clean to noisy 
-                shared_timesteps[:, idx * self.opt.chunk_size:(idx + 1) * self.opt.chunk_size] *= current_timestep
-
-            # Denoising loop with rolling forcing
-            for window_index in tqdm(range(window_num), ncols=125, disable=not verbose, desc="[Window]"):
-                start_chunk = window_start_chunks[window_index]
-                end_chunk = window_end_chunks[window_index]  # include
-
-                current_start_frame = start_chunk * self.opt.chunk_size
-                current_end_frame = (end_chunk + 1) * self.opt.chunk_size  # not include
-                current_num_frames = current_end_frame - current_start_frame
-
-                # `noisy_input`: new noise and previous denoised noisy frames, only last chunk is pure noise
-                if current_num_frames == rolling_window_length * self.opt.chunk_size or current_start_frame == 0:
-                    noisy_input = torch.cat([
-                        noisy_cache[:, :, current_start_frame : current_end_frame - self.opt.chunk_size],
-                        noises[:, :, current_end_frame - self.opt.chunk_size : current_end_frame]
-                    ], dim=2)
-                else:  # at the end of the video
-                    noisy_input = noisy_cache[:, :, current_start_frame:current_end_frame].clone()
-
-                if self.opt.input_plucker:
-                    input_plucker = plucker[:, current_start_frame:current_end_frame, ...]
-                else:
-                    input_plucker = None
-
-                # Init denosing timestep
-                if current_num_frames == rolling_window_length * self.opt.chunk_size:
-                    current_timesteps = shared_timesteps
-                elif current_start_frame == 0:
-                    current_timesteps = shared_timesteps[:, -current_num_frames:]
-                elif current_end_frame == f:
-                    current_timesteps = shared_timesteps[:, :current_num_frames]
-                else:
-                    raise ValueError("`current_num_frames` should be equal to `rolling_window_length` * `self.opt.chunk_size`, or at the first or last window.")
-
-                if current_start_frame == 0 and cond_latents is not None:
-                    noisy_input = torch.cat([cond_latents, noisy_input[:, :, 1:, ...]], dim=2)
-                    current_timesteps = torch.cat([torch.zeros_like(current_timesteps[:, :1]), current_timesteps[:, 1:]], dim=1)
-
-                # Diffusion model
-                model_outputs = self.diffusion(
-                    noisy_input,
-                    current_timesteps,
-                    prompt_embeds,
-                    plucker=input_plucker,
-                    #
-                    kv_cache=self.kv_cache_pos,
-                    crossattn_cache=self.crossattn_cache_pos,
-                    current_start=current_start_frame * frame_seqlen,
-                    #
-                    rolling=True,
-                    update_cache=False,
-                    chunk_size=self.opt.chunk_size,
-                    #
-                    kv_cache_da3=self.kv_cache_pos_da3,
-                    current_start_da3=current_start_frame * (frame_seqlen // (self.opt.da3_down_ratio * self.opt.da3_down_ratio) + 1),  # `+1` for camera token
-                )
-                model_outputs, da3_outputs = \
-                    model_outputs if self.opt.load_da3 else (model_outputs, None)
-                pred_x0 = self.diffusion._convert_flow_pred_to_x0(model_outputs, noisy_input, current_timesteps).to(dtype)
-                latents[:, :, current_start_frame:current_end_frame] = pred_x0
-                if da3_outputs is not None:
-                    for da3_k in all_da3_outputs.keys():
-                        all_da3_outputs[da3_k][:, current_start_frame:current_end_frame] = da3_outputs[da3_k]
-
-                # Update `noisy_cache`, which is detached from the computation graph
-                for chunk_idx in range(start_chunk, end_chunk+1):
-                    chunk_timestep = current_timesteps[:, 
-                                    (chunk_idx - start_chunk)*self.opt.chunk_size : 
-                                    (chunk_idx - start_chunk + 1)*self.opt.chunk_size].mean().item()
-                    matches = torch.abs(denoising_step_list[:-1] - chunk_timestep) < 1e-4
-                    chunk_timestep_index = torch.nonzero(matches, as_tuple=True)[0]
-
-                    if chunk_timestep_index == len(denoising_step_list[:-1]) - 1:
-                        continue
-
-                    next_timestep = denoising_step_list[chunk_timestep_index + 1].to(device)
-
-                    noisy_cache[:, :, chunk_idx * self.opt.chunk_size:(chunk_idx+1) * self.opt.chunk_size] = \
-                        self.diffusion.scheduler.add_noise(
-                            pred_x0.transpose(1, 2).flatten(0, 1),
-                            torch.randn_like(pred_x0.transpose(1, 2).flatten(0, 1)),
-                            next_timestep * torch.ones((B * current_num_frames,), device=device, dtype=torch.long)
-                        ).unflatten(0, (B, current_num_frames)).transpose(1, 2).to(dtype)\
-                        [:, :, (chunk_idx - start_chunk)*self.opt.chunk_size:(chunk_idx - start_chunk+1)*self.opt.chunk_size]
-
-                # Rerun with timestep zero to update the clean cache, which is also detached from the computation graph
-                context_timesteps = self.opt.context_noise * torch.ones_like(current_timesteps)
-                if current_start_frame == 0:
-                    context_timesteps = torch.cat([torch.zeros_like(context_timesteps[:, :1]), context_timesteps[:, 1:]], dim=1)
-                pred_x0 = self.diffusion.scheduler.add_noise(  # add context noise
-                    pred_x0.transpose(1, 2).flatten(0, 1),
-                    torch.randn_like(pred_x0.transpose(1, 2).flatten(0, 1)),
-                    context_timesteps.flatten(0, 1),
-                ).unflatten(0, (B, current_num_frames)).transpose(1, 2).to(dtype)
-
-                # Only cache the first chunk
-                pred_x0 = pred_x0[:, :, :self.opt.chunk_size]
-                context_timesteps = context_timesteps[:, :self.opt.chunk_size]
-                input_plucker = input_plucker[:, :self.opt.chunk_size]
-                self.diffusion(
-                    pred_x0,
-                    context_timesteps,
-                    prompt_embeds,
-                    plucker=input_plucker,
-                    #
-                    kv_cache=self.kv_cache_pos,
-                    crossattn_cache=self.crossattn_cache_pos,
-                    current_start=current_start_frame * frame_seqlen,
-                    #
-                    rolling=True,
-                    update_cache=True,
-                    chunk_size=self.opt.chunk_size,
-                    #
-                    kv_cache_da3=self.kv_cache_pos_da3,
-                    current_start_da3=current_start_frame * (frame_seqlen // (self.opt.da3_down_ratio * self.opt.da3_down_ratio) + 1),  # `+1` for camera token
-                )
-
-            # Decode
-            pred_images = (self.decode_latent(latents, vae).clamp(-1., 1.) + 1.) / 2.  # (B, D, f, h, w) -> (B, F, 3, H, W)
-            outputs[f"images_pred_{cfg_scale}"] = pred_images
-
-            # Evaluation metrics: PSNR, SSIM, LPIPS
-            if "image" in data:
-                outputs[f"psnr_{cfg_scale}"] = -10. * torch.log10(torch.mean((images - pred_images) ** 2, dim=(1, 2, 3, 4)))  # (B,)
-                outputs[f"ssim_{cfg_scale}"] = SSIM(
-                    rearrange(pred_images, "b f c h w -> (b f) c h w"),
-                    rearrange(images, "b f c h w -> (b f) c h w"),
-                    data_range=1., size_average=False,
-                )  # (B*F,)
-                outputs[f"ssim_{cfg_scale}"] = rearrange(outputs[f"ssim_{cfg_scale}"], "(b f) -> b f", b=B).mean(dim=1)  # (B,)
-                if self.lpips_loss is not None:
-                    outputs[f"lpips_{cfg_scale}"] = self.lpips_loss(
-                        rearrange(pred_images, "b f c h w -> (b f) c h w") * 2. - 1.,
-                        rearrange(images, "b f c h w -> (b f) c h w") * 2. - 1.,
-                    )  # (B*F, 1, 1, 1)
-                    outputs[f"lpips_{cfg_scale}"] = rearrange(outputs[f"lpips_{cfg_scale}"], "(b f) c h w -> b f c h w", b=B).mean(dim=(1, 2, 3, 4))  # (B,)
-
-            # (Optional) DA3 evaluation
-            if self.opt.load_da3:
-                assert da3_outputs is not None
-                da3_outputs = all_da3_outputs
-
-                if depths is not None:
-                    outputs[f"images_gt_depth"] = colorize_depth(1./depths, batch_mode=True)
-                    outputs[f"depth_{cfg_scale}"] = tF.mse_loss(da3_outputs["depth"], depths)  # (,)
-
-                ## Get ground-truth geometry labels
-                _, (ray_o, ray_d) = plucker_ray(H//2//self.opt.da3_down_ratio, W//2//self.opt.da3_down_ratio,
-                    C2W.float(), fxfycxcy.float(), normalize_ray_d=False)
-                gt_raymaps = torch.cat([ray_d, ray_o], dim=2).to(dtype)  # (B, f, 6, H/2, W/2)
-                gt_pose_enc = torch.cat([
-                    C2W[:, :, :3, 3].float(),  # (B, f, 3)
-                    mat_to_quat(C2W[:, :, :3, :3].float()),  # (B, f, 4)
-                    2. * torch.atan(1. / (2. * fxfycxcy[:, :, 1:2])),  # (B, f, 1); fy -> fov_h
-                    2. * torch.atan(1. / (2. * fxfycxcy[:, :, 0:1])),  # (B, f, 1); fx -> fov_w
-                ], dim=-1).to(dtype)  # (B, f, 9)
-
-                ## Compute geometry metrics via MSE
-                outputs[f"ray_{cfg_scale}"] = tF.mse_loss(da3_outputs["ray"], gt_raymaps)  # (,)
-                outputs[f"pose_{cfg_scale}"] = tF.mse_loss(da3_outputs["pose_enc"], gt_pose_enc)  # (,)
-
-                # For visualization
-                outputs[f"images_pred_depth_{cfg_scale}"] = colorize_depth(1./da3_outputs["depth"], batch_mode=True)
-
-        return outputs
-
-    def compute_loss_ode(self, data: Dict[str, Any], dtype: torch.dtype = torch.float32, is_eval: bool = False, vae: Optional[WanVAEWrapper] = None):
-        outputs = {}
-
-        self.diffusion.scheduler.set_timesteps(4, training=False)  # `4`: hard-coded here to align with ODE sampling steps
-
-        noisy_latents = data["noisy_latents"].to(dtype)  # (B, T+1, C, f, h, w)
-        prompt_embeds = data["prompt_embeds"].to(dtype)  # (B, N, D')
-        if self.opt.first_latent_cond and "cond_latents" in data:
-            cond_latents = data["cond_latents"].to(dtype)  # (B, C, 1, h, w)
-        else:
-            cond_latents = None
-
-        (B, _, C, f, h, w), device = noisy_latents.shape, noisy_latents.device
-
-        if self.opt.input_plucker:
-            plucker = data["plucker"].to(dtype)  # (B, f, 6, H, W)
-        else:
-            plucker = None
-
-        if not self.opt.is_causal:
-            timesteps_id = torch.randint(0, 4, (1,))  # (1,); batch share the same timestep for simpler time scheduler
-            timesteps_id = timesteps_id.unsqueeze(1).repeat(B, f)  # (B, f)
-        else:  # teacher / diffusion forcing
-            assert f % self.opt.chunk_size == 0
-            num_chunks = f // self.opt.chunk_size
-
-            timesteps_id = torch.randint(0, 4, (num_chunks,))  # (num_chunks,); each chunk in different noise level
-            timesteps_id = timesteps_id.repeat_interleave(self.opt.chunk_size, dim=0).repeat(B, 1)  # (B, f); batch share the same timestep for simpler time scheduler
-        timesteps = self.diffusion.scheduler.timesteps[timesteps_id].to(dtype=dtype, device=device)
-
-        noisy_inputs = torch.gather(
-            noisy_latents, dim=1,
-            index=timesteps_id.reshape(B, 1, 1, f, 1, 1).expand(-1, -1, C, -1, h, w).to(device),
-        ).squeeze(1)  # (B, C, f, h, w)
-
-        target_latents = noisy_latents[:, -1, ...]  # (B, C, f, h, w)
-
-        if cond_latents is not None:
-            noisy_inputs = torch.cat([cond_latents, noisy_inputs[:, :, 1:, ...]], dim=2)
-            timesteps = torch.cat([torch.zeros_like(timesteps[:, :1]), timesteps[:, 1:]], dim=1)
-
-        model_outputs = self.diffusion(
-            noisy_inputs,
-            timesteps,
-            prompt_embeds,
-            plucker=plucker,
-            #
-            clean_x=target_latents if self.opt.use_teacher_forcing else None,
-        )
-        pred_x0 = self.diffusion._convert_flow_pred_to_x0(model_outputs, noisy_inputs, timesteps).to(dtype)
-
-        outputs["images_predx0"] = (self.decode_latent(pred_x0, vae).clamp(-1., 1.) + 1.) / 2.
-        outputs["images_target"] = (self.decode_latent(target_latents, vae).clamp(-1., 1.) + 1.) / 2.
-        outputs["loss"] = tF.mse_loss(pred_x0, target_latents)
 
         return outputs
 

@@ -8,6 +8,7 @@ from PIL import Image
 import numpy as np
 import matplotlib
 import torch
+import torch.nn.functional as tF
 from einops import rearrange
 import wandb
 from plyfile import PlyData, PlyElement
@@ -99,7 +100,14 @@ def normalize_among_last_dims(
     return tensors
 
 
-def wandb_video_log(outputs: Dict[str, Tensor], max_num: int = 4, max_frame: int = 1024, fps: int = 16, format: str = "mp4") -> List[WandbImage]:
+def wandb_video_log(
+    outputs: Dict[str, Tensor],
+    max_num: int = 4,
+    max_frame: int = 1024,
+    max_res: Optional[int] = None,
+    fps: int = 16,
+    format: str = "mp4",
+) -> List[WandbImage]:
     """Organize videos in Dict `outputs` for wandb logging.
 
     Only process values in Dict `outputs` that have keys containing the word "images",
@@ -111,7 +119,15 @@ def wandb_video_log(outputs: Dict[str, Tensor], max_num: int = 4, max_frame: int
             assert outputs[k].ndim == 5
             num, frame = outputs[k].shape[:2]
             num, frame = min(num, max_num), min(frame, max_frame)
-            videos = rearrange(outputs[k][:num, :frame], "b f c h w -> f c h (b w)")
+            videos = outputs[k][:num, :frame]  # (B, F, 3, H, W)
+            if max_res is not None:
+                H, W = videos.shape[-2:]
+                if max(H, W) > max_res:
+                    scale = max_res / max(H, W)
+                    new_H, new_W = int(H * scale), int(W * scale)
+                    videos = tF.interpolate(videos.reshape(-1, 3, H, W), size=(new_H, new_W), mode="bilinear", align_corners=False)
+                    videos = videos.reshape(num, frame, 3, new_H, new_W)
+            videos = rearrange(videos, "b f c h w -> f c h (b w)")
             formatted_images.append(
                 wandb.Video(
                     tensor_to_video(videos.detach()).transpose(0, 3, 1, 2),  # (F, C, H, W) for wandb Video
@@ -140,7 +156,12 @@ def tensor_to_video(tensor: Tensor, return_pil: bool = False) -> Union[ndarray, 
     return video
 
 
-def wandb_mvimage_log(outputs: Dict[str, Tensor], max_num: int = 4, max_view: int = 8) -> List[WandbImage]:
+def wandb_mvimage_log(
+    outputs: Dict[str, Tensor],
+    max_num: int = 4,
+    max_view: int = 8,
+    max_res: Optional[int] = None,
+) -> List[WandbImage]:
     """Organize multi-view images in Dict `outputs` for wandb logging.
 
     Only process values in Dict `outputs` that have keys containing the word "images",
@@ -152,7 +173,15 @@ def wandb_mvimage_log(outputs: Dict[str, Tensor], max_num: int = 4, max_view: in
             assert outputs[k].ndim == 5
             num, view = outputs[k].shape[:2]
             num, view = min(num, max_num), min(view, max_view)
-            mvimages = rearrange(outputs[k][:num, :view], "b v c h w -> c (b h) (v w)")
+            mvimages = outputs[k][:num, :view]  # (B, V, 3, H, W)
+            if max_res is not None:
+                H, W = mvimages.shape[-2:]
+                if max(H, W) > max_res:
+                    scale = max_res / max(H, W)
+                    new_H, new_W = int(H * scale), int(W * scale)
+                    mvimages = tF.interpolate(mvimages.reshape(-1, 3, H, W), size=(new_H, new_W), mode="bilinear", align_corners=False)
+                    mvimages = mvimages.reshape(num, view, 3, new_H, new_W)
+            mvimages = rearrange(mvimages, "b v c h w -> c (b h) (v w)")
             formatted_images.append(
                 wandb.Image(
                     tensor_to_image(mvimages.detach()),

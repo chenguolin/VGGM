@@ -1,6 +1,9 @@
+from torch import Tensor
+
 import torch
 
-def sim3_umeyama(pred, gt):
+
+def sim3_umeyama(pred: Tensor, gt: Tensor):
     """
     pred, gt: (F, 3) points
     Returns scale s, rotation R (3x3), translation t (3,)
@@ -21,7 +24,7 @@ def sim3_umeyama(pred, gt):
     t = mu_gt.squeeze() - scale * (R @ mu_pred.squeeze())
     return scale, R, t
 
-def align_sim3(pred_C2W, gt_C2W):
+def align_sim3(pred_C2W: Tensor, gt_C2W: Tensor):
     pred_t = pred_C2W[:, :3, 3]
     gt_t   = gt_C2W[:, :3, 3]
     s, R, t = sim3_umeyama(pred_t, gt_t)
@@ -31,12 +34,12 @@ def align_sim3(pred_C2W, gt_C2W):
     pred_aligned[:, :3, 3] = (s * (R @ pred_C2W[:, :3, 3].T)).T + t
     return pred_aligned
 
-def compute_ATE(pred_C2W, gt_C2W):
+def compute_ATE(pred_C2W: Tensor, gt_C2W: Tensor):
     pred_aligned = align_sim3(pred_C2W, gt_C2W)
     ate = torch.norm(gt_C2W[:, :3, 3] - pred_aligned[:, :3, 3], dim=1)
     return torch.sqrt((ate**2).mean()), pred_aligned
 
-def compute_RPE_RRE(pred_C2W, gt_C2W, delta=1):
+def compute_RPE_RRE(pred_C2W: Tensor, gt_C2W: Tensor, delta: int = 1):
     F = pred_C2W.shape[0]
     
     # Relative transformations
@@ -59,7 +62,7 @@ def compute_RPE_RRE(pred_C2W, gt_C2W, delta=1):
 
     return RPE_trans_mean, RRE_rot_mean
 
-# # pred_C2W, gt_C2W: (F, 4, 4) PyTorch Tensor
+# # pred_C2W, gt_C2W: (F, 4, 4) Tensor
 # ATE, pred_aligned = compute_ATE(pred_C2W, gt_C2W)
 # RPE_trans, RRE_rot = compute_RPE_RRE(pred_aligned, gt_C2W, delta=1)
 

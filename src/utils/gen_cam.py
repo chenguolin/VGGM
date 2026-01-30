@@ -36,9 +36,6 @@ def generate_inplace_rotation_c2w(
     return C2W
 
 
-import torch
-import math
-
 def generate_yaw_sweep_c2w(
     num_frames: int,
     yaw_deg: float = 45.,

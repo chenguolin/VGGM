@@ -5,8 +5,6 @@ from .base_dataset import BaseDataset
 from .text_dataset import TextDataset
 from .realcamvid_dataset import RealcamvidDataset
 
-from .odepair_dataset import OdepairDataset
-
 
 # Copied from https://github.com/huggingface/pytorch-image-models/blob/main/timm/data/loader.py
 class MultiEpochsDataLoader(DataLoader):

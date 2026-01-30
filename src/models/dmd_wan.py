@@ -35,8 +35,6 @@ class DMD_Wan(Wan):
             opt.teacher_input_plucker,
             opt.teacher_extra_condition_dim,
             #
-            0,  # hard-coded `memory_num_tokens`
-            #
             opt.use_gradient_checkpointing,
             opt.use_gradient_checkpointing_offload,
             #
@@ -69,8 +67,6 @@ class DMD_Wan(Wan):
             #
             opt.teacher_input_plucker,
             opt.teacher_extra_condition_dim,
-            #
-            0,  # hard-coded `memory_num_tokens`
             #
             opt.use_gradient_checkpointing,
             opt.use_gradient_checkpointing_offload,
@@ -940,26 +936,15 @@ class DMD_Wan(Wan):
         if self.inference_pipeline is None:
             self._initialize_inference_pipeline()
 
-        if not self.opt.rolling:
-            return self.inference_pipeline.inference_with_trajectory(
-                noises,
-                prompt_embeds,
-                cond_latents,
-                plucker,
-                #
-                C2W,
-                fxfycxcy,
-            )
-        else:  # rolling forcing
-            return self.inference_pipeline.inference_with_trajectory_rolling(
-                noises,
-                prompt_embeds,
-                cond_latents,
-                plucker,
-                #
-                C2W,
-                fxfycxcy,
-            )
+        return self.inference_pipeline.inference_with_trajectory(
+            noises,
+            prompt_embeds,
+            cond_latents,
+            plucker,
+            #
+            C2W,
+            fxfycxcy,
+        )
 
     def _initialize_inference_pipeline(self):
         """

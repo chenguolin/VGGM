@@ -49,8 +49,8 @@ def setup_pt3d_renderer(cameras: PerspectiveCameras, image_size: int | Tuple[int
     # Define the settings for rasterization and shading.
     raster_settings = PointsRasterizationSettings(
         image_size=image_size,
-        radius=0.01,
-        points_per_pixel=10,
+        radius=0.008,
+        points_per_pixel=8,
         bin_size=0,
     )
 

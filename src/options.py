@@ -96,8 +96,6 @@ class Options:
     rand_pcrender_ratio: float = 1.
     min_num_points: int = 10000
     max_num_points: int = 1000000
-        ## Memory
-    memory_num_tokens: int = 0
         ## Causal
     is_causal: bool = False
     sink_size: int = 0
@@ -126,7 +124,6 @@ class Options:
     last_step_only: bool = False
     context_noise: int = 0
     same_step_across_chunks: bool = True
-    rolling: bool = False
         ## Teacher-forcing
     use_teacher_forcing: bool = False
         ## Noise scheduler
@@ -140,7 +137,7 @@ class Options:
     use_gradient_checkpointing_offload: bool = False
         ## Training and inference
     cfg_dropout: float = 0.1
-    cfg_scale: Tuple[float, ...] = (1., 3., 5.,)
+    cfg_scale: Tuple[float, ...] = (1., 5.,)
     negative_prompt: str = "色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走"
     deterministic_inference: bool = True
     use_lpips: bool = False  # False to save memory
@@ -249,7 +246,7 @@ opt_dict["wan2.1_t2v_1.3b_causal"] = Options(
     # no_noise_for_da3=True,
     #
     is_causal=True,
-    use_teacher_forcing=True,
+    use_teacher_forcing=False,
     #
     sink_size=3,
     chunk_size=3,
@@ -279,7 +276,6 @@ opt_dict["sf_rep"] = Options(
     chunk_size=3,
     max_window_size=21,
     rope_outside=False,
-    rolling=False,
     #
     generator_path=f"{ROOT}/.cache/ode_init.pt",
     teacher_path=None,
@@ -301,25 +297,6 @@ opt_dict["sf_rep"] = Options(
     deterministic_inference=False,
 )
 
-# ODE Distillation
-opt_dict["wan2.1_t2v_1.3b_ode"] = Options(
-    input_plucker=True,
-    #
-    is_causal=True,
-    use_teacher_forcing=False,
-    #
-    sink_size=0,
-    chunk_size=3,
-    max_window_size=21,
-    rope_outside=False,
-    #
-    generator_path=f"{ROOT}/projects/VGGM/.pth",
-    ode_pairs_dir=f"{ROOT}/data/ode_pairs_t2v",
-    #
-    num_inference_steps=4,
-    deterministic_inference=False,
-)
-
 # Self-Forcing DMD
 opt_dict["wan2.1_t2v_1.3b_dmd"] = Options(
     only_static_data=False,
@@ -337,7 +314,7 @@ opt_dict["wan2.1_t2v_1.3b_dmd"] = Options(
     da3_loss_in_sf=True,
     render_loss_in_sf=False,
     #
-    diffusion_loss_prob=0.5,
+    diffusion_loss_prob=0.,
     no_noise_for_da3=False,
     #
     is_causal=True,
@@ -347,7 +324,6 @@ opt_dict["wan2.1_t2v_1.3b_dmd"] = Options(
     chunk_size=3,
     max_window_size=9,
     rope_outside=True,
-    rolling=False,
     #
     generator_path=f"{ROOT}/projects/VGGM/.pth",
     teacher_path=f"{ROOT}/projects/VGGM/.pth",
