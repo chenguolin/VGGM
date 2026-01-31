@@ -140,6 +140,13 @@ class Wan(nn.Module):
                 da3_input_cam=opt.da3_input_cam,
                 da3_max_attention_size=opt.da3_max_attention_size,
             )
+            ## Freeze DA3 camera encoder / token
+            if self.diffusion.da3_model.cam_enc is not None:
+                self.diffusion.da3_model.cam_enc.requires_grad_(False)
+            if self.diffusion.da3_model.backbone.pretrained.camera_token is not None:
+                self.diffusion.da3_model.backbone.pretrained.camera_token.requires_grad_(False)
+
+            ## (Optional) Freeze some layers of DiT or DA3
             if opt.only_train_da3:
                 self.diffusion.requires_grad_(False)
                 self.diffusion.da3_adapter.requires_grad_(True)
@@ -148,15 +155,16 @@ class Wan(nn.Module):
                 self.diffusion.da3_model.head.requires_grad_(False)
                 self.diffusion.da3_model.cam_dec.requires_grad_(False)
 
+            ## DA3 losses
             self.ray_loss_fn, self.depth_loss_fn, self.camera_loss_fn = \
                 XYZLoss(opt), DepthLoss(opt), CameraLoss(opt)
 
+        # (Optional) Freeze some layers of DiT
         if opt.only_train_resdit:
             self.diffusion.requires_grad_(False)
             for i, block in enumerate(self.diffusion.model.blocks):
                 if i >= len(self.diffusion.model.blocks) - 24:  #  `24`: hard-coded for da3-large
                     block.requires_grad_(True)
-
         if opt.fix_shared_dit_layers:
             for i, block in enumerate(self.diffusion.model.blocks):
                 if i < len(self.diffusion.model.blocks) - 24:  #  `24`: hard-coded for da3-large
