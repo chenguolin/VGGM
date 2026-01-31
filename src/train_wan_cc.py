@@ -623,22 +623,16 @@ def main():
                     or global_update_step % (configs["train"]["save_freq_epoch"] * updated_steps_per_epoch) == 0  # 2. every `save_freq_epoch` epochs
                     or global_update_step == args.max_train_steps-1):  # 3. last step
                     gc.collect()
-                    if accelerator.distributed_type == accelerate.utils.DistributedType.DEEPSPEED:
-                        # DeepSpeed requires saving weights on every device; saving weights only on the main process would cause issues
-                        accelerator.save_state(os.path.join(ckpt_dir, f"{global_update_step:06d}"))
-                    elif accelerator.is_main_process:
-                        accelerator.save_state(os.path.join(ckpt_dir, f"{global_update_step:06d}"))
-                    accelerator.wait_for_everyone()  # ensure all processes have finished saving
-                    if accelerator.distributed_type == accelerate.utils.DistributedType.DEEPSPEED:
-                        # DeepSpeed requires saving weights on every device; saving weights only on the main process would cause issues
-                        if accelerator.is_main_process:
-                            if args.use_ema:
-                                torch.save(ema_states.state_dict(),
-                                    os.path.join(ckpt_dir, f"{global_update_step:06d}", "ema_states.pth"))
-                    elif accelerator.is_main_process:
+                    # if accelerator.distributed_type == accelerate.utils.DistributedType.DEEPSPEED:
+                    #     # DeepSpeed requires saving weights on every device; saving weights only on the main process would cause issues
+                    #     accelerator.save_state(os.path.join(ckpt_dir, f"{global_update_step:06d}"))
+                    # elif accelerator.is_main_process:
+                    #     accelerator.save_state(os.path.join(ckpt_dir, f"{global_update_step:06d}"))
+                    # accelerator.wait_for_everyone()  # ensure all processes have finished saving
+                    if accelerator.is_main_process:
                         if args.use_ema:
-                            torch.save(ema_states.state_dict(),
-                                os.path.join(ckpt_dir, f"{global_update_step:06d}", "ema_states.pth"))
+                            torch.save(ema_states.state_dict(), os.path.join(ckpt_dir, f"{global_update_step:06d}", "ema_states.pth"))
+                            torch.save(accelerator.unwrap_model(model).state_dict(), os.path.join(ckpt_dir, f"{global_update_step:06d}", "model_states.pth"))
                     gc.collect()
 
                 # Evaluate on the validation set
