@@ -94,8 +94,8 @@ class Options:
     enable_riflex: bool = False
     conf_thresh_percentile: float = 0.4
     rand_pcrender_ratio: float = 1.
-    min_num_points: int = 10000
-    max_num_points: int = 1000000
+    min_num_points: int = 1000
+    max_num_points: int = 100000
         ## Causal
     is_causal: bool = False
     sink_size: int = 0
@@ -238,10 +238,10 @@ opt_dict["wan2.1_t2v_1.3b_causal"] = Options(
     first_latent_cond=False,
     input_plucker=True,
     #
-    # load_da3=True,
-    # da3_interactive=False,
-    # da3_weight_type="inverse_timestep",
-    # da3_down_ratio=1,
+    load_da3=True,
+    da3_interactive=False,
+    da3_weight_type="inverse_timestep",
+    da3_down_ratio=1,
     # only_train_da3=True,
     # no_noise_for_da3=True,
     #
@@ -254,15 +254,15 @@ opt_dict["wan2.1_t2v_1.3b_causal"] = Options(
     rope_outside=True,
     #
     generator_path=f"{ROOT}/projects/VGGM/.pth",
-    exclude_name_lr_mult="plucker_embed,extra_condition_embed,da3",
+    exclude_name_lr_mult="plucker_embed,extra_condition_embed,da3_adapter",
     #
     # num_input_frames=201,
     num_input_frames_test=201,
     cfg_scale=(5.,),
     #
-    # load_conf=True,
-    # input_pcrender=True,
-    # load_tae=True,
+    load_conf=True,
+    input_pcrender=True,
+    load_tae=True,
 )
 
 # Self-Forcing reproduction
