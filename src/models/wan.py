@@ -673,6 +673,7 @@ class Wan(nn.Module):
             # (Optional) DA3 evaluation
             if self.opt.load_da3:
                 assert da3_outputs is not None
+                assert depths is not None and C2W is not None and fxfycxcy is not None
 
                 if depths is not None:
                     outputs[f"depth_{cfg_scale}"] = tF.mse_loss(da3_outputs["depth"], depths)  # (,)
@@ -834,8 +835,11 @@ class Wan(nn.Module):
                     this_chunk_plucker = plucker[:, chunk_idx * self.opt.chunk_size:(chunk_idx + 1) * self.opt.chunk_size, ...]
                 else:
                     this_chunk_plucker = None
-                this_chunk_C2W = C2W[:, chunk_idx * self.opt.chunk_size:(chunk_idx + 1) * self.opt.chunk_size, ...]
-                this_chunk_fxfycxcy = fxfycxcy[:, chunk_idx * self.opt.chunk_size:(chunk_idx + 1) * self.opt.chunk_size, ...]
+                if C2W is not None and fxfycxcy is not None:
+                    this_chunk_C2W = C2W[:, chunk_idx * self.opt.chunk_size:(chunk_idx + 1) * self.opt.chunk_size, ...]
+                    this_chunk_fxfycxcy = fxfycxcy[:, chunk_idx * self.opt.chunk_size:(chunk_idx + 1) * self.opt.chunk_size, ...]
+                else:
+                    this_chunk_C2W, this_chunk_fxfycxcy = None, None
 
                 ### Spatial denoising loop
                 for ti, timestep in tqdm(enumerate(self.diffusion.scheduler.timesteps),
@@ -1073,6 +1077,7 @@ class Wan(nn.Module):
             # (Optional) DA3 evaluation
             if self.opt.load_da3:
                 assert da3_outputs is not None
+                assert depths is not None and C2W is not None and fxfycxcy is not None
                 da3_outputs = {
                     k: torch.cat([all_da3_outputs[i][k] for i in range(num_chunks)], dim=1)
                     for k in all_da3_outputs[0].keys()
@@ -1112,8 +1117,10 @@ class Wan(nn.Module):
     @torch.autocast(device_type="cuda", dtype=torch.bfloat16)
     def infer(self,
         prompts: List[str],
-        C2W: Tensor,  # (B, f, 4, 4)
-        fxfycxcy: Tensor,  # (B, f, 4)
+        num_frames: int,
+        #
+        C2W: Optional[Tensor] = None,  # (B, f, 4, 4)
+        fxfycxcy: Optional[Tensor] = None,  # (B, f, 4)
         #
         images: Optional[Tensor] = None,  # (B, 1, 3, H, W)
         depths: Optional[Tensor] = None,  # (B, 1, H, W)
@@ -1134,20 +1141,24 @@ class Wan(nn.Module):
             cfg_scale = self.opt.cfg_scale[-1]
 
         B = len(prompts)
-        F, H, W = (C2W.shape[1] - 1) * 4 + 1, self.opt.input_res[0], self.opt.input_res[1]
+        F, H, W = num_frames, self.opt.input_res[0], self.opt.input_res[1]
         device = self.diffusion.model.device
-
-        C2W = C2W.to(dtype)  # (B, f, 4, 4)
-        fxfycxcy = fxfycxcy.to(dtype)  # (B, f, 4)
-        plucker = plucker_ray(H, W, C2W.float(), fxfycxcy.float())[0].to(dtype)  # (B, f, 6, H, W)
-        if depths is not None:
-            depths = depths.to(dtype)  # (B, 1, H, W)
-        if confs is not None:
-            confs = confs.to(dtype)  # (B, 1, H, W)
 
         f = 1 + (F - 1) // self.opt.compression_ratio[0]
         h = H // self.opt.compression_ratio[1]
         w = W // self.opt.compression_ratio[2]
+
+        if C2W is not None and fxfycxcy is not None:
+            assert C2W.shape[1] == f and fxfycxcy.shape[1] == f
+            C2W = C2W.to(dtype)  # (B, f, 4, 4)
+            fxfycxcy = fxfycxcy.to(dtype)  # (B, f, 4)
+            plucker = plucker_ray(H, W, C2W.float(), fxfycxcy.float())[0].to(dtype)  # (B, f, 6, H, W)
+        else:
+            C2W, fxfycxcy, plucker = None, None, None
+        if depths is not None:
+            depths = depths.to(dtype)  # (B, 1, H, W)
+        if confs is not None:
+            confs = confs.to(dtype)  # (B, 1, H, W)
 
         if not self.opt.is_causal:
             assert self.opt.chunk_size == f  # for non-causal model, chunk_size should cover the full frame length
@@ -1240,9 +1251,9 @@ class Wan(nn.Module):
                 cond_latents,
                 torch.zeros((B, self.opt.chunk_size), device=device, dtype=dtype),
                 prompt_embeds,
-                plucker=plucker[:, 0:1, ...].repeat(1, self.opt.chunk_size, 1, 1, 1),
-                C2W=C2W[:, 0:1, ...].repeat(1, self.opt.chunk_size, 1, 1),  # for DA3
-                fxfycxcy=fxfycxcy[:, 0:1, ...].repeat(1, self.opt.chunk_size, 1),  # for DA3
+                plucker=plucker[:, 0:1, ...].repeat(1, self.opt.chunk_size, 1, 1, 1) if plucker is not None else None,
+                C2W=C2W[:, 0:1, ...].repeat(1, self.opt.chunk_size, 1, 1) if C2W is not None else None,  # for DA3
+                fxfycxcy=fxfycxcy[:, 0:1, ...].repeat(1, self.opt.chunk_size, 1) if fxfycxcy is not None else None,  # for DA3
                 extra_condition=torch.zeros_like(input_extra_condition) \
                     if input_extra_condition is not None else None,  # align with the original t2v first chunk conditioning
                 #
@@ -1258,9 +1269,9 @@ class Wan(nn.Module):
                     cond_latents,
                     torch.zeros((B, self.opt.chunk_size), device=device, dtype=dtype),
                     negative_prompt_embeds,  # torch.zeros_like(prompt_embeds)
-                    plucker=plucker[:, 0:1, ...].repeat(1, self.opt.chunk_size, 1, 1, 1),
-                    C2W=C2W[:, 0:1, ...].repeat(1, self.opt.chunk_size, 1, 1),  # for DA3
-                    fxfycxcy=fxfycxcy[:, 0:1, ...].repeat(1, self.opt.chunk_size, 1),  # for DA3
+                    plucker=plucker[:, 0:1, ...].repeat(1, self.opt.chunk_size, 1, 1, 1) if plucker is not None else None,
+                    C2W=C2W[:, 0:1, ...].repeat(1, self.opt.chunk_size, 1, 1) if C2W is not None else None,  # for DA3
+                    fxfycxcy=fxfycxcy[:, 0:1, ...].repeat(1, self.opt.chunk_size, 1) if fxfycxcy is not None else None,  # for DA3
                     extra_condition=torch.zeros_like(input_extra_condition) \
                         if input_extra_condition is not None else None,  # align with the original t2v first chunk conditioning
                     #
@@ -1283,8 +1294,11 @@ class Wan(nn.Module):
                 this_chunk_plucker = plucker[:, chunk_idx * self.opt.chunk_size:(chunk_idx + 1) * self.opt.chunk_size, ...]
             else:
                 this_chunk_plucker = None
-            this_chunk_C2W = C2W[:, chunk_idx * self.opt.chunk_size:(chunk_idx + 1) * self.opt.chunk_size, ...]
-            this_chunk_fxfycxcy = fxfycxcy[:, chunk_idx * self.opt.chunk_size:(chunk_idx + 1) * self.opt.chunk_size, ...]
+            if C2W is not None and fxfycxcy is not None:
+                this_chunk_C2W = C2W[:, chunk_idx * self.opt.chunk_size:(chunk_idx + 1) * self.opt.chunk_size, ...]
+                this_chunk_fxfycxcy = fxfycxcy[:, chunk_idx * self.opt.chunk_size:(chunk_idx + 1) * self.opt.chunk_size, ...]
+            else:
+                this_chunk_C2W, this_chunk_fxfycxcy = None, None
 
             ### Spatial denoising loop
             for ti, timestep in tqdm(enumerate(self.diffusion.scheduler.timesteps),

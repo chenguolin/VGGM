@@ -6,14 +6,13 @@ from src.models.networks import VAEDecoderWrapper, TAEHV
 import torch
 import torch.distributed as dist
 import torch.nn.functional as tF
-from einops import rearrange
 
 from depth_anything_3.model.utils.transform import mat_to_quat
 
 from src.options import Options
-from src.models.losses import XYZLoss, DepthLoss, CameraLoss
+from src.models.losses import XYZLoss, CameraLoss
 from src.utils.constant import ZERO_VAE_CACHE
-from src.utils import plucker_ray, filter_da3_points, render_pt3d_points, project_points, colorize_depth
+from src.utils import plucker_ray, filter_da3_points, render_pt3d_points
 
 
 class SelfForcingTrainingPipeline:
@@ -127,8 +126,11 @@ class SelfForcingTrainingPipeline:
                 this_chunk_plucker = plucker[:, chunk_idx * self.opt.chunk_size:(chunk_idx + 1) * self.opt.chunk_size, ...]
             else:
                 this_chunk_plucker = None
-            this_chunk_C2W = C2W[:, chunk_idx * self.opt.chunk_size:(chunk_idx + 1) * self.opt.chunk_size, ...]
-            this_chunk_fxfycxcy = fxfycxcy[:, chunk_idx * self.opt.chunk_size:(chunk_idx + 1) * self.opt.chunk_size, ...]
+            if C2W is not None and fxfycxcy is not None:
+                this_chunk_C2W = C2W[:, chunk_idx * self.opt.chunk_size:(chunk_idx + 1) * self.opt.chunk_size, ...]
+                this_chunk_fxfycxcy = fxfycxcy[:, chunk_idx * self.opt.chunk_size:(chunk_idx + 1) * self.opt.chunk_size, ...]
+            else:
+                this_chunk_C2W, this_chunk_fxfycxcy = None, None
 
             # Spatial denoising loop
             for ti, timestep in enumerate(self.denoising_step_list[:-1]):
