@@ -65,7 +65,6 @@ class Options:
         "diffusion",
         "inverse_timestep",
     ] = "inverse_timestep"
-    da3_conf_loss: bool = False
     da3_down_ratio: int = 1
     da3_chunk_size: int = 8  # DPT head chunk size, not for causality
     da3_use_ray_pose: bool = False

@@ -492,7 +492,6 @@ def main():
                 depth_loss = outputs["depth_loss"] if "depth_loss" in outputs else None
                 ray_loss = outputs["ray_loss"] if "ray_loss" in outputs else None
                 camera_loss = outputs["camera_loss"] if "camera_loss" in outputs else None
-                conf_loss = outputs["conf_loss"] if "conf_loss" in outputs else None
                 render_loss = outputs["render_loss"] if "render_loss" in outputs else None
 
                 # Backpropagate
@@ -508,28 +507,6 @@ def main():
 
             # Checks if the accelerator has performed an optimization step behind the scenes
             if accelerator.sync_gradients:
-                # Gather the losses across all processes for logging (if we use distributed training)
-                loss = accelerator.gather(loss.detach()).mean()
-
-                if diffusion_loss is not None:
-                    diffusion_loss = accelerator.gather(diffusion_loss.detach()).mean()
-                if critic_loss is not None:
-                    critic_loss = accelerator.gather(critic_loss.detach()).mean()
-                if generator_loss is not None:
-                    generator_loss = accelerator.gather(generator_loss.detach()).mean()
-                if dmd_grad_norm is not None:
-                    dmd_grad_norm = accelerator.gather(dmd_grad_norm.detach()).mean()
-                if depth_loss is not None:
-                    depth_loss = accelerator.gather(depth_loss.detach()).mean()
-                if ray_loss is not None:
-                    ray_loss = accelerator.gather(ray_loss.detach()).mean()
-                if camera_loss is not None:
-                    camera_loss = accelerator.gather(camera_loss.detach()).mean()
-                if conf_loss is not None:
-                    conf_loss = accelerator.gather(conf_loss.detach()).mean()
-                if render_loss is not None:
-                    render_loss = accelerator.gather(render_loss.detach()).mean()
-
                 logs = {
                     "loss": loss.item(),
                     "lr": lr_scheduler.get_last_lr()[0],
@@ -553,8 +530,6 @@ def main():
                     logs.update({"ray": ray_loss.item()})
                 if camera_loss is not None:
                     logs.update({"pose": camera_loss.item()})
-                if conf_loss is not None:
-                    logs.update({"conf": conf_loss.item()})
                 if render_loss is not None:
                     logs.update({"render": render_loss.item()})
 
@@ -564,9 +539,9 @@ def main():
                 logger.info(
                     f"[{global_update_step:06d} / {total_updated_steps:06d}] " +
                     f"loss: {logs['loss']:.4f}, lr: {logs['lr']:.2e}" +
-                    f", critic: {logs['critic']:.4f}" if critic_loss is not None else "" +
-                    f", generator: {logs['generator']:.4f}" if generator_loss is not None else "" +
-                    f", ema: {logs['ema']:.4f}" if args.use_ema else ""
+                    (f", critic: {logs['critic']:.4f}" if critic_loss is not None else "") +
+                    (f", generator: {logs['generator']:.4f}" if generator_loss is not None else "") +
+                    (f", ema: {logs['ema']:.4f}" if args.use_ema else "")
                 )
 
                 # Log the training progress
@@ -608,10 +583,6 @@ def main():
                         if camera_loss is not None:
                             wandb.log({
                                 "training/camera_loss": camera_loss.item()
-                            }, step=global_update_step)
-                        if conf_loss is not None:
-                            wandb.log({
-                                "training/conf_loss": conf_loss.item()
                             }, step=global_update_step)
                         if render_loss is not None:
                             wandb.log({
@@ -670,23 +641,18 @@ def main():
                             for cfg_scale in opt.cfg_scale:
                                 if f"psnr_{cfg_scale}" in val_outputs:
                                     val_psnr = val_outputs[f"psnr_{cfg_scale}"]
-                                    val_psnr = accelerator.gather_for_metrics(val_psnr).mean()
                                     all_val_matrics.setdefault(f"psnr_{cfg_scale}", []).append(val_psnr)
                                 if f"ssim_{cfg_scale}" in val_outputs:
                                     val_ssim = val_outputs[f"ssim_{cfg_scale}"]
-                                    val_ssim = accelerator.gather_for_metrics(val_ssim).mean()
                                     all_val_matrics.setdefault(f"ssim_{cfg_scale}", []).append(val_ssim)
                                 if f"depth_{cfg_scale}" in val_outputs:
                                     val_depth = val_outputs[f"depth_{cfg_scale}"]
-                                    val_depth = accelerator.gather_for_metrics(val_depth).mean()
                                     all_val_matrics.setdefault(f"depth_{cfg_scale}", []).append(val_depth)
                                 if f"ray_{cfg_scale}" in val_outputs:
                                     val_ray = val_outputs[f"ray_{cfg_scale}"]
-                                    val_ray = accelerator.gather_for_metrics(val_ray).mean()
                                     all_val_matrics.setdefault(f"ray_{cfg_scale}", []).append(val_ray)
                                 if f"pose_{cfg_scale}" in val_outputs:
                                     val_pose = val_outputs[f"pose_{cfg_scale}"]
-                                    val_pose = accelerator.gather_for_metrics(val_pose).mean()
                                     all_val_matrics.setdefault(f"pose_{cfg_scale}", []).append(val_pose)
 
                             val_progress_bar.set_postfix(**val_logs)
@@ -713,7 +679,7 @@ def main():
                                 f"ssim_{cfg_scale}: {all_val_matrics[f'ssim_{cfg_scale}'].item():.4f}\n"
                             )
 
-                    if accelerator.num_processes <= 32:  # when `num_processes` is too large, gathering may cause OOM
+                    if accelerator.num_processes <= 8:  # when `num_processes` is too large, gathering may cause OOM
                         outputs = accelerator.gather(outputs)
                         val_outputs = accelerator.gather_for_metrics(val_outputs)
 
