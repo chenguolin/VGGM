@@ -26,7 +26,7 @@ from src.models.networks import (
 )
 from src.models.losses import XYZLoss, DepthLoss, CameraLoss
 from src.utils.constant import ZERO_VAE_CACHE
-from src.utils import convert_to_buffer, plucker_ray, colorize_depth, filter_da3_points, render_pt3d_points
+from src.utils import convert_to_buffer, plucker_ray, colorize_depth, filter_da3_points, render_pt3d_points, mv_interpolate
 
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -283,6 +283,9 @@ class Wan(nn.Module):
             depths = data["depth"].to(dtype)[:, idxs, ...]  # (B, f, H, W)
             confs = data["conf"].to(dtype)[:, idxs, ...]  # (B, f, H, W)
             images_f = images[:, idxs, ...]  # (B, f, 3, H, W)
+            if self.opt.da3_down_ratio != 1:
+                images_f = mv_interpolate(images_f,
+                    size=(H//self.opt.da3_down_ratio, W//self.opt.da3_down_ratio), mode="bilinear", align_corners=False)  # (B, f, 3, H, W)
             with torch.no_grad():
                 ## Bidirectional rendering
                 if not self.opt.is_causal:
@@ -513,6 +516,9 @@ class Wan(nn.Module):
 
         idxs = torch.arange(0, F, 4).to(device=device, dtype=torch.long)
         images_f = images[:, idxs, ...]  # (B, f, 3, H, W)
+        if self.opt.da3_down_ratio != 1:
+            images_f = mv_interpolate(images_f,
+                size=(H//self.opt.da3_down_ratio, W//self.opt.da3_down_ratio), mode="bilinear", align_corners=False)
         if "C2W" in data and "fxfycxcy" in data:
             C2W = data["C2W"].to(dtype)[:, idxs, ...]  # (B, f, 4, 4)
             fxfycxcy = data["fxfycxcy"].to(dtype)[:, idxs, ...]  # (B, f, 4)
@@ -724,6 +730,9 @@ class Wan(nn.Module):
 
         idxs = torch.arange(0, F, 4).to(device=device, dtype=torch.long)
         images_f = images[:, idxs, ...]  # (B, f, 3, H, W)
+        if self.opt.da3_down_ratio != 1:
+            images_f = mv_interpolate(images_f,
+                size=(H//self.opt.da3_down_ratio, W//self.opt.da3_down_ratio), mode="bilinear", align_corners=False)
         if "C2W" in data and "fxfycxcy" in data:
             C2W = data["C2W"].to(dtype)[:, idxs, ...]  # (B, f, 4, 4)
             fxfycxcy = data["fxfycxcy"].to(dtype)[:, idxs, ...]  # (B, f, 4)
@@ -1003,6 +1012,9 @@ class Wan(nn.Module):
                             _idxs = torch.arange(3, current_images_f.shape[1], 4).to(device=device, dtype=torch.long)
                         current_images_f = current_images_f[:, _idxs, :, :, :]  # (B, f_chunk, 3, H, W)
                         assert current_images_f.shape[1] == self.opt.chunk_size
+                        if self.opt.da3_down_ratio != 1:
+                            current_images_f = mv_interpolate(current_images_f,
+                                size=(H//self.opt.da3_down_ratio, W//self.opt.da3_down_ratio), mode="bilinear", align_corners=False)
 
                         current_depths = all_da3_outputs[chunk_idx]["depth"]  # (B, f_chunk, H, W)
                         current_confs = all_da3_outputs[chunk_idx]["depth_conf"]  # (B, f_chunk, H, W)
@@ -1462,6 +1474,9 @@ class Wan(nn.Module):
                     _idxs = torch.arange(3, current_images_f.shape[1], 4).to(device=device, dtype=torch.long)
                 current_images_f = current_images_f[:, _idxs, :, :, :]  # (B, f_chunk, 3, H, W)
                 assert current_images_f.shape[1] == self.opt.chunk_size
+                if self.opt.da3_down_ratio != 1:
+                    current_images_f = mv_interpolate(current_images_f,
+                        size=(H//self.opt.da3_down_ratio, W//self.opt.da3_down_ratio), mode="bilinear", align_corners=False)
 
                 current_depths = all_da3_outputs[chunk_idx]["depth"]  # (B, f_chunk, H, W)
                 current_confs = all_da3_outputs[chunk_idx]["depth_conf"]  # (B, f_chunk, H, W)

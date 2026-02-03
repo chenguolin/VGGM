@@ -2,7 +2,17 @@ from typing import *
 from torch import Tensor
 from torch.nn import Module
 
+import torch.nn.functional as tF
 from einops import rearrange
+
+
+def mv_interpolate(x: Tensor, *args, **kwargs) -> Tensor:
+    """Interpolate a multi-view tensor of shape (B, F, C, H, W)."""
+    B, F, C, H, W = x.shape
+    x = rearrange(x, "b f c h w -> (b f) c h w")
+    x = tF.interpolate(x, *args, **kwargs)
+    x = rearrange(x, "(b f) c h w -> b f c h w", b=B, f=F)
+    return x
 
 
 def zero_init_module(module: Module):

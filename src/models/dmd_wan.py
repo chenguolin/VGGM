@@ -13,7 +13,7 @@ from src.options import Options
 from src.models.networks import WanDiffusionWrapper, WanVAEWrapper
 from src.models.wan import Wan
 from src.models.pipelines.self_forcing_training import SelfForcingTrainingPipeline
-from src.utils import convert_to_buffer, plucker_ray, colorize_depth, filter_da3_points, render_pt3d_points
+from src.utils import convert_to_buffer, plucker_ray, colorize_depth, filter_da3_points, render_pt3d_points, mv_interpolate
 
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -328,6 +328,9 @@ class DMD_Wan(Wan):
         if self.opt.input_pcrender:
             assert depths is not None and confs is not None and images_f is not None
             H, W = images_f.shape[3], images_f.shape[4]
+            if self.opt.da3_down_ratio != 1:
+                images_f = mv_interpolate(images_f,
+                    size=(H//self.opt.da3_down_ratio, W//self.opt.da3_down_ratio), mode="bilinear", align_corners=False)
             with torch.no_grad():
                 ## Bidirectional rendering
                 if not self.opt.is_causal:
@@ -839,6 +842,9 @@ class DMD_Wan(Wan):
             if self.opt.input_pcrender:
                 assert depths is not None and confs is not None and images_f is not None
                 H, W = images_f.shape[3], images_f.shape[4]
+                if self.opt.da3_down_ratio != 1:
+                    images_f = mv_interpolate(images_f,
+                        size=(H//self.opt.da3_down_ratio, W//self.opt.da3_down_ratio), mode="bilinear", align_corners=False)
                 with torch.no_grad():
                     ## Bidirectional rendering
                     if not self.opt.is_causal:

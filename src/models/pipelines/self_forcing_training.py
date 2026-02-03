@@ -12,7 +12,7 @@ from depth_anything_3.model.utils.transform import mat_to_quat
 from src.options import Options
 from src.models.losses import XYZLoss, CameraLoss
 from src.utils.constant import ZERO_VAE_CACHE
-from src.utils import plucker_ray, filter_da3_points, render_pt3d_points
+from src.utils import plucker_ray, filter_da3_points, render_pt3d_points, mv_interpolate
 
 
 class SelfForcingTrainingPipeline:
@@ -270,6 +270,9 @@ class SelfForcingTrainingPipeline:
                         _idxs = torch.arange(3, current_images_f.shape[1], 4).to(device=device, dtype=torch.long)
                     current_images_f = current_images_f[:, _idxs, :, :, :]  # (B, f_chunk, 3, H, W)
                     assert current_images_f.shape[1] == self.opt.chunk_size
+                    if self.opt.da3_down_ratio != 1:
+                        current_images_f = mv_interpolate(current_images_f,
+                            size=(H//self.opt.da3_down_ratio, W//self.opt.da3_down_ratio), mode="bilinear", align_corners=False)
                     images_f.append(current_images_f)
 
                 if self.opt.render_loss_in_sf:
