@@ -16,6 +16,19 @@ for root_candidate in ROOT_LIST:
 if ROOT is None:
     raise ValueError(f"None of the following roots exist: {ROOT_LIST}")
 
+DATAROOT_LIST = [
+    "/apdcephfs_sgfd/share_303967936/世界模型实验数据",
+    "/apdcephfs/share_sg/apdcephfs_sgfd/share_303967936/世界模型实验数据",
+]
+
+DATAROOT = None
+for root_candidate in DATAROOT_LIST:
+    if os.path.exists(root_candidate):
+        DATAROOT = root_candidate
+        break
+if DATAROOT is None:
+    raise ValueError(f"None of the following data roots exist: {DATAROOT_LIST}")
+
 
 @dataclass
 class Options:
@@ -43,7 +56,7 @@ class Options:
     camera_norm_unit: float = 1.
         ## Path
     root: str = f"{ROOT}/data"
-    ode_pairs_dir: Optional[str] = None
+    dataroot: str = DATAROOT
         ## Post initialization (`__post_init__`)
     dataset_dir_train: str = None
     dataset_dir_test: str = None
@@ -181,9 +194,11 @@ class Options:
         # Dataset directories
         self.dataset_dir_train = {
             "realcamvid": f"{self.root}/RealCam-Vid",
+            "internal": self.dataroot,
         }
         self.dataset_dir_test = {
             "realcamvid": f"{self.root}/RealCam-Vid",
+            "internal": self.dataroot,
         }
 
         # Extra condition

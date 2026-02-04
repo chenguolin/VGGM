@@ -4,6 +4,7 @@ from torch.utils.data import DataLoader, Sampler
 from .base_dataset import BaseDataset
 from .text_dataset import TextDataset
 from .realcamvid_dataset import RealcamvidDataset
+from .internal_dataset import InternalDataset
 
 
 # Copied from https://github.com/huggingface/pytorch-image-models/blob/main/timm/data/loader.py

@@ -45,8 +45,19 @@ class BaseDataset(EasyDataset):
 
     ################################ Helper Functions ################################
 
-    def _frame_sample(self, num_frames: int, min_stride: int = 1, max_stride: int = 1, pingpong_threshold: int = -1) -> List[int]:
+    def _frame_sample(self,
+        num_frames: int,
+        min_stride: int = 1,
+        max_stride: int = 1,
+        pingpong_threshold: int = -1,
+        start_frame_idx: Optional[int] = None,
+        end_frame_idx: Optional[int] = None,
+    ) -> List[int]:
         frame_idxs = np.arange(num_frames, dtype=int)
+        if start_frame_idx is not None:
+            frame_idxs = frame_idxs[frame_idxs >= start_frame_idx]
+        if end_frame_idx is not None:
+            frame_idxs = frame_idxs[frame_idxs < end_frame_idx]
         F_all, F = len(frame_idxs), \
             self.opt.num_input_frames if self.training else self.opt.num_input_frames_test
 
