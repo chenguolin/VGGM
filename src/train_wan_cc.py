@@ -254,8 +254,13 @@ def main():
     if args.allow_tf32:
         torch.backends.cuda.matmul.allow_tf32 = True
 
-    train_dataset = RealcamvidDataset(opt, training=True) \
-        if configs["opt_type"] != "sf_rep" else TextDataset()
+    if configs["opt_type"] == "sf_rep":
+        train_dataset = TextDataset()
+    else:
+        if opt.use_internal_dataset:
+            train_dataset = InternalDataset(opt, training=True)
+        else:
+            train_dataset = RealcamvidDataset(opt, training=True)
     train_loader = DataLoader(
         train_dataset,
         batch_size=configs["train"]["batch_size_per_gpu"],
@@ -266,8 +271,13 @@ def main():
         drop_last=True,
         collate_fn=BaseDataset.collate_fn,
     )
-    val_dataset = RealcamvidDataset(opt, training=False) \
-        if configs["opt_type"] != "sf_rep" else TextDataset()
+    if configs["opt_type"] == "sf_rep":
+        val_dataset = TextDataset()
+    else:
+        if opt.use_internal_dataset:
+            val_dataset = InternalDataset(opt, training=False)
+        else:
+            val_dataset = RealcamvidDataset(opt, training=False)
     val_loader = DataLoader(
         val_dataset,
         batch_size=configs["val"]["batch_size_per_gpu"],

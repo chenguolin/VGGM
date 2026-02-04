@@ -39,15 +39,19 @@ class Options:
     num_input_frames_test: Optional[int] = None
     crop_resize_ratio: Tuple[float, float] = (0.77, 1.)
     pingpong_threshold: int = 64
-    load_da3_cam: bool = True
     load_image: bool = True
+        ## Interal
+    use_internal_dataset: bool = False
+        ## RealCamVid
+    load_da3_cam: bool = True
     load_depth: bool = True
     load_conf: bool = False
     normalize_xyz: bool = True
-    use_vidprom: bool = False
-    vidprom_prob: float = 0.5
     use_short_caption: bool = False
     only_static_data: bool = False
+        ## VidProm
+    use_vidprom: bool = False
+    vidprom_prob: float = 0.5
         ## Camera normalization
     camera_norm_type: Literal[
         "none",
