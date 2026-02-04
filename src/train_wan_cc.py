@@ -626,7 +626,8 @@ def main():
                     with torch.no_grad():
                         model.eval()
 
-                        all_val_matrics, val_steps = {}, 0
+                        args.max_val_steps = 1 if accelerator.num_processes <= 8 else 4  # more val steps if not gather; TODO: make it configurable
+                        all_val_outputs, all_val_matrics, val_steps = [], {}, 0
                         val_progress_bar = tqdm(
                             range(len(val_loader)) if args.max_val_steps is None \
                                 else range(args.max_val_steps),
@@ -636,6 +637,7 @@ def main():
                         )
                         for val_batch in val_loader:
                             val_outputs = model(val_batch, func_name="evaluate", vae=vae)
+                            all_val_outputs.append(val_outputs)
 
                             val_logs = {}
                             for cfg_scale in opt.cfg_scale:
@@ -682,6 +684,10 @@ def main():
                     if accelerator.num_processes <= 8:  # when `num_processes` is too large, gathering may cause OOM
                         outputs = accelerator.gather(outputs)
                         val_outputs = accelerator.gather_for_metrics(val_outputs)
+                    else:
+                        for k in all_val_outputs[0].keys():
+                            if "images" in k and all_val_outputs[0][k] is not None:  # for visualization
+                                val_outputs[k] = torch.cat([out[k] for out in all_val_outputs], dim=0)
 
                     if accelerator.is_main_process:
                         for cfg_scale in opt.cfg_scale:

@@ -247,9 +247,9 @@ opt_dict["wan2.1_t2v_1.3b_causal"] = Options(
     is_causal=True,
     use_teacher_forcing=False,
     #
-    sink_size=3,
+    sink_size=1,
     chunk_size=3,
-    max_window_size=9,
+    max_window_size=6,
     rope_outside=True,
     #
     generator_path=f"{ROOT}/projects/VGGM/.pth",
@@ -299,7 +299,7 @@ opt_dict["sf_rep"] = Options(
 # Self-Forcing DMD
 opt_dict["wan2.1_t2v_1.3b_dmd"] = Options(
     only_static_data=False,
-    use_vidprom=False,
+    use_vidprom=True,
     vidprom_prob=0.5,
     use_short_caption=False,
     first_latent_cond=False,
@@ -309,6 +309,7 @@ opt_dict["wan2.1_t2v_1.3b_dmd"] = Options(
     da3_interactive=False,
     da3_weight_type="uniform",
     da3_down_ratio=1,
+    only_train_resdit=True,
     #
     da3_loss_in_sf=True,
     render_loss_in_sf=False,
@@ -319,9 +320,9 @@ opt_dict["wan2.1_t2v_1.3b_dmd"] = Options(
     is_causal=True,
     use_teacher_forcing=False,
     #
-    sink_size=3,
+    sink_size=1,
     chunk_size=3,
-    max_window_size=9,
+    max_window_size=6,
     rope_outside=True,
     #
     generator_path=f"{ROOT}/projects/VGGM/.pth",
