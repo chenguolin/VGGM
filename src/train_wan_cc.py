@@ -505,7 +505,13 @@ def main():
                 render_loss = outputs["render_loss"] if "render_loss" in outputs else None
 
                 # Backpropagate
-                accelerator.backward(loss.mean())
+                try:
+                    accelerator.backward(loss.mean())
+                except Exception as e:
+                    logger.info(f"Error occurred during `accelerator.backward()`: {e}")
+                    logger.info("Skip this step and continue training...\n")
+                    optimizer.zero_grad()
+                    continue
 
                 # Gradient clip
                 if accelerator.sync_gradients:
