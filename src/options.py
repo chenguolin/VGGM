@@ -296,6 +296,7 @@ opt_dict["sf_rep"] = Options(
     rope_outside=False,
     #
     generator_path=f"{ROOT}/.cache/ode_init.pt",
+    real_wan_dir=f"{ROOT}/.cache/huggingface/hub/Wan-AI/Wan2.1-T2V-14B",
     teacher_path=None,
     is_teacher_causal=False,
     #
