@@ -53,7 +53,7 @@ def main():
     parser.add_argument(
         "--output_dir",
         type=str,
-        default=f"{ROOT}/projects/VGGM/out",
+        default=f"./out",
         help="Path to the output directory"
     )
     parser.add_argument(
@@ -130,7 +130,7 @@ def main():
     parser.add_argument(
         "--allow_tf32",
         action="store_true",
-        help="Enable TF32 for faster training on Ampere GPUs"
+        help="Enable TF32 for faster training"
     )
 
     parser.add_argument(
@@ -226,9 +226,10 @@ def main():
         accelerate.utils.set_seed(args.seed)
         logger.info(f"You have chosen to seed([{args.seed}]) the experiment [{args.tag}]\n")
 
-    # Enable TF32 for faster training on Ampere GPUs
+    # Enable TF32 for faster training
     if args.allow_tf32:
         torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
 
     if configs["opt_type"] == "sf_rep":
         train_dataset = TextDataset()
@@ -481,7 +482,7 @@ def main():
                 if ray_loss is not None:
                     logs.update({"ray": ray_loss.item()})
                 if camera_loss is not None:
-                    logs.update({"pose": camera_loss.item()})
+                    logs.update({"camera": camera_loss.item()})
                 if render_loss is not None:
                     logs.update({"render": render_loss.item()})
 

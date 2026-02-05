@@ -25,7 +25,7 @@ class DMD_Wan(Wan):
 
         # Real score model for DMD
         self.real_score = WanDiffusionWrapper(
-            opt.wan_dir,
+            opt.real_wan_dir,
             opt.num_train_timesteps,
             opt.num_inference_steps,
             opt.shift,
@@ -58,7 +58,7 @@ class DMD_Wan(Wan):
 
         # Fake score model for DMD
         self.fake_score = WanDiffusionWrapper(
-            opt.wan_dir,
+            opt.fake_wan_dir,
             opt.num_train_timesteps,
             opt.num_inference_steps,
             opt.shift,
