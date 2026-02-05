@@ -57,22 +57,16 @@ def main():
         help="Path to the output directory"
     )
     parser.add_argument(
-        "--wandb_token_path",
-        type=str,
-        default=f"{ROOT}/.cache/wandb/token",
-        help="Path to the WandB login token"
-    )
-    parser.add_argument(
-        "--resume_from_iter",
-        type=int,
-        default=None,
-        help="The iteration to load the checkpoint from"
-    )
-    parser.add_argument(
         "--seed",
         type=int,
         default=0,
         help="Seed for the PRNG"
+    )
+    parser.add_argument(
+        "--wandb_token_path",
+        type=str,
+        default=f"{ROOT}/.cache/wandb/token",
+        help="Path to the WandB login token"
     )
     parser.add_argument(
         "--offline_wandb",
@@ -115,11 +109,6 @@ def main():
         help="Load EMA model on CPU for saving memory"
     )
     parser.add_argument(
-        "--scale_lr",
-        action="store_true",
-        help="Scale lr with total batch size (base batch size: 256)"
-    )
-    parser.add_argument(
         "--max_grad_norm",
         type=float,
         default=1.,
@@ -155,19 +144,6 @@ def main():
         default=2,
         choices=[1, 2, 3],  # https://huggingface.co/docs/accelerate/usage_guides/deepspeed
         help="ZeRO stage type for DeepSpeed"
-    )
-
-    parser.add_argument(
-        "--load_pretrained_model",
-        type=str,
-        default=None,
-        help="Tag of the model pretrained in this project"
-    )
-    parser.add_argument(
-        "--load_pretrained_model_ckpt",
-        type=int,
-        default=-1,
-        help="Iteration of the pretrained model checkpoint"
     )
 
     # Parse the arguments
@@ -295,9 +271,6 @@ def main():
     total_batch_size = configs["train"]["batch_size_per_gpu"] * \
         accelerator.num_processes * args.gradient_accumulation_steps
     configs["train"]["total_batch_size"] = total_batch_size
-    if args.scale_lr:
-        configs["optimizer"]["lr"] *= (total_batch_size / 256)
-        configs["lr_scheduler"]["max_lr"] = configs["optimizer"]["lr"]
 
     # Initialize the model, optimizer and lr scheduler
     if opt.use_dmd:
@@ -351,26 +324,6 @@ def main():
     if "num_warmup_steps" in configs["lr_scheduler"]:
         configs["lr_scheduler"]["num_warmup_steps"] //= accelerator.num_processes  # reset for multi-gpu
 
-    # (Optional) Load a pretrained model
-    if args.load_pretrained_model is not None:
-        logger.info(f"Load pretrained checkpoint from [{args.load_pretrained_model}] iteration [{args.load_pretrained_model_ckpt:06d}]\n")
-        model, args.load_pretrained_model_ckpt = util.load_ckpt(
-            os.path.join(args.output_dir, args.load_pretrained_model, "checkpoints"),
-            args.load_pretrained_model_ckpt,
-            model, accelerator, strict=False,
-        )
-        # Load a pretrained EMA model
-        pretrained_ema_path = os.path.join(args.output_dir, args.load_pretrained_model, "checkpoints", f"{args.load_pretrained_model_ckpt:06d}", "ema_states.pth")
-        if os.path.exists(pretrained_ema_path):
-            _ema_states = MyEMAModel(
-                model.parameters() if not opt.use_dmd else model.diffusion.parameters(),
-                use_deepspeed_zero3=str(int(args.zero_stage)) == "3",
-                **configs["train"]["ema_kwargs"]
-            )
-            _ema_states.load_state_dict(torch.load(pretrained_ema_path, map_location="cpu"))
-            _ema_states.copy_to(model.parameters() if not opt.use_dmd else model.diffusion.parameters())
-            del _ema_states
-
     # Initialize the EMA model to save moving average states
     if args.use_ema:
         logger.info("Use exponential moving average (EMA) for model parameters\n")
@@ -413,24 +366,6 @@ def main():
     logger.info(f"Steps for updating per epoch: [{updated_steps_per_epoch}]")
     logger.info(f"Steps for validation: [{len(val_loader)}]\n")
 
-    # (Optional) Load checkpoint
-    global_update_step = 0
-    if args.resume_from_iter is not None:
-        logger.info(f"Load checkpoint from iteration [{args.resume_from_iter}]\n")
-        if not os.path.exists(os.path.join(ckpt_dir, f'{args.resume_from_iter:06d}')):
-            args.resume_from_iter = util.load_ckpt(
-                ckpt_dir,
-                args.resume_from_iter,
-                None,  # `None`: not load model ckpt here
-                accelerator,  # manage the process states
-            )
-        # Load everything
-        accelerator.load_state(os.path.join(ckpt_dir, f"{args.resume_from_iter:06d}"), load_kwargs={"weights_only": False})
-        global_update_step = int(args.resume_from_iter) + 1
-        # Load EMA states
-        if args.use_ema and os.path.exists(os.path.join(ckpt_dir, f"{args.resume_from_iter:06d}", "ema_states.pth")):
-            ema_states.load_state_dict(torch.load(os.path.join(ckpt_dir, f"{args.resume_from_iter:06d}", "ema_states.pth"), map_location="cpu" if args.ema_on_cpu else accelerator.device))
-
     # Save all experimental parameters and model architecture of this run to a file (args and configs)
     if accelerator.is_main_process:
         exp_params = util.save_experiment_params(args, configs, opt, exp_dir)
@@ -455,6 +390,7 @@ def main():
         wandb.log_artifact(arti_exp_info)
 
     # Start training
+    global_update_step = 0
     logger.logger.propagate = False  # not propagate to the root logger (console)
     progress_bar = tqdm(
         range(total_updated_steps),
