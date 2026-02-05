@@ -661,7 +661,6 @@ class Wan(nn.Module):
                     rearrange(images, "b f c h w -> (b f) c h w"),
                     data_range=1., size_average=False,
                 ).mean()  # (,)
-                outputs[f"ssim_{cfg_scale}"] = rearrange(outputs[f"ssim_{cfg_scale}"], "(b f) -> b f", b=B).mean(dim=1)  # (B,)
                 if self.lpips_loss is not None:
                     outputs[f"lpips_{cfg_scale}"] = self.lpips_loss(
                         rearrange(pred_images, "b f c h w -> (b f) c h w") * 2. - 1.,

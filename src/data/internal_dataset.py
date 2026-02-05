@@ -1,8 +1,8 @@
 from typing import *
 
 import os
+import re
 import numpy as np
-import pandas as pd
 import json
 from decord import VideoReader, cpu
 import torch
@@ -10,57 +10,47 @@ import torchvision.transforms as tvT
 
 from src.options import Options
 from src.data.base_dataset import BaseDataset
-from src.utils.geo_util import inverse_c2w, intrinsics_to_fxfycxcy, unproject_depth
 
 
 class InternalDataset(BaseDataset):
     def __init__(self, opt: Options, training: bool = True):
         super().__init__(opt, "internal", training)
 
-        metadata = pd.read_csv(f"{self.root}/metadata.csv")
-        indices = np.random.RandomState(seed=42).permutation(len(metadata))
+        uids = os.listdir(f"{self.root}/valid_captions")
+        indices = np.random.RandomState(seed=42).permutation(len(uids))
         if training:
-            train_idxs = indices[:int(0.95 * len(metadata))]
-            self.metadata = metadata.iloc[train_idxs]
+            self.uids = [uids[i].strip(".json") for i in indices[:int(0.95 * len(uids))]]
         else:
-            test_idxs = indices[int(0.95 * len(metadata)):]
-            self.metadata = metadata.iloc[test_idxs]
-
-        self.valid_idxs = list(range(len(self.metadata)))
+            self.uids = [uids[i].strip(".json") for i in indices[int(0.95 * len(uids)):]]
 
     def __len__(self) -> int:
-        return len(self.valid_idxs)
+        return len(self.uids)
 
     def __getitem__(self, idx: int) -> Dict[str, Any]:
-        metadata = self.metadata.iloc[idx]
-        uid = metadata["org_raw_id"]
-        try:
-            caption = json.loads(metadata["caption_result"])  # a list of str
-        except:
-            if idx in self.valid_idxs:
-                self.valid_idxs.remove(idx)
-                if len(self.valid_idxs) == 0:
-                    raise ValueError("No valid data in InternalDataset!")
-            return self.__getitem__(np.random.choice(self.valid_idxs))
+        uid = self.uids[idx]
+        with open(f"{self.root}/valid_captions/{uid}.json", "r", encoding="utf-8") as f:
+            all_captions = json.load(f)  # Dict[str, str]: clip_idx -> long caption
         dataset_source = "Internal"
 
-        if self.opt.only_static_data:
-            raise NotImplementedError
-
         # Load prompt
-        caption = caption[np.random.randint(0, len(caption) - 1)]
-        clip_idx = int(float(caption["index_idx"]))
-        caption_dict = json.loads(caption["caption_result"])[0]["caption"]  # 0: EN, 1: ZH
-        prompt = caption_dict[np.random.choice(["long_caption", "medium_caption"])]#, "short_caption"])]
+        clip_idx = int(np.random.choice(list(all_captions.keys())))
+        prompt = all_captions[str(clip_idx)]
 
         # Sample frames
         video_path = os.path.join(self.root, "video", f"{uid}.mp4")
         vr = VideoReader(str(video_path), ctx=cpu(0))
         num_frames, fps, (H, W) = len(vr), vr.get_avg_fps(), vr[0].shape[:2]
+        start_frame_idx = max(0, int(round((clip_idx - 1) * 5 * fps))-12)  # `5`: hard-coded for 5s-clip; `12`: hard-coded for clip-overlap
+        if start_frame_idx >= num_frames:
+            if uid in self.uids:
+                self.uids.remove(uid)
+                if len(self.uids) == 0:
+                    raise ValueError("No more valid uids in InternalDataset!")
+            return self.__getitem__(np.random.randint(len(self.uids)))
         input_frame_idxs = self._frame_sample(
             num_frames,
-            start_frame_idx=int(round((clip_idx - 1) * 5 * fps)),  # `5`: hard-coded for 5s-clip
-            end_frame_idx=int(round(clip_idx * 5 * fps)),
+            start_frame_idx=start_frame_idx,
+            end_frame_idx=start_frame_idx + int(round(5 * fps)),
         )
 
         depths, confs = None, None  # no depth and conf for InternalDataset
@@ -69,12 +59,7 @@ class InternalDataset(BaseDataset):
         vipe_path = video_path.replace("video", "vipe").replace(".mp4", ".npz")
         vipe_data = np.load(vipe_path, allow_pickle=True)
         C2W, fxfycxcy = vipe_data["pose"], vipe_data["intrinsics"]
-        if num_frames != C2W.shape[0] or num_frames != fxfycxcy.shape[0]:
-            if idx in self.valid_idxs:
-                self.valid_idxs.remove(idx)
-                if len(self.valid_idxs) == 0:
-                    raise ValueError("No valid data in InternalDataset!")
-            return self.__getitem__(np.random.choice(self.valid_idxs))
+        assert C2W.shape[0] == fxfycxcy.shape[0] == num_frames
         C2W = torch.from_numpy(C2W).float()[input_frame_idxs, ...]  # (F, 4, 4)
         fxfycxcy = torch.from_numpy(fxfycxcy).float()[input_frame_idxs, ...]  # (F, 3, 3)
         fxfycxcy[:, 0] /= W

@@ -117,7 +117,6 @@ class RealcamvidDataset(BaseDataset):
             "prompt": prompt,      # str
             "C2W": C2W,            # (F, 4, 4)
             "fxfycxcy": fxfycxcy,  # (F, 4)
-            "scaling_factor": torch.tensor(scaling_factor),  # (1,)
         }
         if images is not None:
             return_dict["image"] = images  # (F, 3, H, W) in [0, 1]
