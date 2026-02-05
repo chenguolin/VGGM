@@ -15,8 +15,8 @@ lr_scheduler:
 train:
   batch_size_per_gpu: 2
   gradient_accumulation_steps: 1
-  use_deepspeed: true
-  zero_stage: 2
+  sharding_strategy: "hybrid_full"
+  wrap_strategy: "size"
   epochs: 10
   log_freq: 1
   early_eval_freq: 100
@@ -26,11 +26,8 @@ train:
   eval_freq_epoch: 5
   save_freq_epoch: 10
   use_ema: true
-  ema_kwargs:
-    decay: 0.9999
-    use_ema_warmup: true
-    inv_gamma: 1.
-    power: 0.75
+  ema_weight: 0.999
+  ema_start_step: 0
 
 val:
   batch_size_per_gpu: 1

@@ -2,13 +2,33 @@ from typing import *
 from argparse import Namespace
 from omegaconf import DictConfig
 from torch.nn import Module
-from accelerate import Accelerator
 from src.options import Options
 
 import os
 import subprocess
 from omegaconf import OmegaConf
-from accelerate import load_checkpoint_and_dispatch
+import random
+import numpy as np
+import torch
+
+
+def set_seed(seed: int, deterministic: bool = False):
+    """
+    Helper function for reproducible behavior to set the seed in `random`, `numpy`, `torch`.
+
+    Args:
+        seed (`int`):
+            The seed to set.
+        deterministic (`bool`, *optional*, defaults to `False`):
+            Whether to use deterministic algorithms where available. Can slow down training.
+    """
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+
+    if deterministic:
+        torch.use_deterministic_algorithms(True)
 
 
 def get_configs(yaml_path: str, cli_configs: List[str]=[], **kwargs) -> DictConfig:

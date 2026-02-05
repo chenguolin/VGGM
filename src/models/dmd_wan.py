@@ -51,10 +51,8 @@ class DMD_Wan(Wan):
                 self.real_score.load_state_dict(state_dict["generator"])
             else:
                 self.real_score.load_state_dict(state_dict)
-        if opt.use_deepspeed_zero3:
-            self.real_score.requires_grad_(False)  # for ZeRO3 parameter split
-        else:
-            convert_to_buffer(self.real_score, persistent=False)  # no gradient & not save to checkpoint
+        self.real_score.requires_grad_(False)
+        self.real_score.eval()
 
         # Fake score model for DMD
         self.fake_score = WanDiffusionWrapper(
@@ -85,7 +83,7 @@ class DMD_Wan(Wan):
             else:
                 self.fake_score.load_state_dict(state_dict)
 
-        # This will be init later with fsdp/deepspeed-wrapped modules
+        # This will be init later with fsdp-wrapped modules
         self.inference_pipeline: SelfForcingTrainingPipeline = None
 
         # Add LoRA in the diffusion model, will freeze all parameters except LoRA layers
@@ -110,16 +108,9 @@ class DMD_Wan(Wan):
                 if not _flag:
                     param.requires_grad_(False)
 
-    def state_dict(self, destination=None, prefix="", keep_vars=False):
-        state_dict = super().state_dict(destination, prefix, keep_vars)
-        if self.text_encoder is not None and "text_encoder" in state_dict:
-            del state_dict["text_encoder"]
-        if self.real_score is not None and "real_score" in state_dict:
-            del state_dict["real_score"]
-        return state_dict
-
     def compute_loss(self, data: Dict[str, Any], dtype: torch.dtype = torch.float32, train_generator: bool = True, is_eval: bool = False, vae: Optional[WanVAEWrapper] = None):
         outputs = {}
+        device = self.diffusion.model.device
 
         # CausVid or Self-Forcing
         self.use_self_forcing = use_self_forcing = np.random.rand() <= self.opt.self_forcing_prob
@@ -128,12 +119,11 @@ class DMD_Wan(Wan):
             assert "image" in data
 
         if "image" in data:
-            images = data["image"].to(dtype)  # (B, F, 3, H, W)
-            (B, F, _, H, W), device = images.shape, images.device
+            images = data["image"].to(device=device, dtype=dtype)  # (B, F, 3, H, W)
+            (B, F, _, H, W) = images.shape
         else:
             B = len(data["prompt"])
             F, H, W = self.opt.num_input_frames, self.opt.input_res[0], self.opt.input_res[1]
-            device = self.diffusion.model.device
 
         # Text encoder
         if self.text_encoder is not None:
@@ -170,21 +160,21 @@ class DMD_Wan(Wan):
         # (Optional) Camera & depth
         idxs = torch.arange(0, F, 4).to(device=device, dtype=torch.long)
         if "C2W" in data and "fxfycxcy" in data:
-            C2W = data["C2W"].to(dtype)[:, idxs, ...]  # (B, f, 4, 4)
-            fxfycxcy = data["fxfycxcy"].to(dtype)[:, idxs, ...]  # (B, f, 4)
+            C2W = data["C2W"].to(device=device, dtype=dtype)[:, idxs, ...]  # (B, f, 4, 4)
+            fxfycxcy = data["fxfycxcy"].to(device=device, dtype=dtype)[:, idxs, ...]  # (B, f, 4)
             plucker = plucker_ray(H, W, C2W.float(), fxfycxcy.float())[0].to(dtype)  # (B, f, 6, H, W)
         else:
             C2W, fxfycxcy, plucker = None, None, None
         if "depth" in data:
-            depths = data["depth"].to(dtype)[:, idxs, ...]  # (B, f, H, W)
+            depths = data["depth"].to(device=device, dtype=dtype)[:, idxs, ...]  # (B, f, H, W)
         else:
             depths = None
         if "conf" in data:
-            confs = data["conf"].to(dtype)[:, idxs, ...]  # (B, f, H, W)
+            confs = data["conf"].to(device=device, dtype=dtype)[:, idxs, ...]  # (B, f, H, W)
         else:
             confs = None
         if "image" in data:
-            images_f = data["image"].to(dtype)[:, idxs, ...]  # (B, f, 3, H, W)
+            images_f = data["image"].to(device=device, dtype=dtype)[:, idxs, ...]  # (B, f, 3, H, W)
         else:
             images_f = None
 
@@ -284,7 +274,7 @@ class DMD_Wan(Wan):
             if pred_x0 is not None:
                 outputs["images_predx0"] = (self.decode_latent(pred_x0, vae).clamp(-1., 1.) + 1.) / 2.
             if "image" in data:
-                outputs["images_input"] = data["image"]
+                outputs["images_input"] = data["image"].to(device)
             ## Diffusion
             if use_diffusion_loss:
                 if da3_outputs_diffusion is not None:

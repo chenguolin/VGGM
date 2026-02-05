@@ -71,10 +71,7 @@ class Wan(nn.Module):
                         return self.taehv.decode_video(latents, parallel=False).clamp(0., 1.)
                 self.current_vae_decoder = TAEHVDiffusersWrapper()
 
-            if opt.use_deepspeed_zero3 or opt.da3_loss_in_sf:
-                self.current_vae_decoder.requires_grad_(False)  # for ZeRO3 parameter split
-            else:
-                convert_to_buffer(self.current_vae_decoder, persistent=False)  # no gradient & not save to checkpoint
+            self.current_vae_decoder.requires_grad_(False)
             self.current_vae_decoder.eval()
         else:
             self.current_vae_decoder = None
@@ -82,10 +79,8 @@ class Wan(nn.Module):
         # Text encoder
         if opt.load_text_encoder:
             self.text_encoder = WanTextEncoderWrapper(opt.wan_dir)
-            if opt.use_deepspeed_zero3:
-                self.text_encoder.requires_grad_(False)  # for ZeRO3 parameter split
-            else:
-                convert_to_buffer(self.text_encoder, persistent=False)  # no gradient & not save to checkpoint
+            self.text_encoder.requires_grad_(False)
+            self.text_encoder.eval()
         else:
             self.text_encoder = None
 
@@ -216,34 +211,28 @@ class Wan(nn.Module):
         self.crossattn_cache_pos, self.crossattn_cache_neg = None, None
         self.kv_cache_pos_da3, self.kv_cache_neg_da3 = None, None
 
-    def state_dict(self, destination=None, prefix="", keep_vars=False):
-        state_dict = super().state_dict(destination, prefix, keep_vars)
-        if self.text_encoder is not None and "text_encoder" in state_dict:
-            del state_dict["text_encoder"]
-        return state_dict
-
     def forward(self, *args, func_name="compute_loss", **kwargs):
         # To support different forward functions for models wrapped by `accelerate`
         return getattr(self, func_name)(*args, **kwargs)
 
     def compute_loss(self, data: Dict[str, Any], dtype: torch.dtype = torch.float32, is_eval: bool = False, vae: Optional[WanVAEWrapper] = None):
         outputs = {}
+        device = self.diffusion.model.device
 
         if "image" in data:
-            images = data["image"].to(dtype)  # (B, F, 3, H, W)
-            (B, F, _, H, W), device = images.shape, images.device
+            images = data["image"].to(device=device, dtype=dtype)  # (B, F, 3, H, W)
+            (B, F, _, H, W) = images.shape
         else:
             B = len(data["prompt"])
             F, H, W = self.opt.num_input_frames, self.opt.input_res[0], self.opt.input_res[1]
-            device = self.diffusion.model.device
 
         idxs = torch.arange(0, F, 4).to(device=device, dtype=torch.long)
         if self.opt.load_da3:
             assert "depth" in data
-            gt_depths = data["depth"].to(dtype)[:, idxs, ...]  # (B, f, H, W)
+            gt_depths = data["depth"].to(device=device, dtype=dtype)[:, idxs, ...]  # (B, f, H, W)
         if "C2W" in data and "fxfycxcy" in data:
-            C2W = data["C2W"].to(dtype)[:, idxs, ...]  # (B, f, 4, 4)
-            fxfycxcy = data["fxfycxcy"].to(dtype)[:, idxs, ...]  # (B, f, 4)
+            C2W = data["C2W"].to(device=device, dtype=dtype)[:, idxs, ...]  # (B, f, 4, 4)
+            fxfycxcy = data["fxfycxcy"].to(device=device, dtype=dtype)[:, idxs, ...]  # (B, f, 4)
             plucker = plucker_ray(H, W, C2W.float(), fxfycxcy.float())[0].to(dtype)  # (B, f, 6, H, W)
         else:
             C2W, fxfycxcy, plucker = None, None, None
@@ -280,8 +269,8 @@ class Wan(nn.Module):
         # (Optional) Point cloud rendering
         if self.opt.input_pcrender:
             assert "depth" in data and "conf" in data and C2W is not None and fxfycxcy is not None
-            depths = data["depth"].to(dtype)[:, idxs, ...]  # (B, f, H, W)
-            confs = data["conf"].to(dtype)[:, idxs, ...]  # (B, f, H, W)
+            depths = data["depth"].to(device=device, dtype=dtype)[:, idxs, ...]  # (B, f, H, W)
+            confs = data["conf"].to(device=device, dtype=dtype)[:, idxs, ...]  # (B, f, H, W)
             images_f = images[:, idxs, ...]  # (B, f, 3, H, W)
             if self.opt.da3_down_ratio != 1:
                 images_f = mv_interpolate(images_f,
@@ -492,20 +481,20 @@ class Wan(nn.Module):
 
     def evaluate_bidirectional(self, data: Dict[str, Any], dtype: torch.dtype, verbose: bool = True, vae: Optional[WanVAEWrapper] = None):
         outputs = {}
+        device = self.diffusion.model.device
 
         self.diffusion.eval()
         self.diffusion.scheduler.set_timesteps(self.opt.num_inference_steps, training=False)
 
         if "image" in data:
-            images = data["image"].to(dtype)  # (B, F, 3, H, W)
-            (B, F, _, H, W), device = images.shape, images.device
+            images = data["image"].to(device=device, dtype=dtype)  # (B, F, 3, H, W)
+            (B, F, _, H, W) = images.shape
 
             # For visualization
             outputs["images_gt"] = images
         else:
             B = len(data["prompt"])
             F, H, W = self.opt.num_input_frames_test, self.opt.input_res[0], self.opt.input_res[1]
-            device = self.diffusion.model.device
 
         idxs = torch.arange(0, F, 4).to(device=device, dtype=torch.long)
         images_f = images[:, idxs, ...]  # (B, f, 3, H, W)
@@ -513,17 +502,17 @@ class Wan(nn.Module):
             images_f = mv_interpolate(images_f,
                 size=(H//self.opt.da3_down_ratio, W//self.opt.da3_down_ratio), mode="bilinear", align_corners=False)
         if "C2W" in data and "fxfycxcy" in data:
-            C2W = data["C2W"].to(dtype)[:, idxs, ...]  # (B, f, 4, 4)
-            fxfycxcy = data["fxfycxcy"].to(dtype)[:, idxs, ...]  # (B, f, 4)
+            C2W = data["C2W"].to(device=device, dtype=dtype)[:, idxs, ...]  # (B, f, 4, 4)
+            fxfycxcy = data["fxfycxcy"].to(device=device, dtype=dtype)[:, idxs, ...]  # (B, f, 4)
             plucker = plucker_ray(H, W, C2W.float(), fxfycxcy.float())[0].to(dtype)  # (B, f, 6, H, W)
         else:
             C2W, fxfycxcy, plucker = None, None, None
         if "depth" in data:
-            depths = data["depth"].to(dtype)[:, idxs, ...]  # (B, f, H, W)
+            depths = data["depth"].to(device=device, dtype=dtype)[:, idxs, ...]  # (B, f, H, W)
         else:
             depths = None
         if "conf" in data:
-            confs = data["conf"].to(dtype)[:, idxs, ...]  # (B, f, H, W)
+            confs = data["conf"].to(device=device, dtype=dtype)[:, idxs, ...]  # (B, f, H, W)
         else:
             confs = None
 
@@ -703,20 +692,20 @@ class Wan(nn.Module):
 
     def evaluate_causal(self, data: Dict[str, Any], dtype: torch.dtype, verbose: bool = True, vae: Optional[WanVAEWrapper] = None):
         outputs = {}
+        device = self.diffusion.model.device
 
         self.diffusion.eval()
         self.diffusion.scheduler.set_timesteps(self.opt.num_inference_steps, training=False)
 
         if "image" in data:
-            images = data["image"].to(dtype)  # (B, F, 3, H, W)
-            (B, F, _, H, W), device = images.shape, images.device
+            images = data["image"].to(device=device, dtype=dtype)  # (B, F, 3, H, W)
+            (B, F, _, H, W) = images.shape
 
             # For visualization
             outputs["images_gt"] = images
         else:
             B = len(data["prompt"])
             F, H, W = self.opt.num_input_frames_test, self.opt.input_res[0], self.opt.input_res[1]
-            device = self.diffusion.model.device
             images = torch.zeros((B, F, 3, H, W), dtype=dtype, device=device)  # (B, F, 3, H, W); not really used
 
         idxs = torch.arange(0, F, 4).to(device=device, dtype=torch.long)
@@ -725,17 +714,17 @@ class Wan(nn.Module):
             images_f = mv_interpolate(images_f,
                 size=(H//self.opt.da3_down_ratio, W//self.opt.da3_down_ratio), mode="bilinear", align_corners=False)
         if "C2W" in data and "fxfycxcy" in data:
-            C2W = data["C2W"].to(dtype)[:, idxs, ...]  # (B, f, 4, 4)
-            fxfycxcy = data["fxfycxcy"].to(dtype)[:, idxs, ...]  # (B, f, 4)
+            C2W = data["C2W"].to(device=device, dtype=dtype)[:, idxs, ...]  # (B, f, 4, 4)
+            fxfycxcy = data["fxfycxcy"].to(device=device, dtype=dtype)[:, idxs, ...]  # (B, f, 4)
             plucker = plucker_ray(H, W, C2W.float(), fxfycxcy.float())[0].to(dtype)  # (B, f, 6, H, W)
         else:
             C2W, fxfycxcy, plucker = None, None, None
         if "depth" in data:
-            depths = data["depth"].to(dtype)[:, idxs, ...]  # (B, f, H, W)
+            depths = data["depth"].to(device=device, dtype=dtype)[:, idxs, ...]  # (B, f, H, W)
         else:
             depths = None
         if "conf" in data:
-            confs = data["conf"].to(dtype)[:, idxs, ...]  # (B, f, H, W)
+            confs = data["conf"].to(device=device, dtype=dtype)[:, idxs, ...]  # (B, f, H, W)
         else:
             confs = None
 

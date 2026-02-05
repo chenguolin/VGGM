@@ -46,12 +46,12 @@ export HF_HOME=$ROOT/.cache/huggingface
 export TORCH_HOME=$ROOT/.cache/torch
 export NCCL_DEBUG=VERSION
 
-accelerate launch \
-    --num_machines $TAIJI_HOST_NUM \
-    --num_processes $TAIJI_NODE_NUM \
-    --machine_rank $INDEX \
-    --main_process_ip $CHIEF_IP \
-    --main_process_port 8081 \
+torchrun \
+  --nnodes $TAIJI_HOST_NUM \
+  --nproc_per_node $(( $TAIJI_NODE_NUM / $TAIJI_HOST_NUM )) \
+  --node_rank $INDEX \
+  --master_addr $CHIEF_IP \
+  --master_port 8081 \
     ${FILE} \
         --config_file ${CONFIG_FILE} \
         --tag ${TAG} \

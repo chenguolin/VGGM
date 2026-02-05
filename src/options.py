@@ -184,8 +184,6 @@ class Options:
     name_lr_mult: Optional[str] = None
     exclude_name_lr_mult: Optional[str] = None
     lr_mult: float = 0.1
-        ## DeepSpeed
-    use_deepspeed_zero3: bool = False
 
     # Misc
     git_version: str = None  # will fill by `util.get_git_version()` in the main process

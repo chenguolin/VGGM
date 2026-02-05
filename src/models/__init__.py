@@ -7,7 +7,6 @@ from torch import optim
 from torch.optim import lr_scheduler
 from diffusers.optimization import get_scheduler
 
-from src.models.ema import MyEMAModel
 from src.models.wan import Wan
 from src.models.dmd_wan import DMD_Wan
 
