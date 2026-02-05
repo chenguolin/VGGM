@@ -557,7 +557,8 @@ def main():
                         os.makedirs(os.path.join(ckpt_dir, f"{global_update_step:06d}"), exist_ok=True)
                         if args.use_ema:
                             torch.save(ema_states.state_dict(), os.path.join(ckpt_dir, f"{global_update_step:06d}", "ema_states.pth"))
-                        torch.save(accelerator.unwrap_model(model).state_dict(), os.path.join(ckpt_dir, f"{global_update_step:06d}", "model_states.pth"))
+                        else:
+                            torch.save(accelerator.unwrap_model(model).state_dict(), os.path.join(ckpt_dir, f"{global_update_step:06d}", "model_states.pth"))
                     gc.collect()
 
                 # Evaluate on the validation set
