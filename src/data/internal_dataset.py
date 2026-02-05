@@ -1,7 +1,6 @@
 from typing import *
 
 import os
-import re
 import numpy as np
 import json
 from decord import VideoReader, cpu
@@ -40,13 +39,8 @@ class InternalDataset(BaseDataset):
         video_path = os.path.join(self.root, "video", f"{uid}.mp4")
         vr = VideoReader(str(video_path), ctx=cpu(0))
         num_frames, fps, (H, W) = len(vr), vr.get_avg_fps(), vr[0].shape[:2]
-        start_frame_idx = max(0, int(round((clip_idx - 1) * 5 * fps))-12)  # `5`: hard-coded for 5s-clip; `12`: hard-coded for clip-overlap
-        if start_frame_idx >= num_frames:
-            if uid in self.uids:
-                self.uids.remove(uid)
-                if len(self.uids) == 0:
-                    raise ValueError("No more valid uids in InternalDataset!")
-            return self.__getitem__(np.random.randint(len(self.uids)))
+        # `5`: hard-coded for 5s-clip; `12`: hard-coded for clip-overlap
+        start_frame_idx = int(round((clip_idx - 1) * 5 * fps)) - 12 * (clip_idx - 1)
         input_frame_idxs = self._frame_sample(
             num_frames,
             start_frame_idx=start_frame_idx,

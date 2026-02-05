@@ -266,9 +266,9 @@ opt_dict["wan2.1_t2v_1.3b_causal"] = Options(
     is_causal=True,
     use_teacher_forcing=False,
     #
-    sink_size=1,
+    sink_size=3,
     chunk_size=3,
-    max_window_size=6,
+    max_window_size=9,
     rope_outside=True,
     #
     generator_path=f"{ROOT}/projects/VGGM/.pth",
@@ -339,9 +339,9 @@ opt_dict["wan2.1_t2v_1.3b_dmd"] = Options(
     is_causal=True,
     use_teacher_forcing=False,
     #
-    sink_size=1,
+    sink_size=3,
     chunk_size=3,
-    max_window_size=6,
+    max_window_size=9,
     rope_outside=True,
     #
     generator_path=f"{ROOT}/projects/VGGM/.pth",
