@@ -29,6 +29,7 @@ if tmux has-session -t {shlex.quote(session_name)} 2>/dev/null; then
     tmux kill-session -t {shlex.quote(session_name)}
 fi
 tmux new-session -d -s {shlex.quote(session_name)} {shlex.quote(command)}
+tmux set-option -t {shlex.quote(session_name)} mouse on
 """
     remote_cmd = f"bash -lc {shlex.quote(remote_script)}"
     proc = subprocess.run(["ssh", ip, remote_cmd], capture_output=True, text=True)
