@@ -31,6 +31,6 @@ pip3 install flash-attn==2.7.4.post1 --no-build-isolation
 pip3 install --no-build-isolation git+https://github.com/facebookresearch/pytorch3d.git
 cd extensions/Depth-Anything-3 && pip3 install -e . && cd ../..
 
-sudo yum install -y mesa-libGL tmux
+sudo yum install -y mesa-libGL tmux nvtop
 
 touch /tmp/.setup_done
