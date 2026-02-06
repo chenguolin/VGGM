@@ -557,9 +557,12 @@ def main():
                 torch.cuda.synchronize()
                 barrier()  # make sure all processes have finished the above operations before saving checkpoints
 
+                # NOTE: For FSDP full state dict, all ranks must participate in `state_dict()` collectives even when `rank0_only=True`.
+                save_state_dict = fsdp_state_dict(model.diffusion)
                 if is_main_process:
                     os.makedirs(os.path.join(ckpt_dir, f"{global_update_step:06d}"), exist_ok=True)
-                    torch.save(fsdp_state_dict(model.diffusion), os.path.join(ckpt_dir, f"{global_update_step:06d}", "model_states.pth"))
+                    torch.save(save_state_dict, os.path.join(ckpt_dir, f"{global_update_step:06d}", "model_states.pth"))
+                del save_state_dict
 
                 if ema_params is not None:
                     # Switch back to the original model parameters
