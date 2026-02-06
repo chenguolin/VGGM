@@ -1,3 +1,8 @@
+# Copied from https://github.com/guandeh17/Self-Forcing/blob/main/demo_utils/vae_block3.py
+
+# Modifications:
+    ## 1. Inputs of `VAEDecoderWrapper()` is in shape (B, f, D, h, w) -> (B, D, f, h, w)
+
 from typing import List
 from einops import rearrange
 import torch
@@ -283,3 +288,82 @@ class VAEDecoder3d(nn.Module):
             else:
                 x = layer(x)
         return x, feat_cache
+
+
+
+# Copied from https://github.com/guandeh17/Self-Forcing/blob/main/demo_utils/constant.py
+
+# Modifications:
+    ## 1. Add ZERO_VAE_CACHE_512 for 288x512 resolution
+    ## 2. Remove `feat_names` and `ALL_INPUTS_NAMES`, not used
+
+
+ZERO_VAE_CACHE_512 = [
+    torch.zeros(1, 16, 2, 36, 64),
+    torch.zeros(1, 384, 2, 36, 64),
+    torch.zeros(1, 384, 2, 36, 64),
+    torch.zeros(1, 384, 2, 36, 64),
+    torch.zeros(1, 384, 2, 36, 64),
+    torch.zeros(1, 384, 2, 36, 64),
+    torch.zeros(1, 384, 2, 36, 64),
+    torch.zeros(1, 384, 2, 36, 64),
+    torch.zeros(1, 384, 2, 36, 64),
+    torch.zeros(1, 384, 2, 36, 64),
+    torch.zeros(1, 384, 2, 36, 64),
+    torch.zeros(1, 384, 2, 36, 64),
+    torch.zeros(1, 192, 2, 72, 128),
+    torch.zeros(1, 384, 2, 72, 128),
+    torch.zeros(1, 384, 2, 72, 128),
+    torch.zeros(1, 384, 2, 72, 128),
+    torch.zeros(1, 384, 2, 72, 128),
+    torch.zeros(1, 384, 2, 72, 128),
+    torch.zeros(1, 384, 2, 72, 128),
+    torch.zeros(1, 192, 2, 144, 256),
+    torch.zeros(1, 192, 2, 144, 256),
+    torch.zeros(1, 192, 2, 144, 256),
+    torch.zeros(1, 192, 2, 144, 256),
+    torch.zeros(1, 192, 2, 144, 256),
+    torch.zeros(1, 192, 2, 144, 256),
+    torch.zeros(1, 96, 2, 288, 512),
+    torch.zeros(1, 96, 2, 288, 512),
+    torch.zeros(1, 96, 2, 288, 512),
+    torch.zeros(1, 96, 2, 288, 512),
+    torch.zeros(1, 96, 2, 288, 512),
+    torch.zeros(1, 96, 2, 288, 512),
+    torch.zeros(1, 96, 2, 288, 512)
+]
+
+ZERO_VAE_CACHE = [
+    torch.zeros(1, 16, 2, 60, 104),
+    torch.zeros(1, 384, 2, 60, 104),
+    torch.zeros(1, 384, 2, 60, 104),
+    torch.zeros(1, 384, 2, 60, 104),
+    torch.zeros(1, 384, 2, 60, 104),
+    torch.zeros(1, 384, 2, 60, 104),
+    torch.zeros(1, 384, 2, 60, 104),
+    torch.zeros(1, 384, 2, 60, 104),
+    torch.zeros(1, 384, 2, 60, 104),
+    torch.zeros(1, 384, 2, 60, 104),
+    torch.zeros(1, 384, 2, 60, 104),
+    torch.zeros(1, 384, 2, 60, 104),
+    torch.zeros(1, 192, 2, 120, 208),
+    torch.zeros(1, 384, 2, 120, 208),
+    torch.zeros(1, 384, 2, 120, 208),
+    torch.zeros(1, 384, 2, 120, 208),
+    torch.zeros(1, 384, 2, 120, 208),
+    torch.zeros(1, 384, 2, 120, 208),
+    torch.zeros(1, 384, 2, 120, 208),
+    torch.zeros(1, 192, 2, 240, 416),
+    torch.zeros(1, 192, 2, 240, 416),
+    torch.zeros(1, 192, 2, 240, 416),
+    torch.zeros(1, 192, 2, 240, 416),
+    torch.zeros(1, 192, 2, 240, 416),
+    torch.zeros(1, 192, 2, 240, 416),
+    torch.zeros(1, 96, 2, 480, 832),
+    torch.zeros(1, 96, 2, 480, 832),
+    torch.zeros(1, 96, 2, 480, 832),
+    torch.zeros(1, 96, 2, 480, 832),
+    torch.zeros(1, 96, 2, 480, 832),
+    torch.zeros(1, 96, 2, 480, 832),
+    torch.zeros(1, 96, 2, 480, 832)
+]

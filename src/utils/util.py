@@ -1,6 +1,7 @@
 from typing import *
 from argparse import Namespace
 from omegaconf import DictConfig
+from torch import Tensor
 from torch.nn import Module
 from src.options import Options
 
@@ -10,6 +11,21 @@ from omegaconf import OmegaConf
 import random
 import numpy as np
 import torch
+
+
+def get_max_grad_norm(model: Module) -> Union[str, Tensor]:
+    max_name, max_grad_norm = "NONE", torch.tensor(0.)
+    for (name, param) in model.named_parameters():
+        if param.grad is not None:
+            grad_norm = param.grad.data.norm(2)  # (1,)
+            if grad_norm >= max_grad_norm:
+                max_grad_norm = grad_norm
+                max_name = name
+
+    if max_grad_norm.item() == 0. and max_name != "NONE":
+        max_name = "ZERO"
+
+    return max_name, max_grad_norm
 
 
 def set_seed(seed: int, deterministic: bool = False):

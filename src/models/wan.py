@@ -24,8 +24,8 @@ from src.models.networks import (
     VAEDecoderWrapper,
     TAEHV,
 )
+from src.models.networks.decoder_wrapper import ZERO_VAE_CACHE_512, ZERO_VAE_CACHE
 from src.models.losses import XYZLoss, DepthLoss, CameraLoss
-from src.utils.constant import ZERO_VAE_CACHE
 from src.utils import convert_to_buffer, plucker_ray, colorize_depth, filter_da3_points, render_pt3d_points, mv_interpolate
 
 
@@ -786,7 +786,10 @@ class Wan(nn.Module):
                 if self.opt.load_tae:
                     vae_cache = None
                 else:
-                    vae_cache = ZERO_VAE_CACHE
+                    vae_cache = {
+                        512: ZERO_VAE_CACHE_512,
+                        832: ZERO_VAE_CACHE,
+                    }[W]
                     for i in range(len(vae_cache)):
                         vae_cache[i] = vae_cache[i].to(device=device, dtype=dtype)
         else:
@@ -1206,7 +1209,10 @@ class Wan(nn.Module):
                 if self.opt.load_tae:
                     vae_cache = None
                 else:
-                    vae_cache = ZERO_VAE_CACHE
+                    vae_cache = {
+                        512: ZERO_VAE_CACHE_512,
+                        832: ZERO_VAE_CACHE,
+                    }[W]
                     for i in range(len(vae_cache)):
                         vae_cache[i] = vae_cache[i].to(device=device, dtype=dtype)
         else:

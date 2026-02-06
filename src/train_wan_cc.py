@@ -26,7 +26,8 @@ from src.models.networks import WanVAEWrapper
 from src.models import Wan, DMD_Wan, get_optimizer, get_lr_scheduler
 import src.utils.util as util
 import src.utils.vis_util as vis_util
-from src.utils.distributed import EMA_FSDP, fsdp_wrap, fsdp_state_dict, launch_distributed_job
+from src.utils.ema import EMAParams
+from src.utils.distributed import fsdp_wrap, fsdp_state_dict, launch_distributed_job, barrier
 
 
 def main():
@@ -334,12 +335,23 @@ def main():
     lr_scheduler = get_lr_scheduler(optimizer=optimizer, **configs["lr_scheduler"])
 
     # Initialize the EMA model
-    model_diffusion_ema = None
+    ema_params = None
     if args.use_ema:
-        logger.info("Use exponential moving average (EMA) for model parameters\n")
         ema_weight = configs["train"].get("ema_weight", 0.)
         if ema_weight > 0.:
-            model_diffusion_ema = EMA_FSDP(model.diffusion, decay=ema_weight)
+            name_to_trainable_params = {}
+            for name, param in model.diffusion.named_parameters():
+                if not param.requires_grad:
+                    continue
+                renamed_name = name.replace("_fsdp_wrapped_module.", "") \
+                   .replace("_checkpoint_wrapped_module.", "") \
+                   .replace("_orig_mod.", "") \
+                   .replace("module.", "")
+                name_to_trainable_params[renamed_name] = param
+            ema_params = EMAParams(name_to_trainable_params, ema_weight)
+            num_ema_params = sum(p.numel() for p in ema_params.name_to_ema_params.values())
+            logger.info("Set up EMA for trainable params in the diffusion model")
+            logger.info(f"Number of (sharded) EMA parameters: [{(num_ema_params / 1e6):.2f} M]\tEMA weight: [{ema_weight}]\n")
 
     # Training config summary
     configs["train"]["total_batch_size"] = configs["train"]["batch_size_per_gpu"] * world_size * args.gradient_accumulation_steps
@@ -379,7 +391,7 @@ def main():
         wandb.log_artifact(arti_exp_info)
 
     # Start training
-    global_update_step = 0
+    NONE_COUNT, global_update_step = 0, 0
     if is_main_process:
         logger.removeHandler(logger.handlers[0])  # remove console handler during training
     progress_bar = tqdm(
@@ -391,6 +403,7 @@ def main():
     )
     for epoch in range(configs["train"]["epochs"]):
 
+        train_sampler.set_epoch(epoch)  # for shuffling the training dataset
         for batch in train_loader:
 
             if global_update_step == args.max_train_steps:
@@ -430,6 +443,17 @@ def main():
             # Backpropagate
             loss.backward()
 
+            # Gradient check
+            max_name, max_grad_norm = util.get_max_grad_norm(model)
+            if max_name in ["NONE", "ZERO"]:
+                logger.info(f"Gradient norm is [{max_name}]! Skip updating model parameters")
+                optimizer.zero_grad()
+                NONE_COUNT += 1
+                if NONE_COUNT > 10:
+                    raise ValueError(f"Gradient norm is [{max_name}] for {NONE_COUNT} times!")
+                continue
+            NONE_COUNT = 0  # reset NONE_COUNT after a successful update
+
             # Gradient clip
             torch.nn.utils.clip_grad_norm_(params_to_optimize, args.max_grad_norm)
 
@@ -439,13 +463,13 @@ def main():
             optimizer.zero_grad()
 
             # Update the EMA model
-            if model_diffusion_ema is not None:
+            if ema_params is not None:
                 if global_update_step >= configs["train"].get("ema_start_step", 0):
                     if opt.use_dmd:
                         if train_generator:
-                            model_diffusion_ema.update(model.diffusion)
+                            ema_params.update()
                     else:
-                        model_diffusion_ema.update(model.diffusion)
+                        ema_params.update()
 
             # Logging
             logs = {
@@ -522,13 +546,26 @@ def main():
             if global_update_step != 0 and (global_update_step % configs["train"]["save_freq"] == 0  # 1. every `save_freq` steps
                 or global_update_step % (configs["train"]["save_freq_epoch"] * updated_steps_per_epoch) == 0  # 2. every `save_freq_epoch` epochs
                 or global_update_step == args.max_train_steps-1):  # 3. last step
+
                 gc.collect()
+
+                # Use EMA parameters for saving
+                if ema_params is not None:
+                    # Store the model parameters temporarily and load the EMA parameters
+                    ema_params.cache_model(cpu=False)
+                    ema_params.copy_to_model()
+                torch.cuda.synchronize()
+                barrier()  # make sure all processes have finished the above operations before saving checkpoints
+
                 if is_main_process:
                     os.makedirs(os.path.join(ckpt_dir, f"{global_update_step:06d}"), exist_ok=True)
-                    if model_diffusion_ema is not None:
-                        torch.save(model_diffusion_ema.state_dict(), os.path.join(ckpt_dir, f"{global_update_step:06d}", "ema_states.pth"))
-                    else:
-                        torch.save(fsdp_state_dict(model.diffusion), os.path.join(ckpt_dir, f"{global_update_step:06d}", "model_states.pth"))
+                    torch.save(fsdp_state_dict(model.diffusion), os.path.join(ckpt_dir, f"{global_update_step:06d}", "model_states.pth"))
+
+                if ema_params is not None:
+                    # Switch back to the original model parameters
+                    ema_params.restore_model_from_cache()
+                barrier()  # make sure all processes have finished restoring the model parameters before the next training step
+
                 gc.collect()
 
             # Evaluate on the validation set
@@ -542,10 +579,12 @@ def main():
                 gc.collect()
 
                 # Use EMA parameters for evaluation
-                if model_diffusion_ema is not None:
-                    # Store the model parameters temporarily and load the EMA parameters to perform inference
-                    model_diffusion_ema.store(model.diffusion)
-                    model_diffusion_ema.copy_to(model.diffusion)
+                if ema_params is not None:
+                    # Store the model parameters temporarily and load the EMA parameters
+                    ema_params.cache_model(cpu=False)
+                    ema_params.copy_to_model()
+                torch.cuda.synchronize()
+                barrier()  # make sure all processes have finished the above operations before evaluation
 
                 with torch.no_grad():
                     model.eval()
@@ -558,6 +597,7 @@ def main():
                         ncols=125,
                         disable=not is_main_process
                     )
+                    val_sampler.set_epoch(global_update_step)  # for shuffling the validation dataset
                     for val_batch in val_loader:
                         val_outputs = model(val_batch, func_name="evaluate", vae=vae)
                         all_val_outputs.append(val_outputs)
@@ -589,9 +629,10 @@ def main():
 
                 val_progress_bar.close()
 
-                if model_diffusion_ema is not None:
+                if ema_params is not None:
                     # Switch back to the original model parameters
-                    model_diffusion_ema.restore(model.diffusion)
+                    ema_params.restore_model_from_cache()
+                barrier()  # make sure all processes have finished restoring the model parameters before the next training step
 
                 for k, v in all_val_matrics.items():
                     all_val_matrics[k] = torch.tensor(v).mean()

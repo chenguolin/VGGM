@@ -10,8 +10,8 @@ import torch.nn.functional as tF
 from depth_anything_3.model.utils.transform import mat_to_quat
 
 from src.options import Options
+from src.models.networks.decoder_wrapper import ZERO_VAE_CACHE_512, ZERO_VAE_CACHE
 from src.models.losses import XYZLoss, CameraLoss
-from src.utils.constant import ZERO_VAE_CACHE
 from src.utils import plucker_ray, filter_da3_points, render_pt3d_points, mv_interpolate
 
 
@@ -103,7 +103,10 @@ class SelfForcingTrainingPipeline:
             if self.opt.load_tae:
                 vae_cache = None
             else:
-                vae_cache = ZERO_VAE_CACHE
+                vae_cache = {
+                    512: ZERO_VAE_CACHE_512,
+                    832: ZERO_VAE_CACHE,
+                }[int(w*8)]
                 for i in range(len(vae_cache)):
                     vae_cache[i] = vae_cache[i].to(device=device, dtype=dtype)
         else:
