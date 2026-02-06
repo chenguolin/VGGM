@@ -155,7 +155,7 @@ class Options:
     use_gradient_checkpointing_offload: bool = False
         ## Training and inference
     cfg_dropout: float = 0.1
-    cfg_scale: Tuple[float, ...] = (1., 5.,)
+    cfg_scale: Tuple[float, ...] = (5.,)
     negative_prompt: str = "色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走"
     deterministic_inference: bool = True
     use_lpips: bool = False  # False to save memory
@@ -252,6 +252,8 @@ opt_dict["wan2.1_t2v_1.3b_i2v"] = Options(
     # load_conf=True,
     # input_pcrender=True,
 )
+
+# Diffusion/Teacher Forcing
 opt_dict["wan2.1_t2v_1.3b_causal"] = Options(
     first_latent_cond=False,
     input_plucker=True,
@@ -276,7 +278,6 @@ opt_dict["wan2.1_t2v_1.3b_causal"] = Options(
     #
     # num_input_frames=201,
     num_input_frames_test=201,
-    cfg_scale=(5.,),
     #
     load_conf=True,
     input_pcrender=True,
