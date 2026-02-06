@@ -310,7 +310,7 @@ opt_dict["sf_rep"] = Options(
     name_lr_mult="fake_score",
     lr_mult=0.2,
     #
-    num_input_frames_test=201,
+    num_input_frames_test=81,
     num_inference_steps=4,
     cfg_scale=(1.,),
     deterministic_inference=False,
