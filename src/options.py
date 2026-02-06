@@ -104,7 +104,6 @@ class Options:
     fake_wan_dir: str = f"{ROOT}/.cache/huggingface/hub/Wan-AI/Wan2.1-T2V-1.3B"
         ## Model
     load_text_encoder: bool = True
-    load_clip_encoder: bool = True
     input_plucker: bool = False
     input_pcrender: bool = False
     first_latent_cond: bool = False
