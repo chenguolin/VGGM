@@ -9,6 +9,7 @@ from diffusers.optimization import get_scheduler
 
 from src.models.wan import Wan
 from src.models.dmd_wan import DMD_Wan
+from src.models.ema import MyEMAModel
 
 
 def get_optimizer(name: str, params: Parameter, **kwargs) -> Optimizer:
