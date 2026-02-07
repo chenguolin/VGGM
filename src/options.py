@@ -243,14 +243,6 @@ opt_dict["wan2.1_t2v_1.3b"] = Options(
     # load_conf=True,
     # input_pcrender=True,
 )
-opt_dict["wan2.1_t2v_1.3b_i2v"] = Options(
-    first_latent_cond=True,
-    input_plucker=True,
-    exclude_name_lr_mult="plucker_embed,extra_condition_embed",
-    #
-    # load_conf=True,
-    # input_pcrender=True,
-)
 
 # Diffusion/Teacher Forcing
 opt_dict["wan2.1_t2v_1.3b_causal"] = Options(
