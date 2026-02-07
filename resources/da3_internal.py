@@ -2,6 +2,7 @@ from typing import *
 
 import os
 import numpy as np
+import torch
 from tqdm import tqdm
 import accelerate
 from PIL import Image
@@ -13,22 +14,39 @@ import sys; sys.path.append(os.path.join(os.path.dirname(__file__), ".."))  # fo
 from src.options import DATAROOT
 
 
+TARGET_FPS = 16.
+
+
 def get_video_subset(uids, rank, world_size):
     return [uid for i, uid in enumerate(uids) if i % world_size == rank]
 
 
+def build_16fps_frame_indices(num_frames: int, src_fps: float, target_fps: float = 16.) -> np.ndarray:
+    if num_frames <= 0:
+        return np.array([], dtype=np.int64)
+    if src_fps <= 0:
+        return np.arange(num_frames, dtype=np.int64)
+    duration = num_frames / src_fps
+    target_ts = np.arange(0., duration, 1. / target_fps, dtype=np.float32)
+    frame_indices = np.floor(target_ts * src_fps).astype(np.int64)
+    frame_indices = np.clip(frame_indices, 0, num_frames - 1)
+    return frame_indices
+
+
 def main():
+    accelerator = accelerate.Accelerator()
+    rank = accelerator.process_index
+    world_size = accelerator.num_processes
+    device = accelerator.device
+    torch.cuda.set_device(device)
+
     model = DepthAnything3.from_pretrained("depth-anything/DA3NESTED-GIANT-LARGE-1.1")
+    model = model.to(device)
 
     # Get UIDs from InternalDataset structure
     dataset_root = DATAROOT
     caption_dir = os.path.join(dataset_root, "valid_captions")
     uids = [f.replace(".json", "") for f in os.listdir(caption_dir) if f.endswith(".json")]
-
-    accelerator = accelerate.Accelerator()
-    rank = accelerator.process_index
-    world_size = accelerator.num_processes
-    model = accelerator.prepare(model)
 
     subset_uids = get_video_subset(uids, rank, world_size)
 
@@ -38,7 +56,9 @@ def main():
         os.makedirs(output_root, exist_ok=True)
 
         vr = VideoReader(video_path, ctx=cpu(0))
-        num_frames, fps = len(vr), vr.get_avg_fps()
+        num_frames_src, fps_src = len(vr), vr.get_avg_fps()
+        frame_idxs_16fps = build_16fps_frame_indices(num_frames_src, fps_src, target_fps=TARGET_FPS)
+        num_frames, fps = len(frame_idxs_16fps), TARGET_FPS
 
         clip_idx = 1  # start from 1
         while True:
@@ -54,11 +74,12 @@ def main():
             if len(frame_idxs) == 0:
                 break
 
-            frames = vr.get_batch(frame_idxs.tolist()).asnumpy()
+            src_frame_idxs = frame_idxs_16fps[frame_idxs]
+            frames = vr.get_batch(src_frame_idxs.tolist()).asnumpy()
             pil_frames = [Image.fromarray(frame) for frame in frames]
 
             # DA3 inference
-            prediction = model.module.inference(
+            prediction = model.inference(
                 image=pil_frames,
                 use_ray_pose=True,
                 process_res=504,
