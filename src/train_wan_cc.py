@@ -256,22 +256,36 @@ def main():
         model = DMD_Wan(opt)
     else:
         model = Wan(opt)
+    model = model.to(device=device, dtype=dtype)
+
     params_to_optimize = filter(lambda p: p.requires_grad, model.parameters())
     logger.info(f"Trainable parameter names: {sorted([name for name, param in model.named_parameters() if param.requires_grad])}\n")
     if is_main_process:  # save model architecture
         util.save_model_architecture(model, exp_dir)
 
     # FSDP wrap
+    if args.wrap_strategy == "transformer":
+        from src.models.networks.wan_modules.t5 import T5Attention
+        from src.models.networks.wan_modules.model import WanAttentionBlock
+        from src.models.networks.wan_modules.causal_model import CausalWanAttentionBlock
+        transformer_blocks = {T5Attention, WanAttentionBlock, CausalWanAttentionBlock}
+        if opt.load_da3:
+            from depth_anything_3.model.dinov2.layers.block import Block
+            transformer_blocks.add(Block)
+    else:
+        transformer_blocks = None
     model.diffusion = fsdp_wrap(
         model.diffusion,
         sharding_strategy=args.sharding_strategy,
         wrap_strategy=args.wrap_strategy,
+        transformer_module=transformer_blocks,
         mixed_precision=(args.mixed_precision != "no"),
     )
     model.text_encoder = fsdp_wrap(
         model.text_encoder,
         sharding_strategy=args.sharding_strategy,
         wrap_strategy=args.wrap_strategy,
+        transformer_module=transformer_blocks,
         mixed_precision=(args.mixed_precision != "no"),
     )
     if opt.use_dmd:
@@ -279,12 +293,14 @@ def main():
             model.real_score,
             sharding_strategy=args.sharding_strategy,
             wrap_strategy=args.wrap_strategy,
+            transformer_module=transformer_blocks,
             mixed_precision=(args.mixed_precision != "no"),
         )
         model.fake_score = fsdp_wrap(
             model.fake_score,
             sharding_strategy=args.sharding_strategy,
             wrap_strategy=args.wrap_strategy,
+            transformer_module=transformer_blocks,
             mixed_precision=(args.mixed_precision != "no"),
         )
 

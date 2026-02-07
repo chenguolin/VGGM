@@ -71,6 +71,7 @@ class SelfForcingTrainingPipeline:
         fxfycxcy: Optional[Tensor] = None,
     ):
         B, _, f, h, w = noises.shape
+        H, W = h * 8, w * 8  # `8`: hard-coded for Wan2.1
         device, dtype = noises.device, noises.dtype
 
         if cond_latents is not None:
@@ -95,8 +96,8 @@ class SelfForcingTrainingPipeline:
             if cond_latents is not None:
                 raise NotImplementedError  # TODO
             else:
-                render_images = torch.zeros((B, self.opt.chunk_size, 3, h*8, w*8), dtype=dtype, device=device)  # `8`: hard-coded for Wan2.1
-                render_depths = torch.zeros((B, self.opt.chunk_size, h*8, w*8), dtype=dtype, device=device)  # `8`: hard-coded for Wan2.1
+                render_images = torch.zeros((B, self.opt.chunk_size, 3, H, W), dtype=dtype, device=device)  # `8`: hard-coded for Wan2.1
+                render_depths = torch.zeros((B, self.opt.chunk_size, H, W), dtype=dtype, device=device)  # `8`: hard-coded for Wan2.1
                 render_loss = []
             render_images_vis = render_images
 
@@ -106,7 +107,7 @@ class SelfForcingTrainingPipeline:
                 vae_cache = {
                     512: ZERO_VAE_CACHE_512,
                     832: ZERO_VAE_CACHE,
-                }[int(w*8)]
+                }[int(W)]
                 for i in range(len(vae_cache)):
                     vae_cache[i] = vae_cache[i].to(device=device, dtype=dtype)
         else:
@@ -313,14 +314,14 @@ class SelfForcingTrainingPipeline:
                                 all_colors[i] = torch.cat([all_colors[i], colors], dim=0)
                             with torch.no_grad():
                                 render_images, render_depths = render_pt3d_points(
-                                    h*8, w*8, all_points[i], all_colors[i],  # `*8`: hard-coded for Wan2.1
+                                    H, W, all_points[i], all_colors[i],  # `*8`: hard-coded for Wan2.1
                                     C2W[i, (chunk_idx + 1) * self.opt.chunk_size:(chunk_idx + 2) * self.opt.chunk_size, ...],
                                     fxfycxcy[i, (chunk_idx + 1) * self.opt.chunk_size:(chunk_idx + 2) * self.opt.chunk_size, ...],
                                     return_depth=True,
                                 )
                         else:  # no valid points
-                            render_images = torch.zeros((self.opt.chunk_size, 3, h*8, w*8), dtype=dtype, device=device)
-                            render_depths = torch.zeros((self.opt.chunk_size, h*8, w*8), dtype=dtype, device=device)
+                            render_images = torch.zeros((self.opt.chunk_size, 3, H, W), dtype=dtype, device=device)
+                            render_depths = torch.zeros((self.opt.chunk_size, H, W), dtype=dtype, device=device)
                         all_render_images.append(render_images.to(dtype))
                         all_render_depths.append(render_depths.to(dtype))
                     render_images = torch.stack(all_render_images, dim=0)  # (B, f_chunk, 3, H, W)
