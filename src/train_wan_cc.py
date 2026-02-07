@@ -82,7 +82,7 @@ def main():
     parser.add_argument(
         "--max_val_steps",
         type=int,
-        default=1,
+        default=2,
         help="The max iteration step for validation"
     )
     parser.add_argument(
