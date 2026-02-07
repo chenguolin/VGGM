@@ -31,5 +31,4 @@ accelerate launch \
     --machine_rank $INDEX \
     --main_process_ip $CHIEF_IP \
     --main_process_port 8081 \
-    resources/da3_internal.py \
-        --split $1
+    resources/da3_internal.py
