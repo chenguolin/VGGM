@@ -15,7 +15,7 @@ train:
   batch_size_per_gpu: 1
   gradient_accumulation_steps: 1
   sharding_strategy: "hybrid_full"
-  wrap_strategy: "size"
+  wrap_strategy: "transformer"
   epochs: 10
   log_freq: 1
   early_eval_freq: 20
