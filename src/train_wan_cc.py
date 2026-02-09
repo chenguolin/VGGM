@@ -302,11 +302,15 @@ def main():
             mixed_precision=(args.mixed_precision != "no"),
         )
 
-    # Prepare VAE
+    # Prepare VAE and optionally other modules
     vae = WanVAEWrapper(opt.vae_path)
     vae = vae.to(device=device, dtype=dtype)
     vae.requires_grad_(False)
     vae.eval()
+    if model.current_vae_decoder is not None:
+        model.current_vae_decoder = model.current_vae_decoder.to(device=device, dtype=dtype)
+    if model.lpips_loss is not None:
+        model.lpips_loss = model.lpips_loss.to(device=device, dtype=dtype)
 
     # Initialize the optimizer
     if opt.name_lr_mult is not None or opt.exclude_name_lr_mult is not None:
