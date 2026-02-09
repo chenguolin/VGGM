@@ -485,11 +485,9 @@ def main():
             # Update the EMA model
             if ema_params is not None:
                 if global_update_step >= configs["train"].get("ema_start_step", 0):
-                    if opt.use_dmd:
-                        if train_generator:
-                            ema_params.update()
-                    else:
-                        ema_params.update()
+                    ema_params.update()
+                else:  # EMA starts from current paramters
+                    ema_params = EMAParams(name_to_trainable_params, ema_weight)
 
             # Logging
             logs = {
@@ -574,7 +572,6 @@ def main():
                     # Store the model parameters temporarily and load the EMA parameters
                     ema_params.cache_model(cpu=False)
                     ema_params.copy_to_model()
-                torch.cuda.synchronize()
                 barrier()  # make sure all processes have finished the above operations before saving checkpoints
 
                 # NOTE: For FSDP full state dict, all ranks must participate in `state_dict()` collectives even when `rank0_only=True`.
@@ -606,7 +603,6 @@ def main():
                     # Store the model parameters temporarily and load the EMA parameters
                     ema_params.cache_model(cpu=False)
                     ema_params.copy_to_model()
-                torch.cuda.synchronize()
                 barrier()  # make sure all processes have finished the above operations before evaluation
 
                 with torch.no_grad():
