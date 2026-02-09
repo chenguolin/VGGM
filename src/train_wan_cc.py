@@ -258,7 +258,6 @@ def main():
         model = Wan(opt)
     model = model.to(device=device, dtype=dtype)
 
-    params_to_optimize = filter(lambda p: p.requires_grad, model.parameters())
     logger.info(f"Trainable parameter names: {sorted([name for name, param in model.named_parameters() if param.requires_grad])}\n")
     if is_main_process:  # save model architecture
         util.save_model_architecture(model, exp_dir)
@@ -343,7 +342,12 @@ def main():
         else:
             logger.info(f"Learning rate x [{opt.lr_mult}] parameter names: {sorted(name_params_lr_mult.keys())}\n")
     else:
-        optimizer = get_optimizer(params=params_to_optimize, **configs["optimizer"])
+        name_params = {name: param for name, param in model.named_parameters() if param.requires_grad}
+        optimizer = get_optimizer(
+            # Sorted names to ensure the same order for optimizer resuming
+            params=list([name_params[name] for name in sorted(name_params.keys())]),
+            **configs["optimizer"]
+        )
 
     # Initialize the learning rate scheduler
     configs["lr_scheduler"]["total_steps"] = configs["train"]["epochs"] * math.ceil(
@@ -471,7 +475,8 @@ def main():
             NONE_COUNT = 0  # reset NONE_COUNT after a successful update
 
             # Gradient clip
-            torch.nn.utils.clip_grad_norm_(params_to_optimize, args.max_grad_norm)
+            torch.nn.utils.clip_grad_norm_(
+                [param for param in model.parameters() if param.requires_grad], args.max_grad_norm)
 
             # Update the model parameters
             optimizer.step()
