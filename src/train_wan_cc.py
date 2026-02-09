@@ -256,7 +256,6 @@ def main():
         model = DMD_Wan(opt)
     else:
         model = Wan(opt)
-    model = model.to(device=device, dtype=dtype)
 
     logger.info(f"Trainable parameter names: {sorted([name for name, param in model.named_parameters() if param.requires_grad])}\n")
     if is_main_process:  # save model architecture
