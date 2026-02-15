@@ -48,12 +48,15 @@ def main():
     caption_dir = os.path.join(dataset_root, "valid_captions")
     uids = [f.replace(".json", "") for f in os.listdir(caption_dir) if f.endswith(".json")]
 
+    if os.path.exists(os.path.join(dataset_root, "da3")):
+        da3_uids = [d for d in os.listdir(os.path.join(dataset_root, "da3")) if os.path.isdir(os.path.join(dataset_root, "da3", d))]
+        uids = list(set(uids) - set(da3_uids))
+
     subset_uids = get_video_subset(uids, rank, world_size)
 
     for uid in tqdm(subset_uids, ncols=125, desc=f"Rank {rank}"):
         video_path = os.path.join(dataset_root, "video", f"{uid}.mp4")
         output_root = os.path.join(dataset_root, "da3", uid)
-        os.makedirs(output_root, exist_ok=True)
 
         vr = VideoReader(video_path, ctx=cpu(0))
         num_frames_src, fps_src = len(vr), vr.get_avg_fps()
@@ -62,6 +65,13 @@ def main():
 
         clip_idx = 1  # start from 1
         while True:
+            if os.path.exists(os.path.join(output_root, f"{clip_idx:02d}", "depth.npy")) and \
+               os.path.exists(os.path.join(output_root, f"{clip_idx:02d}", "conf.npy")) and \
+               os.path.exists(os.path.join(output_root, f"{clip_idx:02d}", "extrinsics.npy")) and \
+               os.path.exists(os.path.join(output_root, f"{clip_idx:02d}", "intrinsics.npy")):
+                clip_idx += 1
+                continue
+
             # `5`: hard-coded for 5s-clip; `12`: hard-coded for clip-overlap
             start_frame_idx = int(round((clip_idx - 1) * 5 * fps)) - 12 * (clip_idx - 1)
             end_frame_idx = start_frame_idx + int(round(5 * fps))
