@@ -48,9 +48,9 @@ def main():
     caption_dir = os.path.join(dataset_root, "valid_captions")
     uids = [f.replace(".json", "") for f in os.listdir(caption_dir) if f.endswith(".json")]
 
-    if os.path.exists(os.path.join(dataset_root, "da3")):
-        da3_uids = [d for d in os.listdir(os.path.join(dataset_root, "da3")) if os.path.isdir(os.path.join(dataset_root, "da3", d))]
-        uids = list(set(uids) - set(da3_uids))
+    # if os.path.exists(os.path.join(dataset_root, "da3")):
+    #     da3_uids = [d for d in os.listdir(os.path.join(dataset_root, "da3")) if os.path.isdir(os.path.join(dataset_root, "da3", d))]
+    #     uids = list(set(uids) - set(da3_uids))
 
     subset_uids = get_video_subset(uids, rank, world_size)
 
