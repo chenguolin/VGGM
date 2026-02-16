@@ -18,10 +18,7 @@ class InternalDataset(BaseDataset):
     def __init__(self, opt: Options, training: bool = True):
         super().__init__(opt, "internal", training)
 
-        if opt.load_da3_cam:
-            uids = os.listdir(f"{self.root}/da3")
-        else:
-            uids = os.listdir(f"{self.root}/valid_captions")
+        uids = os.listdir(f"{self.root}/valid_captions")
         indices = np.random.RandomState(seed=42).permutation(len(uids))
         if training:
             self.uids = [uids[i].strip(".json") for i in indices[:int(0.95 * len(uids))]]
