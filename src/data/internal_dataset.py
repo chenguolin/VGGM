@@ -65,6 +65,8 @@ class InternalDataset(BaseDataset):
                     raise ValueError("No valid data in InternalDataset!")
             return self.__getitem__(np.random.choice(self.valid_idxs))
 
+        prompt = prompt[0] if len(prompt) == 1 else prompt  # str or List[str]
+
         # Sample frames
         video_path = os.path.join(self.root, "video", f"{uid}.mp4")
         vr = VideoReader(str(video_path), ctx=cpu(0))
@@ -183,7 +185,7 @@ class InternalDataset(BaseDataset):
 
         return_dict = {
             "uid": uid,            # str
-            "prompt": prompt,      # List[str], len == num_clips
+            "prompt": prompt,      # str or List[str] (len == num_clips)
             "C2W": C2W,            # (F, 4, 4)
             "fxfycxcy": fxfycxcy,  # (F, 4)
         }
