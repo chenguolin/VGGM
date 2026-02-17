@@ -34,6 +34,18 @@ class InternalDataset(BaseDataset):
         return len(self.valid_idxs)
 
     def __getitem__(self, idx: int) -> Dict[str, Any]:
+        try:
+            return self._try_getitem(idx)
+        except Exception as e:
+            # with open("error_log.txt", "a") as f:
+            #     f.write(f"Error processing idx={idx}, uid={self.uids[idx]}: {str(e)}\n")
+            if idx in self.valid_idxs:
+                self.valid_idxs.remove(idx)
+                if len(self.valid_idxs) == 0:
+                    raise ValueError("No valid data in InternalDataset!")
+            return self.__getitem__(np.random.choice(self.valid_idxs))
+
+    def _try_getitem(self, idx: int) -> Dict[str, Any]:
         _num_tries = max(10, len(self.uids))
         for _ in range(_num_tries):
             uid = self.uids[idx]

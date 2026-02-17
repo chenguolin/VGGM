@@ -9,6 +9,7 @@ log/
 temp*/
 temp*.*
 *.log
+*.txt
 *.npz
 *.pth
 *.csv
