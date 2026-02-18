@@ -37,7 +37,7 @@ class InternalDataset(BaseDataset):
         try:
             return self._try_getitem(idx)
         except Exception as e:
-            # with open("error_log.txt", "a") as f:
+            # with open("dataload_error.log", "a") as f:
             #     f.write(f"Error processing idx={idx}, uid={self.uids[idx]}: {str(e)}\n")
             if idx in self.valid_idxs:
                 self.valid_idxs.remove(idx)
@@ -109,13 +109,21 @@ class InternalDataset(BaseDataset):
             extrinsics_chunks, intrinsics_chunks = [], []
             depth_chunks, conf_chunks = [], []
             da3_root = video_path.replace("video", "da3").replace(".mp4", "")
+            prev_chunk_extrinsics_aligned = None
             for i, clip_idx in enumerate(clip_idxs):
                 da3_dir = da3_root + f"/{clip_idx:02d}"
                 _extrinsics = np.load(da3_dir + "/extrinsics.npy")
                 _intrinsics = np.load(da3_dir + "/intrinsics.npy")
+                if i > 0 and prev_chunk_extrinsics_aligned is not None and self.CLIP_OVERLAP_FRAMES > 0:
+                    _extrinsics = self._align_chunk_w2c_to_prev_chunk(
+                        curr_chunk_w2c=_extrinsics,
+                        prev_overlap_w2c=prev_chunk_extrinsics_aligned[-self.CLIP_OVERLAP_FRAMES:, ...],
+                        curr_overlap_w2c=_extrinsics[:self.CLIP_OVERLAP_FRAMES, ...],
+                    )
                 trim_start = self.CLIP_OVERLAP_FRAMES if i > 0 else 0
                 extrinsics_chunks.append(_extrinsics[trim_start:, ...])
                 intrinsics_chunks.append(_intrinsics[trim_start:, ...])
+                prev_chunk_extrinsics_aligned = _extrinsics
                 if self.opt.load_depth:
                     _depth = np.load(da3_dir + "/depth.npy")
                     depth_chunks.append(_depth[trim_start:, ...])
@@ -221,3 +229,31 @@ class InternalDataset(BaseDataset):
         frame_indices = np.floor(target_ts * src_fps).astype(np.int64)
         frame_indices = np.clip(frame_indices, 0, num_frames - 1)
         return frame_indices
+
+    @staticmethod
+    def _w2c3x4_to_homo4x4(w2c: np.ndarray) -> np.ndarray:
+        w2c = np.asarray(w2c)
+        w2c4 = np.broadcast_to(np.eye(4, dtype=np.float32), (w2c.shape[0], 4, 4)).copy()
+        w2c4[:, :3, :4] = w2c.astype(np.float32)
+        return w2c4
+
+    @classmethod
+    def _align_chunk_w2c_to_prev_chunk(
+        cls,
+        curr_chunk_w2c: np.ndarray,
+        prev_overlap_w2c: np.ndarray,
+        curr_overlap_w2c: np.ndarray,
+    ) -> np.ndarray:
+        # Align current chunk poses into previous chunk's world coordinate frame
+        if curr_chunk_w2c.shape[0] == 0 or prev_overlap_w2c.shape[0] == 0 or curr_overlap_w2c.shape[0] == 0:
+            return curr_chunk_w2c
+
+        overlap = min(prev_overlap_w2c.shape[0], curr_overlap_w2c.shape[0])
+        prev_overlap4 = cls._w2c3x4_to_homo4x4(prev_overlap_w2c[-overlap:])
+        curr_overlap4 = cls._w2c3x4_to_homo4x4(curr_overlap_w2c[:overlap])
+
+        # Use the overlap boundary pair to estimate world transform between chunks
+        curr_to_prev = np.linalg.inv(curr_overlap4[-1]) @ prev_overlap4[-1]
+        curr4 = cls._w2c3x4_to_homo4x4(curr_chunk_w2c)
+        curr4_aligned = curr4 @ curr_to_prev[None, ...]
+        return curr4_aligned[:, :3, :4]
