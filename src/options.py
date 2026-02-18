@@ -125,6 +125,7 @@ class Options:
         ## Load pre-trained models
     generator_path: Optional[str] = None
     teacher_path: Optional[str] = None
+    fake_path: Optional[str] = None
     is_teacher_causal: bool = False
     teacher_input_plucker: bool = False
     teacher_input_pcrender: bool = False
@@ -194,6 +195,9 @@ class Options:
 
         if self.load_da3:
             self.load_depth = True
+
+        if self.fake_path is None:
+            self.fake_path = self.generator_path
 
         # Dataset directories
         self.dataset_dir_train = {

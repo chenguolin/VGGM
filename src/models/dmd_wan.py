@@ -74,8 +74,8 @@ class DMD_Wan(Wan):
             chunk_size=opt.chunk_size,
             max_attention_size=opt.max_attention_size,
         )
-        if opt.teacher_path is not None:
-            state_dict = torch.load(opt.teacher_path, map_location="cpu", weights_only=True)
+        if opt.fake_path is not None:
+            state_dict = torch.load(opt.fake_path, map_location="cpu", weights_only=True)
             if "generator_ema" in state_dict:
                 self.fake_score.load_state_dict(state_dict["generator_ema"])
             elif "generator" in state_dict:
@@ -426,7 +426,7 @@ class DMD_Wan(Wan):
             timesteps_id = torch.randint(0, len(denoising_step_list), (num_chunks,))  # (num_chunks,); each chunk in different noise level
             timesteps_id = timesteps_id.repeat_interleave(self.opt.chunk_size, dim=0).repeat(B, 1)  # (B, f); batch share the same timestep for simpler time scheduler
         timesteps = denoising_step_list[timesteps_id].to(dtype=dtype, device=device)
-        if cond_latents is not None and self.opt.teacher_first_latent_cond:
+        if cond_latents is not None and self.opt.first_latent_cond:
             timesteps = torch.cat([torch.zeros_like(timesteps[:, :1]), timesteps[:, 1:]], dim=1)
 
         if self.opt.no_noise_for_da3:
