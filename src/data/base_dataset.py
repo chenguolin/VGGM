@@ -37,8 +37,8 @@ class BaseDataset(EasyDataset):
         """
         return_batch = {}
         for key in batch[0].keys():
-            if key in ["uid", "prompt"]:
-                return_batch[key] = [sample[key] for sample in batch]  # a list of str
+            if not isinstance(batch[0][key], Tensor):
+                return_batch[key] = [sample[key] for sample in batch]  # a list of Any (str, Tensor, ...)
             else:
                 return_batch[key] = torch.stack([sample[key] for sample in batch])  # a Tensor
         return return_batch
@@ -52,6 +52,7 @@ class BaseDataset(EasyDataset):
         pingpong_threshold: int = -1,
         start_frame_idx: Optional[int] = None,
         end_frame_idx: Optional[int] = None,
+        clip_idx: Optional[int] = None,
     ) -> List[int]:
         frame_idxs = np.arange(num_frames, dtype=int)
         if start_frame_idx is not None:
@@ -60,6 +61,9 @@ class BaseDataset(EasyDataset):
             frame_idxs = frame_idxs[frame_idxs < end_frame_idx]
         F_all, F = len(frame_idxs), \
             self.opt.num_input_frames if self.training else self.opt.num_input_frames_test
+
+        if clip_idx is not None and clip_idx > 1:
+            F = F - 1  # only include image latent in the first clip, e.g., 81 -> 80
 
         if not self.training:
             min_gap = max_gap = max_stride * F
