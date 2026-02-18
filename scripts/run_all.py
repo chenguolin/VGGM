@@ -22,22 +22,39 @@ if __name__ == "__main__":
         default=f"train_{time.strftime('%Y%m%d_%H%M%S')}",
         help="Tmux session name used on every node",
     )
+    parser.add_argument(
+        "--tmux-log-dir",
+        type=str,
+        default=None,
+        help="If set, enable tmux pane logging to this directory on each node",
+    )
     args = parser.parse_args()
     if not args.command:
         parser.error("Please provide the command to run on all nodes.")
 
     command = shlex.join(args.command)
     session_name = args.session
+    tmux_log_dir = args.tmux_log_dir
     ips = os.environ["NODE_IP_LIST"].split(",")
 
     def _foo(the_ip):
         ip = the_ip.split(":")[0]
+        remote_cmd = (
+            "conda activate qa && "
+            f"cd {shlex.quote(ROOT)}/projects/VGGM && "
+            f"tmux kill-session -t {shlex.quote(session_name)} 2>/dev/null; "
+            f"tmux new-session -d -s {shlex.quote(session_name)} {shlex.quote(command)}"
+        )
+        if tmux_log_dir:
+            remote_log_dir = shlex.quote(tmux_log_dir)
+            remote_log_file = shlex.quote(f"{tmux_log_dir}/{session_name}_{ip}.log")
+            pipe_cmd = shlex.quote(f"cat >> {remote_log_file}")
+            remote_cmd += (
+                f" && mkdir -p {remote_log_dir}"
+                f" && tmux pipe-pane -t {shlex.quote(session_name)}:0.0 -o {pipe_cmd}"
+            )
         os.system(
-            f"ssh {ip} '" +
-            f"conda activate qa && cd {ROOT}/projects/VGGM && " +
-            f"tmux kill-session -t {shlex.quote(session_name)} 2>/dev/null; " +
-            f"tmux new-session -d -s {shlex.quote(session_name)} {shlex.quote(command)}" +
-            "'"
+            f"ssh {shlex.quote(ip)} {shlex.quote(remote_cmd)}"
         )
 
     with Pool(len(ips)) as pool:
