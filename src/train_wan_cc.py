@@ -264,20 +264,10 @@ def main():
     if is_main_process:  # save model architecture
         util.save_model_architecture(model, exp_dir)
 
-    # Sequence parallelism
+    # Initialize sequence parallelism
     if opt.sp_size > 1:
         assert opt.sp_size <= world_size and world_size % opt.sp_size == 0
         assert model.diffusion.model.num_heads % opt.sp_size == 0
-
-        # Set `sp_size` on the diffusion model and each attention block
-        model.diffusion.model.sp_size = opt.sp_size
-        for block in model.diffusion.model.blocks:
-            if hasattr(block, "self_attn"):
-                block.self_attn.sp_size = opt.sp_size
-            if hasattr(block, "cross_attn"):
-                block.cross_attn.sp_size = opt.sp_size
-
-        # Initialize sequence parallelism
         initialize_sequence_parallel(opt.sp_size)  # set some global variables
         logger.info(f"Sequence Parallelism initialized: sp_size=[{opt.sp_size}], world_size=[{world_size}], num_heads=[{model.diffusion.model.num_heads}]")
         logger.info(f"Data parallel groups: [{world_size // opt.sp_size}], SP ranks per group: [{opt.sp_size}]\n")

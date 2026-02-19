@@ -151,20 +151,6 @@ def rope_apply(x, grid_sizes, freqs):
 # Sequence Parallelism Support
 # ============================================================================
 
-def pad_freqs(original_tensor, target_len):
-    """Pad frequency tensor to target length for SP."""
-    seq_len, s1, s2 = original_tensor.shape
-    pad_size = target_len - seq_len
-    padding_tensor = torch.ones(
-        pad_size,
-        s1,
-        s2,
-        dtype=original_tensor.dtype,
-        device=original_tensor.device)
-    padded_tensor = torch.cat([original_tensor, padding_tensor], dim=0)
-    return padded_tensor
-
-
 @torch.amp.autocast('cuda', enabled=False)
 def rope_apply_sp(x, grid_sizes, freqs):
     """
@@ -196,12 +182,8 @@ def rope_apply_sp(x, grid_sizes, freqs):
                             dim=-1).reshape(seq_len, 1, -1)
 
         # apply rotary embedding with SP offset
-        sp_size = get_sp_world_size()
         sp_rank = get_sp_rank()
-        freqs_i = pad_freqs(freqs_i, s * sp_size)
-        s_per_rank = s
-        freqs_i_rank = freqs_i[(sp_rank * s_per_rank):((sp_rank + 1) *
-                                                       s_per_rank), :, :]
+        freqs_i_rank = freqs_i[(sp_rank * s):((sp_rank + 1) * s), :, :]
         x_i = torch.view_as_real(x_i * freqs_i_rank).flatten(2)
         x_i = torch.cat([x_i, x[i, s:]])
 
@@ -306,8 +288,6 @@ class WanSelfAttention(nn.Module):
         self.norm_q = WanRMSNorm(dim, eps=eps) if qk_norm else nn.Identity()
         self.norm_k = WanRMSNorm(dim, eps=eps) if qk_norm else nn.Identity()
 
-        self.sp_size = 1  # sequence parallelism size (set externally)
-
     def forward(self, x, seq_lens, grid_sizes, freqs):
         r"""
         Args:
@@ -328,7 +308,7 @@ class WanSelfAttention(nn.Module):
         q, k, v = qkv_fn(x)
 
         # Apply attention with or without sequence parallelism
-        if self.sp_size > 1:
+        if get_sp_world_size() > 1:
             # Sequence parallelism enabled: use distributed attention
             q_rope = rope_apply_sp(q, grid_sizes, freqs)
             k_rope = rope_apply_sp(k, grid_sizes, freqs)
@@ -422,21 +402,20 @@ class WanT2VCrossAttention(WanSelfAttention):
             k = self.norm_k(self.k(context)).view(b, -1, n, d)
             v = self.v(context).view(b, -1, n, d)
 
-        # For T2V cross attention with SP: need to gather queries first
-        sp_size = getattr(self, "sp_size", 1)
-        if sp_size > 1:
-            # Gather queries across SP ranks
-            q = all_gather(q, dim=1)
-
         # compute attention
         if clip_query_lens is not None and clip_context_lens is not None:
+            # For clipwise cross attention with SP: need to gather queries first
+            sp_size = get_sp_world_size()
+            if sp_size > 1:
+                q = all_gather(q, dim=1)
+
             x = self._clipwise_attention(q, k, v, clip_query_lens, clip_context_lens)
+
+            # For clipwise cross attention with SP: scatter the output back
+            if sp_size > 1:
+                x = torch.chunk(x, sp_size, dim=1)[get_sp_rank()]
         else:
             x = attention(q, k, v, k_lens=context_lens)
-
-        # For T2V cross attention with SP: need to scatter results back
-        if sp_size > 1:
-            x = torch.chunk(x, sp_size, dim=1)[get_sp_rank()]
 
         # output
         x = x.flatten(2)
@@ -782,8 +761,6 @@ class WanModel(ModelMixin, ConfigMixin):
         self.use_gradient_checkpointing = False
         self.use_gradient_checkpointing_offload = False
 
-        self.sp_size = 1  # sequence parallelism size (set externally)
-
     def enable_riflex(
         self,
         k=6,
@@ -900,7 +877,7 @@ class WanModel(ModelMixin, ConfigMixin):
             context = torch.concat([context_clip, context], dim=1)
 
         # Sequence parallelism: chunk sequences across ranks
-        sp_size = getattr(self, "sp_size", 1)
+        sp_size = get_sp_world_size()
         if sp_size > 1:
             assert x.size(1) % sp_size == 0
             x = torch.chunk(x, sp_size, dim=1)[get_sp_rank()]
