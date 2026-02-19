@@ -349,14 +349,7 @@ class WanT2VCrossAttention(WanSelfAttention):
             q_lens = clip_query_lens[b_idx].tolist()
             k_lens = clip_context_lens[b_idx].tolist()
             for q_len, k_len in zip(q_lens, k_lens):
-                q_len = int(q_len)
-                k_len = int(k_len)
-                if q_len <= 0:
-                    k_start += max(k_len, 0)
-                    continue
-                if k_len <= 0:
-                    q_start += q_len
-                    continue
+                q_len, k_len = int(q_len), int(k_len)
                 q_chunk = q[b_idx:b_idx+1, q_start:q_start+q_len]
                 k_chunk = k[b_idx:b_idx+1, k_start:k_start+k_len]
                 v_chunk = v[b_idx:b_idx+1, k_start:k_start+k_len]
