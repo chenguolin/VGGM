@@ -174,6 +174,8 @@ class Options:
     more_trainable_fake_score_params: Optional[str] = None
 
     # Training
+        ## Sequence parallel
+    sp_size: int = 1
         ## Losses
     diffusion_loss_prob: float = 0.
     conf_alpha: float = 0.2

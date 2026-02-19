@@ -27,7 +27,7 @@ from src.models import Wan, DMD_Wan, get_optimizer, get_lr_scheduler
 import src.utils.util as util
 import src.utils.vis_util as vis_util
 from src.utils.ema import EMAParams
-from src.utils.distributed import fsdp_wrap, fsdp_state_dict, launch_distributed_job, barrier
+from src.utils.distributed import fsdp_wrap, fsdp_state_dict, launch_distributed_job, barrier, initialize_sequence_parallel
 
 
 def main():
@@ -182,6 +182,8 @@ def main():
     dtype = torch.float32 if args.mixed_precision == "no" else torch.bfloat16
     device = torch.cuda.current_device()
     is_main_process = (global_rank == 0)
+    dp_size = world_size // opt.sp_size
+    dp_rank = global_rank // opt.sp_size
 
     # Initialize the logger
     logger = logging.getLogger(__name__)
@@ -222,7 +224,8 @@ def main():
             train_dataset = InternalDataset(opt, training=True)
         else:
             train_dataset = RealcamvidDataset(opt, training=True)
-    train_sampler = DistributedSampler(train_dataset, shuffle=True, drop_last=True)
+    # SP-aware sampling: ranks in the same SP group should get the same samples
+    train_sampler = DistributedSampler(train_dataset, num_replicas=dp_size, rank=dp_rank, shuffle=True, drop_last=True)
     train_loader = DataLoader(
         train_dataset,
         batch_size=configs["train"]["batch_size_per_gpu"],
@@ -239,7 +242,7 @@ def main():
             val_dataset = InternalDataset(opt, training=False)
         else:
             val_dataset = RealcamvidDataset(opt, training=False)
-    val_sampler = DistributedSampler(val_dataset, shuffle=True, drop_last=False)
+    val_sampler = DistributedSampler(val_dataset, num_replicas=dp_size, rank=dp_rank, shuffle=True, drop_last=False)
     val_loader = DataLoader(
         val_dataset,
         batch_size=configs["val"]["batch_size_per_gpu"],
@@ -260,6 +263,24 @@ def main():
     logger.info(f"Trainable parameter names: {sorted([name for name, param in model.named_parameters() if param.requires_grad])}\n")
     if is_main_process:  # save model architecture
         util.save_model_architecture(model, exp_dir)
+
+    # Sequence parallelism
+    if opt.sp_size > 1:
+        assert opt.sp_size <= world_size and world_size % opt.sp_size == 0
+        assert model.diffusion.model.num_heads % opt.sp_size == 0
+
+        # Set `sp_size` on the diffusion model and each attention block
+        model.diffusion.model.sp_size = opt.sp_size
+        for block in model.diffusion.model.blocks:
+            if hasattr(block, "self_attn"):
+                block.self_attn.sp_size = opt.sp_size
+            if hasattr(block, "cross_attn"):
+                block.cross_attn.sp_size = opt.sp_size
+
+        # Initialize sequence parallelism
+        initialize_sequence_parallel(opt.sp_size)  # set some global variables
+        logger.info(f"Sequence Parallelism initialized: sp_size=[{opt.sp_size}], world_size=[{world_size}], num_heads=[{model.diffusion.model.num_heads}]")
+        logger.info(f"Data parallel groups: [{world_size // opt.sp_size}], SP ranks per group: [{opt.sp_size}]\n")
 
     # FSDP wrap
     if args.wrap_strategy == "transformer":
@@ -377,11 +398,14 @@ def main():
             logger.info(f"Number of (sharded) EMA parameters: [{(num_ema_params / 1e6):.2f} M]\tEMA weight: [{ema_weight}]\n")
 
     # Training config summary
-    configs["train"]["total_batch_size"] = configs["train"]["batch_size_per_gpu"] * world_size * args.gradient_accumulation_steps
+    configs["train"]["total_batch_size"] = configs["train"]["batch_size_per_gpu"] * dp_size * args.gradient_accumulation_steps
     updated_steps_per_epoch = math.ceil(len(train_loader) / args.gradient_accumulation_steps)
     total_updated_steps = configs["lr_scheduler"]["total_steps"]  # configs["train"]["epochs"] * updated_steps_per_epoch
     logger.info("===== Training Configuration Summary =====")
     logger.info(f"Total batch size: [{configs['train']['total_batch_size']}]")
+    if opt.sp_size > 1:
+        logger.info(f"    batch_size [{configs['train']['total_batch_size']}] = batch_size_per_gpu [{configs['train']['batch_size_per_gpu']}] * dp_size [{dp_size}] * grad_accum [{args.gradient_accumulation_steps}]")
+        logger.info(f"    world_size [{world_size}] = dp_size [{dp_size}] * sp_size [{opt.sp_size}]")
     logger.info(f"Learning rate: [{configs['optimizer']['lr']}]")
     logger.info(f"Gradient Accumulation steps: [{args.gradient_accumulation_steps}]")
     logger.info(f"Total epochs: [{configs['train']['epochs']}]")
@@ -414,7 +438,7 @@ def main():
         wandb.log_artifact(arti_exp_info)
 
     # Start training
-    NONE_COUNT, global_update_step = 0, 0
+    global_update_step = 0
     if is_main_process:
         logger.removeHandler(logger.handlers[0])  # remove console handler during training
     progress_bar = tqdm(
@@ -465,17 +489,6 @@ def main():
 
             # Backpropagate
             loss.backward()
-
-            # Gradient check
-            max_name, max_grad_norm = util.get_max_grad_norm(model)
-            if max_name in ["NONE", "ZERO"]:
-                logger.info(f"Gradient norm is [{max_name}]! Skip updating model parameters")
-                optimizer.zero_grad()
-                NONE_COUNT += 1
-                if NONE_COUNT > 10:
-                    raise ValueError(f"Gradient norm is [{max_name}] for {NONE_COUNT} times!")
-                continue
-            NONE_COUNT = 0  # reset NONE_COUNT after a successful update
 
             # Gradient clip
             torch.nn.utils.clip_grad_norm_(

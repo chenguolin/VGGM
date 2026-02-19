@@ -2,9 +2,11 @@
 
 # Modified:
     ## 1. Reformat code style
-    ## 2. delete EMA_FSDP
+    ## 2. Delete EMA_FSDP
+    ## 3. Support sequence parallelism
 
 from typing import *
+from torch import Tensor
 
 import os
 from datetime import timedelta
@@ -110,3 +112,124 @@ def launch_distributed_job(backend: str = "nccl"):
         timeout=timedelta(minutes=30),
     )
     torch.cuda.set_device(local_rank)
+
+
+# ============================================================================
+# Sequence Parallelism Utilities
+# ============================================================================
+
+# Global variables for SP process groups
+_SP_GROUP = None
+_SP_RANK = None
+_SP_WORLD_SIZE = None
+
+
+def initialize_sequence_parallel(sp_size: int):
+    """
+    Initialize sequence parallel process groups.
+
+    Args:
+        sp_size: Sequence parallel size (number of ranks per SP group)
+
+    Example:
+        With world_size=64 and sp_size=2:
+        - Creates 32 SP groups: [0,1], [2,3], ..., [62,63]
+        - Each group has 2 ranks for sequence parallelism
+        - Remaining dimension is data parallelism (32 DP groups)
+    """
+    global _SP_GROUP, _SP_RANK, _SP_WORLD_SIZE
+
+    assert dist.is_initialized()
+
+    world_size = dist.get_world_size()
+    rank = dist.get_rank()
+
+    # Calculate which SP group this rank belongs to
+    num_sp_groups = world_size // sp_size
+    sp_group_idx = rank // sp_size
+    sp_rank_in_group = rank % sp_size
+
+    # Create SP process groups
+    # Each group contains sp_size consecutive ranks
+    for i in range(num_sp_groups):
+        ranks_in_group = list(range(i * sp_size, (i + 1) * sp_size))
+        group = dist.new_group(ranks_in_group)
+        if rank in ranks_in_group:
+            _SP_GROUP = group
+            _SP_RANK = sp_rank_in_group
+            _SP_WORLD_SIZE = sp_size
+
+    print(f"[Rank {rank}] Initialized SP: sp_group_idx={sp_group_idx}, "
+          f"sp_rank={_SP_RANK}, sp_world_size={_SP_WORLD_SIZE}")
+
+    # Barrier to ensure all ranks have finished creating SP groups
+    barrier()
+
+
+def get_sp_rank():
+    """Get sequence parallel rank within the SP group."""
+    if _SP_RANK is not None:
+        return _SP_RANK
+    return 0
+
+
+def get_sp_world_size():
+    """Get sequence parallel world size (size of SP group)."""
+    if _SP_WORLD_SIZE is not None:
+        return _SP_WORLD_SIZE
+    return 1
+
+
+def get_sp_group():
+    """Get the sequence parallel process group."""
+    return _SP_GROUP
+
+
+def all_to_all(x: Tensor, scatter_dim: int, gather_dim: int, group=None, **kwargs):
+    """
+    Scatter along one dimension and gather along another.
+
+    Args:
+        x: Input tensor
+        scatter_dim: Dimension to scatter (split)
+        gather_dim: Dimension to gather (concatenate)
+        group: Process group (default: None, uses SP group)
+
+    Returns:
+        Tensor with scatter_dim split and gather_dim concatenated
+    """
+    if group is None:
+        group = get_sp_group()
+
+    world_size = get_sp_world_size()
+    if world_size > 1:
+        inputs = [u.contiguous() for u in x.chunk(world_size, dim=scatter_dim)]
+        outputs = [torch.empty_like(u) for u in inputs]
+        dist.all_to_all(outputs, inputs, group=group, **kwargs)
+        x = torch.cat(outputs, dim=gather_dim).contiguous()
+    return x
+
+
+def all_gather(input: Tensor, dim: int, group=None):
+    """
+    Gather tensor along specified dimension across all ranks in SP group.
+
+    Args:
+        input: Input tensor
+        dim: Dimension to gather along
+        group: Process group (default: None, uses SP group)
+
+    Returns:
+        Gathered tensor
+    """
+    if group is None:
+        group = get_sp_group()
+
+    world_size = get_sp_world_size()
+    if world_size == 1:
+        return input
+
+    # Gather from all ranks in SP group
+    tensor_list = [torch.empty_like(input) for _ in range(world_size)]
+    dist.all_gather(tensor_list, input, group=group)
+    return torch.cat(tensor_list, dim=dim).contiguous()

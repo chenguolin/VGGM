@@ -1,11 +1,12 @@
 # Modifications:
     ## 1. Support gradient checkpointing and offload in `WanModel`
     ## 2. Handle half-precision in all modules
-    ## 3. Support add input features after patch embedding
+    ## 3. Support adding input features after patch embedding
     ## 4. Support crossattn_cache in `WanT2VCrossAttention` and `WanI2VCrossAttention`
     ## 5. Support frame-wise timestep inputs, i.e., (B, f)
     ## 6. Support RIFLEx RoPE
     ## 7. Support multi-clip cross attention
+    ## 8. Support sequence parallelism
 
 from typing import *
 from numpy import ndarray
@@ -21,6 +22,8 @@ from diffusers.configuration_utils import ConfigMixin, register_to_config
 from diffusers.models.modeling_utils import ModelMixin
 
 from .attention import attention
+
+from src.utils.distributed import get_sp_rank, get_sp_world_size, all_gather, all_to_all
 
 __all__ = ['WanModel']
 
@@ -144,6 +147,108 @@ def rope_apply(x, grid_sizes, freqs):
     return torch.stack(output).type_as(x)
 
 
+# ============================================================================
+# Sequence Parallelism Support
+# ============================================================================
+
+def pad_freqs(original_tensor, target_len):
+    """Pad frequency tensor to target length for SP."""
+    seq_len, s1, s2 = original_tensor.shape
+    pad_size = target_len - seq_len
+    padding_tensor = torch.ones(
+        pad_size,
+        s1,
+        s2,
+        dtype=original_tensor.dtype,
+        device=original_tensor.device)
+    padded_tensor = torch.cat([original_tensor, padding_tensor], dim=0)
+    return padded_tensor
+
+
+@torch.amp.autocast('cuda', enabled=False)
+def rope_apply_sp(x, grid_sizes, freqs):
+    """
+    Apply RoPE with sequence parallelism support.
+
+    Args:
+        x: [B, L//sp, N, C]
+        grid_sizes: [B, 3] containing (F, H, W)
+        freqs: [M, C//2]
+    """
+    s, n, c = x.size(1), x.size(2), x.size(3) // 2
+
+    # split freqs
+    freqs = freqs.split([c - 2 * (c // 3), c // 3, c // 3], dim=1)
+
+    # loop over samples
+    output = []
+    for i, (f, h, w) in enumerate(grid_sizes.tolist()):
+        seq_len = f * h * w
+
+        # precompute multipliers
+        x_i = torch.view_as_complex(x[i, :s].to(torch.float64).reshape(
+            s, n, -1, 2))
+        freqs_i = torch.cat([
+            freqs[0][:f].view(f, 1, 1, -1).expand(f, h, w, -1),
+            freqs[1][:h].view(1, h, 1, -1).expand(f, h, w, -1),
+            freqs[2][:w].view(1, 1, w, -1).expand(f, h, w, -1)
+        ],
+                            dim=-1).reshape(seq_len, 1, -1)
+
+        # apply rotary embedding with SP offset
+        sp_size = get_sp_world_size()
+        sp_rank = get_sp_rank()
+        freqs_i = pad_freqs(freqs_i, s * sp_size)
+        s_per_rank = s
+        freqs_i_rank = freqs_i[(sp_rank * s_per_rank):((sp_rank + 1) *
+                                                       s_per_rank), :, :]
+        x_i = torch.view_as_real(x_i * freqs_i_rank).flatten(2)
+        x_i = torch.cat([x_i, x[i, s:]])
+
+        # append to collection
+        output.append(x_i)
+    return torch.stack(output).type_as(x)
+
+
+def distributed_attention(
+        q,
+        k,
+        v,
+        seq_lens,
+        window_size=(-1, -1),
+):
+    """
+    Ulysses-style distributed attention using all-to-all communication.
+
+    Args:
+        q: [B, Lq // sp, Nq, C1]
+        k: [B, Lk // sp, Nk, C1]
+        v: [B, Lk // sp, Nk, C2]
+        seq_lens: [B], length of each sequence in batch
+        window_size: (left, right) for sliding window attention
+
+    Returns:
+        x: [B, Lq // sp, Nq, C2]
+    """
+    # Scatter heads, gather sequence
+    q = all_to_all(q, scatter_dim=2, gather_dim=1)  # [B, Lq, Nq//sp, C1]
+    k = all_to_all(k, scatter_dim=2, gather_dim=1)  # [B, Lk, Nk//sp, C1]
+    v = all_to_all(v, scatter_dim=2, gather_dim=1)  # [B, Lk, Nk//sp, C2]
+
+    # Apply attention on full sequence with split heads
+    x = attention(
+        q,
+        k,
+        v,
+        k_lens=seq_lens,
+        window_size=window_size,
+    )
+
+    # Scatter sequence, gather heads
+    x = all_to_all(x, scatter_dim=1, gather_dim=2)  # [B, Lq//sp, Nq, C2]
+    return x
+
+
 class WanRMSNorm(nn.Module):
 
     def __init__(self, dim, eps=1e-5):
@@ -201,6 +306,8 @@ class WanSelfAttention(nn.Module):
         self.norm_q = WanRMSNorm(dim, eps=eps) if qk_norm else nn.Identity()
         self.norm_k = WanRMSNorm(dim, eps=eps) if qk_norm else nn.Identity()
 
+        self.sp_size = 1  # sequence parallelism size (set externally)
+
     def forward(self, x, seq_lens, grid_sizes, freqs):
         r"""
         Args:
@@ -220,12 +327,25 @@ class WanSelfAttention(nn.Module):
 
         q, k, v = qkv_fn(x)
 
-        x = attention(
-            q=rope_apply(q, grid_sizes, freqs),
-            k=rope_apply(k, grid_sizes, freqs),
-            v=v,
-            k_lens=seq_lens,
-            window_size=self.window_size)
+        # Apply attention with or without sequence parallelism
+        if self.sp_size > 1:
+            # Sequence parallelism enabled: use distributed attention
+            q_rope = rope_apply_sp(q, grid_sizes, freqs)
+            k_rope = rope_apply_sp(k, grid_sizes, freqs)
+            x = distributed_attention(
+                q=q_rope,
+                k=k_rope,
+                v=v,
+                seq_lens=seq_lens,
+                window_size=self.window_size)
+        else:
+            # Standard attention path
+            x = attention(
+                q=rope_apply(q, grid_sizes, freqs),
+                k=rope_apply(k, grid_sizes, freqs),
+                v=v,
+                k_lens=seq_lens,
+                window_size=self.window_size)
 
         # output
         x = x.flatten(2)
@@ -302,11 +422,21 @@ class WanT2VCrossAttention(WanSelfAttention):
             k = self.norm_k(self.k(context)).view(b, -1, n, d)
             v = self.v(context).view(b, -1, n, d)
 
+        # For T2V cross attention with SP: need to gather queries first
+        sp_size = getattr(self, "sp_size", 1)
+        if sp_size > 1:
+            # Gather queries across SP ranks
+            q = all_gather(q, dim=1)
+
         # compute attention
         if clip_query_lens is not None and clip_context_lens is not None:
             x = self._clipwise_attention(q, k, v, clip_query_lens, clip_context_lens)
         else:
             x = attention(q, k, v, k_lens=context_lens)
+
+        # For T2V cross attention with SP: need to scatter results back
+        if sp_size > 1:
+            x = torch.chunk(x, sp_size, dim=1)[get_sp_rank()]
 
         # output
         x = x.flatten(2)
@@ -329,47 +459,7 @@ class WanI2VCrossAttention(WanSelfAttention):
         # self.alpha = nn.Parameter(torch.zeros((1, )))
         self.norm_k_img = WanRMSNorm(dim, eps=eps) if qk_norm else nn.Identity()
 
-    def _clipwise_attention(self,
-        q: Tensor,
-        k: Tensor,
-        v: Tensor,
-        clip_query_lens: Tensor,
-        clip_context_lens: Tensor,
-    ) -> Tensor:
-        out = q.new_zeros(q.shape)
-        B = q.shape[0]
-        for b_idx in range(B):
-            q_start, k_start = 0, 0
-            q_lens = clip_query_lens[b_idx].tolist()
-            k_lens = clip_context_lens[b_idx].tolist()
-            for q_len, k_len in zip(q_lens, k_lens):
-                q_len = int(q_len)
-                k_len = int(k_len)
-                if q_len <= 0:
-                    k_start += max(k_len, 0)
-                    continue
-                if k_len <= 0:
-                    q_start += q_len
-                    continue
-                q_chunk = q[b_idx:b_idx+1, q_start:q_start+q_len]
-                k_chunk = k[b_idx:b_idx+1, k_start:k_start+k_len]
-                v_chunk = v[b_idx:b_idx+1, k_start:k_start+k_len]
-                out[b_idx:b_idx+1, q_start:q_start+q_len] = attention(
-                    q_chunk, k_chunk, v_chunk, k_lens=None)
-                q_start += q_len
-                k_start += k_len
-        return out
-
-    def forward(
-        self,
-        x,
-        context,
-        context_lens,
-        crossattn_cache=None,
-        #
-        clip_query_lens: Optional[Tensor] = None,
-        clip_context_lens: Optional[Tensor] = None,
-    ):
+    def forward(self, x, context, context_lens, crossattn_cache=None):
         r"""
         Args:
             x(Tensor): Shape [B, L1, C]
@@ -403,12 +493,10 @@ class WanI2VCrossAttention(WanSelfAttention):
         k_img = self.norm_k_img(self.k_img(context_img)).view(b, -1, n, d)
         v_img = self.v_img(context_img).view(b, -1, n, d)
 
+        # TODO: support clipwise attention and SP in I2V cross attention
         # compute attention
         img_x = attention(q, k_img, v_img, k_lens=None)
-        if clip_query_lens is not None and clip_context_lens is not None:
-            x = self._clipwise_attention(q, k, v, clip_query_lens, clip_context_lens)
-        else:
-            x = attention(q, k, v, k_lens=context_lens)
+        x = attention(q, k, v, k_lens=context_lens)
 
         # output
         x = x.flatten(2)
@@ -694,6 +782,8 @@ class WanModel(ModelMixin, ConfigMixin):
         self.use_gradient_checkpointing = False
         self.use_gradient_checkpointing_offload = False
 
+        self.sp_size = 1  # sequence parallelism size (set externally)
+
     def enable_riflex(
         self,
         k=6,
@@ -809,6 +899,13 @@ class WanModel(ModelMixin, ConfigMixin):
             context_clip = self.img_emb(clip_fea)  # bs x 257 (x2) x dim
             context = torch.concat([context_clip, context], dim=1)
 
+        # Sequence parallelism: chunk sequences across ranks
+        sp_size = getattr(self, "sp_size", 1)
+        if sp_size > 1:
+            assert x.size(1) % sp_size == 0
+            x = torch.chunk(x, sp_size, dim=1)[get_sp_rank()]
+            e0 = torch.chunk(e0, sp_size, dim=1)[get_sp_rank()]
+
         # arguments
         kwargs = dict(
             e=e0,
@@ -846,6 +943,10 @@ class WanModel(ModelMixin, ConfigMixin):
                 )
             else:
                 x = block(x, **kwargs)
+
+        # Sequence parallelism: gather sequences before head
+        if sp_size > 1:
+            x = all_gather(x, dim=1)
 
         # head
         x = self.head(x, e.unflatten(0, (bt, seq_len)))

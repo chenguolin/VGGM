@@ -6,8 +6,9 @@ build/
 dump/
 out/
 archive/
-temp/
+logs/
 log/
+temp/
 temp*/
 temp*.*
 *.log
