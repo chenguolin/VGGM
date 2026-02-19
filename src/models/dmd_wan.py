@@ -112,6 +112,11 @@ class DMD_Wan(Wan):
         outputs = {}
         device = self.diffusion.model.device
 
+        # For multi-clip generation
+        data, clip_latent_lens = self._multiclip_batch(data)
+        if self.opt.num_clips > 1:
+            assert clip_latent_lens is not None
+
         # CausVid or Self-Forcing
         self.use_self_forcing = use_self_forcing = np.random.rand() <= self.opt.self_forcing_prob
         use_diffusion_loss = np.random.rand() < self.opt.diffusion_loss_prob
@@ -123,18 +128,19 @@ class DMD_Wan(Wan):
             (B, F, _, H, W) = images.shape
         else:
             B = len(data["prompt"])
-            F, H, W = self.opt.num_input_frames, self.opt.input_res[0], self.opt.input_res[1]
+            F, H, W = (self.opt.num_input_frames - 1) * self.opt.num_clips + 1, self.opt.input_res[0], self.opt.input_res[1]
 
         # Text encoder
         if self.text_encoder is not None:
             if self.prompt_list is None or not self.use_self_forcing or use_diffusion_loss or np.random.rand() >= self.opt.vidprom_prob:
                 prompts = data["prompt"]  # a list of strings
             else:
+                assert self.opt.num_clips == 1  # num_clips=1 for VidProm
                 prompts = np.random.choice(self.prompt_list, B, replace=False).tolist()
             with torch.no_grad(), torch.autocast(device_type="cuda", dtype=dtype):
                 self.text_encoder.eval()
-                prompt_embeds = self.text_encoder(prompts)  # (B, N=512, D')
-                negative_prompt_embeds = self.text_encoder([self.opt.negative_prompt]).repeat(B, 1, 1)  # (B, N=512, D')
+                prompt_embeds = self._encode_prompt_batch(prompts)  # (B, N=512, D') or (B, num_clips, N=512, D')
+                negative_prompt_embeds = self._build_negative_prompt_embeds(B, self.opt.num_clips)  # (B, N=512, D') or (B, num_clips, N=512, D')
         else:
             raise NotImplementedError
 
@@ -194,6 +200,8 @@ class DMD_Wan(Wan):
                 depths=depths,
                 confs=confs,
                 images_f=images_f,
+                #
+                clip_latent_lens=clip_latent_lens,
             )
             outputs["diffusion_loss"] = diffusion_loss
 
@@ -229,6 +237,8 @@ class DMD_Wan(Wan):
                         depths=depths,
                         confs=confs,
                         images_f=images_f,
+                        #
+                        clip_latent_lens=clip_latent_lens,
                     )
                 outputs["generator_loss"] = generator_loss
                 outputs["dmd_grad_norm"] = dmd_grad_norm
@@ -265,6 +275,8 @@ class DMD_Wan(Wan):
                     depths=depths,
                     confs=confs,
                     images_f=images_f,
+                    #
+                    clip_latent_lens=clip_latent_lens,
                 )
 
             outputs["loss"] = critic_loss + self.opt.dmd_loss_weight * generator_loss
@@ -309,6 +321,8 @@ class DMD_Wan(Wan):
         depths: Optional[Tensor] = None,
         confs: Optional[Tensor] = None,
         images_f: Optional[Tensor] = None,
+        #
+        clip_latent_lens: Optional[Tensor] = None,  # (B=1, num_clips); for multi-clip generation
     ):
         noises = torch.randn_like(clean_latents)
         B, f = noises.shape[0], noises.shape[2]
@@ -454,6 +468,8 @@ class DMD_Wan(Wan):
             plucker=plucker,
             C2W=C2W, fxfycxcy=fxfycxcy,  # for DA3
             extra_condition=input_extra_condition,
+            #
+            clip_latent_lens=clip_latent_lens,  # for multi-clip generation
         )
         model_outputs, da3_outputs = \
             model_outputs if self.opt.load_da3 else (model_outputs, None)
@@ -516,6 +532,8 @@ class DMD_Wan(Wan):
         depths: Optional[Tensor] = None,
         confs: Optional[Tensor] = None,
         images_f: Optional[Tensor] = None,
+        #
+        clip_latent_lens: Optional[Tensor] = None,  # (B=1, num_clips); for multi-clip generation
     ):
         """
         Generate image/videos from noise and train the critic with generated samples.
@@ -541,6 +559,8 @@ class DMD_Wan(Wan):
                 depths,
                 confs,
                 images_f,
+                #
+                clip_latent_lens,
             )
 
         # Step 2: Compute the fake prediction
@@ -572,6 +592,8 @@ class DMD_Wan(Wan):
             timesteps,
             prompt_embeds,
             plucker=plucker,
+            #
+            clip_latent_lens=clip_latent_lens,  # for multi-clip generation
         )
 
         # Step 3: Compute the denoising loss for the fake critic
@@ -595,6 +617,8 @@ class DMD_Wan(Wan):
         depths: Optional[Tensor] = None,
         confs: Optional[Tensor] = None,
         images_f: Optional[Tensor] = None,
+        #
+        clip_latent_lens: Optional[Tensor] = None,  # (B=1, num_clips); for multi-clip generation
     ):
         """
         Generate image/videos from noise and compute the DMD loss.
@@ -616,6 +640,8 @@ class DMD_Wan(Wan):
             depths,
             confs,
             images_f,
+            #
+            clip_latent_lens,
         )
 
         # Step 2: Compute the DMD loss
@@ -627,6 +653,8 @@ class DMD_Wan(Wan):
                 gradient_mask,
                 cond_latents,
                 plucker,
+                #
+                clip_latent_lens,
             )
 
         # (Optional) Step 3: DA3 outputs
@@ -674,6 +702,8 @@ class DMD_Wan(Wan):
         gradient_mask: Optional[Tensor] = None,
         cond_latents: Optional[Tensor] = None,
         plucker: Optional[Tensor] = None,
+        #
+        clip_latent_lens: Optional[Tensor] = None,  # (B=1, num_clips); for multi-clip generation
     ):
         """
         Compute the DMD loss (eq 7 in https://arxiv.org/abs/2311.18828).
@@ -712,6 +742,8 @@ class DMD_Wan(Wan):
                 prompt_embeds,
                 negative_prompt_embeds,
                 plucker,
+                #
+                clip_latent_lens,
             )
 
         # The gradient of `dmd_loss` w.r.t. `pred_x0` is `grad`
@@ -736,6 +768,9 @@ class DMD_Wan(Wan):
         prompt_embeds: Tensor,
         negative_prompt_embeds: Tensor,
         plucker: Optional[Tensor] = None,
+        #
+        clip_latent_lens: Optional[Tensor] = None,
+        #
         normalization: bool = True,
     ):
         """
@@ -747,6 +782,8 @@ class DMD_Wan(Wan):
             timesteps,
             prompt_embeds,
             plucker=plucker,
+            #
+            clip_latent_lens=clip_latent_lens,  # for multi-clip generation
         )
 
         if self.opt.fake_guidance_scale != 1.:
@@ -755,6 +792,8 @@ class DMD_Wan(Wan):
                 timesteps,
                 negative_prompt_embeds,
                 plucker=plucker,
+                #
+                clip_latent_lens=clip_latent_lens,  # for multi-clip generation
             )
             fake_model_outputs = fake_model_outputs_uncond + self.opt.fake_guidance_scale * (
                 fake_model_outputs - fake_model_outputs_uncond)
@@ -768,6 +807,8 @@ class DMD_Wan(Wan):
             timesteps,
             prompt_embeds,
             plucker=plucker,
+            #
+            clip_latent_lens=clip_latent_lens,  # for multi-clip generation
         )
         if self.opt.real_guidance_scale != 1.:
             real_model_outputs_uncond = self.real_score(
@@ -775,6 +816,8 @@ class DMD_Wan(Wan):
                 timesteps,
                 negative_prompt_embeds,
                 plucker=plucker,
+                #
+                clip_latent_lens=clip_latent_lens,  # for multi-clip generation
             )
             real_model_outputs = real_model_outputs_uncond + self.opt.real_guidance_scale * (
                 real_model_outputs - real_model_outputs_uncond)
@@ -805,6 +848,8 @@ class DMD_Wan(Wan):
         depths: Optional[Tensor] = None,
         confs: Optional[Tensor] = None,
         images_f: Optional[Tensor] = None,
+        #
+        clip_latent_lens: Optional[Tensor] = None,  # (B=1, num_clips); for multi-clip generation
     ):
         """
         Optionally simulate the generator's input from noise using backward simulation
@@ -821,6 +866,8 @@ class DMD_Wan(Wan):
                 #
                 C2W,
                 fxfycxcy,
+                #
+                clip_latent_lens,
             )
         else:
             assert clean_latents is not None
@@ -956,6 +1003,8 @@ class DMD_Wan(Wan):
                 plucker=plucker,
                 C2W=C2W, fxfycxcy=fxfycxcy,  # for DA3
                 extra_condition=input_extra_condition,
+                #
+                clip_latent_lens=clip_latent_lens,  # for multi-clip generation
             )
             model_outputs, da3_outputs = \
                 model_outputs if self.opt.load_da3 else (model_outputs, None)
@@ -980,6 +1029,8 @@ class DMD_Wan(Wan):
         #
         C2W: Optional[Tensor] = None,
         fxfycxcy: Optional[Tensor] = None,
+        #
+        clip_latent_lens: Optional[Tensor] = None,  # (B=1, num_clips); for multi-clip generation
     ):
         """
         Simulate the generator's input from noise to avoid training/inference mismatch.
@@ -996,6 +1047,8 @@ class DMD_Wan(Wan):
             #
             C2W,
             fxfycxcy,
+            #
+            clip_latent_lens,
         )
 
     def _initialize_inference_pipeline(self):

@@ -210,8 +210,32 @@ class WanDiffusionWrapper(nn.Module):
         #
         clean_x: Optional[Tensor] = None,
         aug_t: Optional[Tensor] = None,
+        #
+        clip_latent_lens: Optional[Tensor] = None,  # (B=1, num_clips); for multi-clip generation
     ):
         f, h, w = noisy_latents.shape[2:]
+
+        # (Optional) For multi-clip generation
+        clip_query_lens, clip_context_lens = None, None
+        if prompt_embeds.dim() == 4:  # (B, num_clips, N=512, D')
+            B_prompt, num_clips, num_tokens, _ = prompt_embeds.shape
+            prompt_embeds = prompt_embeds.flatten(1, 2)  # (B, num_clips*num_tokens, D')
+            clip_context_lens = torch.full(
+                (B_prompt, num_clips), num_tokens,
+                dtype=torch.long, device=noisy_latents.device,
+            )
+
+            if clip_latent_lens is None:
+                assert f % num_clips == 0
+                clip_latent_lens = torch.full(
+                    (B_prompt, num_clips), f // num_clips,
+                    dtype=torch.long, device=noisy_latents.device,
+                )
+            else:
+                clip_latent_lens = clip_latent_lens.to(device=noisy_latents.device, dtype=torch.long)
+                assert clip_latent_lens.shape == (B_prompt, num_clips)
+            clip_query_lens = clip_latent_lens * (h * w // 4)
+
         if timesteps.dim() == 1:
             timesteps = timesteps.unsqueeze(1).repeat(1, f)  # (B, f)
         timesteps = timesteps[:, :, None, None].repeat(1, 1, h//2, w//2).flatten(1)  # (B, f*hh*ww); `//2`: hard-coded for patch embeddig
@@ -251,6 +275,9 @@ class WanDiffusionWrapper(nn.Module):
                 kv_cache=kv_cache,
                 crossattn_cache=crossattn_cache,
                 current_start=current_start,
+                #
+                clip_query_lens=clip_query_lens,
+                clip_context_lens=clip_context_lens,
             )
             model_outputs = torch.stack(model_outputs, dim=0)  # (B, D, f, h, w)
 
@@ -269,6 +296,9 @@ class WanDiffusionWrapper(nn.Module):
                     #
                     clean_x=clean_x,
                     aug_t=aug_t,
+                    #
+                    clip_query_lens=clip_query_lens,
+                    clip_context_lens=clip_context_lens,
                 ), dim=0)  # (B, D, f, h, w)
             else:
                 model_outputs = torch.stack(self.model(
@@ -281,6 +311,9 @@ class WanDiffusionWrapper(nn.Module):
                     [cond_latent for cond_latent in cond_latents] if cond_latents is not None else None,
                     # (Optional) Add extra embeds
                     [plucker_embed for plucker_embed in plucker_embeds] if plucker_embeds is not None else None,
+                    #
+                    clip_query_lens=clip_query_lens,
+                    clip_context_lens=clip_context_lens,
                 ), dim=0)  # (B, D, f, h, w)
 
         return model_outputs
@@ -448,12 +481,35 @@ class WanDiffusionDA3Wrapper(nn.Module):
         #
         clean_x: Optional[Tensor] = None,
         aug_t: Optional[Tensor] = None,
+        #
+        clip_latent_lens: Optional[Tensor] = None,  # (B=1, num_clips); for multi-clip generation
     ):
         B, (f, h, w) = noisy_latents.shape[0], noisy_latents.shape[2:]
         tff = 2 * f if self.is_causal and clean_x is not None else f
         if timesteps.dim() == 1:
             timesteps = timesteps.unsqueeze(1).repeat(1, f)  # (B, f)
         timesteps = timesteps[:, :, None, None].repeat(1, 1, h//2, w//2).flatten(1)  # (B, f*hh*ww); `//2`: hard-coded for patch embeddig
+
+        # (Optional) For multi-clip generation
+        clip_query_lens, clip_context_lens = None, None
+        if prompt_embeds.dim() == 4:  # (B, num_clips, N=512, D')
+            B_prompt, num_clips, num_tokens, _ = prompt_embeds.shape
+            prompt_embeds = prompt_embeds.flatten(1, 2)  # (B, num_clips*num_tokens, D')
+            clip_context_lens = torch.full(
+                (B_prompt, num_clips), num_tokens,
+                dtype=torch.long, device=noisy_latents.device,
+            )
+
+            if clip_latent_lens is None:
+                assert f % num_clips == 0
+                clip_latent_lens = torch.full(
+                    (B_prompt, num_clips), f // num_clips,
+                    dtype=torch.long, device=noisy_latents.device,
+                )
+            else:
+                clip_latent_lens = clip_latent_lens.to(device=noisy_latents.device, dtype=torch.long)
+                assert clip_latent_lens.shape == (B_prompt, num_clips)
+            clip_query_lens = clip_latent_lens * (h * w // 4)
 
         # (Optional) Plucker embedding
         if self.input_plucker:
@@ -526,12 +582,13 @@ class WanDiffusionDA3Wrapper(nn.Module):
 
         # context
         context_lens = None
-        context = self.model.text_embedding(
-            torch.stack([
-                torch.cat(
-                    [u, u.new_zeros(self.model.text_len - u.size(0), u.size(1))])
-                for u in prompt_embeds
-            ]))
+        # context = self.model.text_embedding(
+        #     torch.stack([
+        #         torch.cat(
+        #             [u, u.new_zeros(self.model.text_len - u.size(0), u.size(1))])
+        #         for u in prompt_embeds
+        #     ]))
+        context = self.model.text_embedding(torch.stack(prompt_embeds))  # (B, L*num_clips, D')
 
         if self.is_causal:
             # Clean inputs for teacher forcing
@@ -605,6 +662,9 @@ class WanDiffusionDA3Wrapper(nn.Module):
             freqs=self.model.freqs,
             context=context,
             context_lens=context_lens,
+            #
+            clip_query_lens=clip_query_lens,
+            clip_context_lens=clip_context_lens,
         )
         if self.is_causal:
             kwargs.update(

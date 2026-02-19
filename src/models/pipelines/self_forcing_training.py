@@ -69,6 +69,8 @@ class SelfForcingTrainingPipeline:
         #
         C2W: Optional[Tensor] = None,
         fxfycxcy: Optional[Tensor] = None,
+        #
+        clip_latent_lens: Optional[Tensor] = None,  # (B=1, num_clips); for multi-clip generation
     ):
         B, _, f, h, w = noises.shape
         H, W = h * 8, w * 8  # `8`: hard-coded for Wan2.1
@@ -165,6 +167,8 @@ class SelfForcingTrainingPipeline:
                             #
                             kv_cache_da3=self.kv_cache_pos_da3,
                             current_start_da3=chunk_idx * self.opt.chunk_size * (frame_seqlen // (self.opt.da3_down_ratio * self.opt.da3_down_ratio) + 1),  # `+1` for camera token
+                            #
+                            clip_latent_lens=clip_latent_lens,  # for multi-clip generation
                         )
 
                         model_outputs, da3_outputs = \
@@ -205,6 +209,8 @@ class SelfForcingTrainingPipeline:
                         #
                         kv_cache_da3=self.kv_cache_pos_da3,
                         current_start_da3=chunk_idx * self.opt.chunk_size * (frame_seqlen // (self.opt.da3_down_ratio * self.opt.da3_down_ratio) + 1),  # `+1` for camera token
+                        #
+                        clip_latent_lens=clip_latent_lens,  # for multi-clip generation
                     )
 
                     model_outputs, da3_outputs = \
@@ -244,6 +250,8 @@ class SelfForcingTrainingPipeline:
                         #
                         kv_cache_da3=self.kv_cache_pos_da3,
                         current_start_da3=chunk_idx * self.opt.chunk_size * (frame_seqlen // (self.opt.da3_down_ratio * self.opt.da3_down_ratio) + 1),  # `+1` for camera token
+                        #
+                        clip_latent_lens=clip_latent_lens,  # for multi-clip generation
                     )
 
             # (Optional) Decode images

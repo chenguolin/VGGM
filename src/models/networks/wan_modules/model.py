@@ -5,9 +5,11 @@
     ## 4. Support crossattn_cache in `WanT2VCrossAttention` and `WanI2VCrossAttention`
     ## 5. Support frame-wise timestep inputs, i.e., (B, f)
     ## 6. Support RIFLEx RoPE
+    ## 7. Support multi-clip cross attention
 
 from typing import *
 from numpy import ndarray
+from torch import Tensor
 
 
 # Copyright 2024-2025 The Alibaba Wan Team Authors. All rights reserved.
@@ -233,7 +235,47 @@ class WanSelfAttention(nn.Module):
 
 class WanT2VCrossAttention(WanSelfAttention):
 
-    def forward(self, x, context, context_lens, crossattn_cache=None):
+    def _clipwise_attention(self,
+        q: Tensor,
+        k: Tensor,
+        v: Tensor,
+        clip_query_lens: Tensor,
+        clip_context_lens: Tensor,
+    ) -> Tensor:
+        out = q.new_zeros(q.shape)
+        B = q.shape[0]
+        for b_idx in range(B):
+            q_start, k_start = 0, 0
+            q_lens = clip_query_lens[b_idx].tolist()
+            k_lens = clip_context_lens[b_idx].tolist()
+            for q_len, k_len in zip(q_lens, k_lens):
+                q_len = int(q_len)
+                k_len = int(k_len)
+                if q_len <= 0:
+                    k_start += max(k_len, 0)
+                    continue
+                if k_len <= 0:
+                    q_start += q_len
+                    continue
+                q_chunk = q[b_idx:b_idx+1, q_start:q_start+q_len]
+                k_chunk = k[b_idx:b_idx+1, k_start:k_start+k_len]
+                v_chunk = v[b_idx:b_idx+1, k_start:k_start+k_len]
+                out[b_idx:b_idx+1, q_start:q_start+q_len] = attention(
+                    q_chunk, k_chunk, v_chunk, k_lens=None)
+                q_start += q_len
+                k_start += k_len
+        return out
+
+    def forward(
+        self,
+        x,
+        context,
+        context_lens,
+        crossattn_cache=None,
+        #
+        clip_query_lens: Optional[Tensor] = None,
+        clip_context_lens: Optional[Tensor] = None,
+    ):
         r"""
         Args:
             x(Tensor): Shape [B, L1, C]
@@ -261,7 +303,10 @@ class WanT2VCrossAttention(WanSelfAttention):
             v = self.v(context).view(b, -1, n, d)
 
         # compute attention
-        x = attention(q, k, v, k_lens=context_lens)
+        if clip_query_lens is not None and clip_context_lens is not None:
+            x = self._clipwise_attention(q, k, v, clip_query_lens, clip_context_lens)
+        else:
+            x = attention(q, k, v, k_lens=context_lens)
 
         # output
         x = x.flatten(2)
@@ -284,7 +329,47 @@ class WanI2VCrossAttention(WanSelfAttention):
         # self.alpha = nn.Parameter(torch.zeros((1, )))
         self.norm_k_img = WanRMSNorm(dim, eps=eps) if qk_norm else nn.Identity()
 
-    def forward(self, x, context, context_lens, crossattn_cache=None):
+    def _clipwise_attention(self,
+        q: Tensor,
+        k: Tensor,
+        v: Tensor,
+        clip_query_lens: Tensor,
+        clip_context_lens: Tensor,
+    ) -> Tensor:
+        out = q.new_zeros(q.shape)
+        B = q.shape[0]
+        for b_idx in range(B):
+            q_start, k_start = 0, 0
+            q_lens = clip_query_lens[b_idx].tolist()
+            k_lens = clip_context_lens[b_idx].tolist()
+            for q_len, k_len in zip(q_lens, k_lens):
+                q_len = int(q_len)
+                k_len = int(k_len)
+                if q_len <= 0:
+                    k_start += max(k_len, 0)
+                    continue
+                if k_len <= 0:
+                    q_start += q_len
+                    continue
+                q_chunk = q[b_idx:b_idx+1, q_start:q_start+q_len]
+                k_chunk = k[b_idx:b_idx+1, k_start:k_start+k_len]
+                v_chunk = v[b_idx:b_idx+1, k_start:k_start+k_len]
+                out[b_idx:b_idx+1, q_start:q_start+q_len] = attention(
+                    q_chunk, k_chunk, v_chunk, k_lens=None)
+                q_start += q_len
+                k_start += k_len
+        return out
+
+    def forward(
+        self,
+        x,
+        context,
+        context_lens,
+        crossattn_cache=None,
+        #
+        clip_query_lens: Optional[Tensor] = None,
+        clip_context_lens: Optional[Tensor] = None,
+    ):
         r"""
         Args:
             x(Tensor): Shape [B, L1, C]
@@ -320,7 +405,10 @@ class WanI2VCrossAttention(WanSelfAttention):
 
         # compute attention
         img_x = attention(q, k_img, v_img, k_lens=None)
-        x = attention(q, k, v, k_lens=context_lens)
+        if clip_query_lens is not None and clip_context_lens is not None:
+            x = self._clipwise_attention(q, k, v, clip_query_lens, clip_context_lens)
+        else:
+            x = attention(q, k, v, k_lens=context_lens)
 
         # output
         x = x.flatten(2)
@@ -387,6 +475,9 @@ class WanAttentionBlock(nn.Module):
         freqs,
         context,
         context_lens,
+        #
+        clip_query_lens: Optional[Tensor] = None,
+        clip_context_lens: Optional[Tensor] = None,
     ):
         r"""
         Args:
@@ -410,14 +501,16 @@ class WanAttentionBlock(nn.Module):
         x = x + y * e[2]
 
         # cross-attention & ffn function
-        def cross_attn_ffn(x, context, context_lens, e):
-            x = x + self.cross_attn(self.norm3(x), context, context_lens)
+        def cross_attn_ffn(x, context, context_lens, e, clip_query_lens, clip_context_lens):
+            x = x + self.cross_attn(
+                self.norm3(x), context, context_lens,
+                clip_query_lens=clip_query_lens, clip_context_lens=clip_context_lens)
             y = self.ffn(self.norm2(x) * (1 + e[4]) + e[3])
             # with torch.amp.autocast('cuda', dtype=torch.float32):
             x = x + y * e[5]
             return x
 
-        x = cross_attn_ffn(x, context, context_lens, e)
+        x = cross_attn_ffn(x, context, context_lens, e, clip_query_lens, clip_context_lens)
         return x
 
 
@@ -638,6 +731,9 @@ class WanModel(ModelMixin, ConfigMixin):
         y=None,
         add_embeds=None,
         #
+        clip_query_lens: Optional[Tensor] = None,
+        clip_context_lens: Optional[Tensor] = None,
+        #
         **kwargs  # to compatible with causal models
     ):
         r"""
@@ -701,12 +797,13 @@ class WanModel(ModelMixin, ConfigMixin):
 
         # context
         context_lens = None
-        context = self.text_embedding(
-            torch.stack([
-                torch.cat(
-                    [u, u.new_zeros(self.text_len - u.size(0), u.size(1))])
-                for u in context
-            ]))
+        # context = self.text_embedding(
+        #     torch.stack([
+        #         torch.cat(
+        #             [u, u.new_zeros(self.text_len - u.size(0), u.size(1))])
+        #         for u in context
+        #     ]))
+        context = self.text_embedding(torch.stack(context))  # (B, L*num_clips, D')
 
         if clip_fea is not None:
             context_clip = self.img_emb(clip_fea)  # bs x 257 (x2) x dim
@@ -720,6 +817,9 @@ class WanModel(ModelMixin, ConfigMixin):
             freqs=self.freqs,
             context=context,
             context_lens=context_lens,
+            #
+            clip_query_lens=clip_query_lens,
+            clip_context_lens=clip_context_lens,
         )
 
         def create_custom_forward(module):

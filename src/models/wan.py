@@ -219,12 +219,17 @@ class Wan(nn.Module):
         outputs = {}
         device = self.diffusion.model.device
 
+        # For multi-clip generation
+        data, clip_latent_lens = self._multiclip_batch(data)
+        if self.opt.num_clips > 1:
+            assert clip_latent_lens is not None
+
         if "image" in data:
             images = data["image"].to(device=device, dtype=dtype)  # (B, F, 3, H, W)
             (B, F, _, H, W) = images.shape
         else:
             B = len(data["prompt"])
-            F, H, W = self.opt.num_input_frames, self.opt.input_res[0], self.opt.input_res[1]
+            F, H, W = (self.opt.num_input_frames - 1) * self.opt.num_clips + 1, self.opt.input_res[0], self.opt.input_res[1]
 
         idxs = torch.arange(0, F, 4).to(device=device, dtype=torch.long)
         if self.opt.load_da3:
@@ -242,7 +247,7 @@ class Wan(nn.Module):
             prompts = data["prompt"]  # a list of strings
             with torch.no_grad(), torch.autocast(device_type="cuda", dtype=dtype):
                 self.text_encoder.eval()
-                prompt_embeds = self.text_encoder(prompts)  # (B, N=512, D')
+                prompt_embeds = self._encode_prompt_batch(prompts)  # (B, N=512, D') or (B, num_clips, N=512, D')
         else:
             raise NotImplementedError
 
@@ -407,6 +412,8 @@ class Wan(nn.Module):
             extra_condition=input_extra_condition,
             #
             clean_x=latents if self.opt.use_teacher_forcing else None,
+            #
+            clip_latent_lens=clip_latent_lens,  # for multi-clip generation
         )
 
         if self.opt.load_da3:
@@ -483,6 +490,11 @@ class Wan(nn.Module):
         outputs = {}
         device = self.diffusion.model.device
 
+        # For multi-clip generation
+        data, clip_latent_lens = self._multiclip_batch(data)
+        if self.opt.num_clips > 1:
+            assert clip_latent_lens is not None
+
         self.diffusion.eval()
         self.diffusion.scheduler.set_timesteps(self.opt.num_inference_steps, training=False)
 
@@ -494,7 +506,8 @@ class Wan(nn.Module):
             outputs["images_gt"] = images
         else:
             B = len(data["prompt"])
-            F, H, W = self.opt.num_input_frames_test, self.opt.input_res[0], self.opt.input_res[1]
+            F, H, W = (self.opt.num_input_frames_test - 1) * self.opt.num_clips + 1, self.opt.input_res[0], self.opt.input_res[1]
+            images = torch.zeros((B, F, 3, H, W), dtype=dtype, device=device)  # (B, F, 3, H, W); not really used
 
         idxs = torch.arange(0, F, 4).to(device=device, dtype=torch.long)
         images_f = images[:, idxs, ...]  # (B, f, 3, H, W)
@@ -525,10 +538,11 @@ class Wan(nn.Module):
             if self.prompt_list is None or np.random.rand() >= self.opt.vidprom_prob:
                 prompts = data["prompt"]  # a list of strings
             else:
+                assert self.opt.num_clips == 1  # num_clips=1 for VidProm
                 prompts = np.random.choice(self.prompt_list, B, replace=False).tolist()
             self.text_encoder.eval()
-            prompt_embeds = self.text_encoder(prompts)  # (B, N=512, D')
-            negative_prompt_embeds = self.text_encoder([self.opt.negative_prompt]).repeat(B, 1, 1)  # (B, N=512, D')
+            prompt_embeds = self._encode_prompt_batch(prompts)  # (B, N=512, D') or (B, num_clips, N=512, D')
+            negative_prompt_embeds = self._build_negative_prompt_embeds(B, self.opt.num_clips)  # (B, N=512, D') or (B, num_clips, N=512, D')
         else:
             raise NotImplementedError
 
@@ -594,6 +608,8 @@ class Wan(nn.Module):
                     plucker=plucker if self.opt.input_plucker else None,
                     C2W=C2W, fxfycxcy=fxfycxcy,  # for DA3
                     extra_condition=input_extra_condition,
+                    #
+                    clip_latent_lens=clip_latent_lens,  # for multi-clip generation
                 )
 
                 ## CFG
@@ -605,6 +621,8 @@ class Wan(nn.Module):
                         plucker=plucker if self.opt.input_plucker else None,
                         C2W=C2W, fxfycxcy=fxfycxcy,  # for DA3
                         extra_condition=input_extra_condition,
+                        #
+                        clip_latent_lens=clip_latent_lens,  # for multi-clip generation
                     )
                     if not self.opt.load_da3:
                         model_outputs = model_outputs_neg + cfg_scale * (model_outputs - model_outputs_neg)
@@ -694,6 +712,11 @@ class Wan(nn.Module):
         outputs = {}
         device = self.diffusion.model.device
 
+        # For multi-clip generation
+        data, clip_latent_lens = self._multiclip_batch(data)
+        if self.opt.num_clips > 1:
+            assert clip_latent_lens is not None
+
         self.diffusion.eval()
         self.diffusion.scheduler.set_timesteps(self.opt.num_inference_steps, training=False)
 
@@ -705,7 +728,7 @@ class Wan(nn.Module):
             outputs["images_gt"] = images
         else:
             B = len(data["prompt"])
-            F, H, W = self.opt.num_input_frames_test, self.opt.input_res[0], self.opt.input_res[1]
+            F, H, W = (self.opt.num_input_frames_test - 1) * self.opt.num_clips + 1, self.opt.input_res[0], self.opt.input_res[1]
             images = torch.zeros((B, F, 3, H, W), dtype=dtype, device=device)  # (B, F, 3, H, W); not really used
 
         idxs = torch.arange(0, F, 4).to(device=device, dtype=torch.long)
@@ -737,10 +760,11 @@ class Wan(nn.Module):
             if self.prompt_list is None or np.random.rand() >= self.opt.vidprom_prob:
                 prompts = data["prompt"]  # a list of strings
             else:
+                assert self.opt.num_clips == 1  # num_clips=1 for VidProm
                 prompts = np.random.choice(self.prompt_list, B, replace=False).tolist()
             self.text_encoder.eval()
-            prompt_embeds = self.text_encoder(prompts)  # (B, N=512, D')
-            negative_prompt_embeds = self.text_encoder([self.opt.negative_prompt]).repeat(B, 1, 1)  # (B, N=512, D')
+            prompt_embeds = self._encode_prompt_batch(prompts)  # (B, N=512, D') or (B, num_clips, N=512, D')
+            negative_prompt_embeds = self._build_negative_prompt_embeds(B, self.opt.num_clips)  # (B, N=512, D') or (B, num_clips, N=512, D')
         else:
             raise NotImplementedError
 
@@ -855,6 +879,8 @@ class Wan(nn.Module):
                         #
                         kv_cache_da3=self.kv_cache_pos_da3,
                         current_start_da3=chunk_idx * self.opt.chunk_size * (frame_seqlen // (self.opt.da3_down_ratio * self.opt.da3_down_ratio) + 1),  # `+1` for camera token
+                        #
+                        clip_latent_lens=clip_latent_lens,  # for multi-clip generation
                     )
 
                     #### CFG
@@ -873,6 +899,8 @@ class Wan(nn.Module):
                             #
                             kv_cache_da3=self.kv_cache_neg_da3,
                             current_start_da3=chunk_idx * self.opt.chunk_size * (frame_seqlen // (self.opt.da3_down_ratio * self.opt.da3_down_ratio) + 1),  # `+1` for camera token
+                            #
+                            clip_latent_lens=clip_latent_lens,  # for multi-clip generation
                         )
 
                         if not self.opt.load_da3:
@@ -923,6 +951,8 @@ class Wan(nn.Module):
                     #
                     kv_cache_da3=self.kv_cache_pos_da3,
                     current_start_da3=chunk_idx * self.opt.chunk_size * (frame_seqlen // (self.opt.da3_down_ratio * self.opt.da3_down_ratio) + 1),  # `+1` for camera token
+                    #
+                    clip_latent_lens=clip_latent_lens,  # for multi-clip generation
                 )
 
                 if cfg_scale > 1.:
@@ -940,6 +970,8 @@ class Wan(nn.Module):
                         #
                         kv_cache_da3=self.kv_cache_neg_da3,
                         current_start_da3=chunk_idx * self.opt.chunk_size * (frame_seqlen // (self.opt.da3_down_ratio * self.opt.da3_down_ratio) + 1),  # `+1` for camera token
+                        #
+                        clip_latent_lens=clip_latent_lens,  # for multi-clip generation
                     )
 
                     if not self.opt.load_da3:
@@ -1124,6 +1156,8 @@ class Wan(nn.Module):
         dtype: torch.dtype = torch.bfloat16,
         verbose: bool = True,
         vae: Optional[WanVAEWrapper] = None,
+        #
+        clip_latent_lens: Optional[Tensor] = None,  # (B=1, num_clips); for multi-clip generation
     ):
         outputs = {}
 
@@ -1259,6 +1293,8 @@ class Wan(nn.Module):
                 #
                 kv_cache_da3=self.kv_cache_pos_da3,
                 current_start_da3=0,
+                #
+                clip_latent_lens=clip_latent_lens,  # for multi-clip generation
             )
             if cfg_scale > 1.:
                 self.diffusion(
@@ -1277,6 +1313,8 @@ class Wan(nn.Module):
                     #
                     kv_cache_da3=self.kv_cache_neg_da3,
                     current_start_da3=0,
+                    #
+                    clip_latent_lens=clip_latent_lens,  # for multi-clip generation
                 )
             cache_start_chunk_idx = 1
         else:
@@ -1318,6 +1356,8 @@ class Wan(nn.Module):
                     #
                     kv_cache_da3=self.kv_cache_pos_da3,
                     current_start_da3=(cache_start_chunk_idx + chunk_idx) * self.opt.chunk_size * (frame_seqlen // (self.opt.da3_down_ratio * self.opt.da3_down_ratio) + 1),  # `+1` for camera token
+                    #
+                    clip_latent_lens=clip_latent_lens,  # for multi-clip generation
                 )
 
                 #### CFG
@@ -1336,6 +1376,8 @@ class Wan(nn.Module):
                         #
                         kv_cache_da3=self.kv_cache_neg_da3,
                         current_start_da3=(cache_start_chunk_idx + chunk_idx) * self.opt.chunk_size * (frame_seqlen // (self.opt.da3_down_ratio * self.opt.da3_down_ratio) + 1),  # `+1` for camera token
+                        #
+                        clip_latent_lens=clip_latent_lens,  # for multi-clip generation
                     )
 
                     if not self.opt.load_da3:
@@ -1386,6 +1428,8 @@ class Wan(nn.Module):
                 #
                 kv_cache_da3=self.kv_cache_pos_da3,
                 current_start_da3=(cache_start_chunk_idx + chunk_idx) * self.opt.chunk_size * (frame_seqlen // (self.opt.da3_down_ratio * self.opt.da3_down_ratio) + 1),  # `+1` for camera token
+                #
+                clip_latent_lens=clip_latent_lens,  # for multi-clip generation
             )
 
             if cfg_scale > 1.:
@@ -1403,6 +1447,8 @@ class Wan(nn.Module):
                     #
                     kv_cache_da3=self.kv_cache_neg_da3,
                     current_start_da3=(cache_start_chunk_idx + chunk_idx) * self.opt.chunk_size * (frame_seqlen // (self.opt.da3_down_ratio * self.opt.da3_down_ratio) + 1),  # `+1` for camera token
+                    #
+                    clip_latent_lens=clip_latent_lens,  # for multi-clip generation
                 )
 
                 if not self.opt.load_da3:
@@ -1520,6 +1566,58 @@ class Wan(nn.Module):
 
     ################################ Helper functions ################################
 
+
+    def _multiclip_batch(self, data: Dict[str, Any]) -> Tuple[Dict[str, Any], Optional[Tensor]]:
+        prompts = data.get("prompt", None)
+        if not isinstance(prompts[0], list):  # one-clip
+            return data, None
+
+        assert len(prompts) == 1 and len(prompts[0]) == self.opt.num_clips  # only support batch_size=1 for multi-clip inputs
+
+        new_data = dict(data)
+        clip_frame_lens = []
+        for key in ["image", "C2W", "fxfycxcy", "depth", "conf"]:
+            if key not in data:
+                continue
+            value = data[key]  # a list (batch) of tuple (clip)
+            clip_frame_lens = [[clip.shape[0] for clip in sample] for sample in value]
+            new_data[key] = torch.stack([torch.cat(sample, dim=0) for sample in value], dim=0)  # (B=1, sum(F_clip), ...)
+
+        if len(clip_frame_lens) == 0:
+            return new_data, None
+
+        clip_frame_lens = torch.tensor(clip_frame_lens, dtype=torch.long)  # (B=1, num_clips)
+        clip_latent_lens = []
+        for i in range(clip_frame_lens.shape[1]):
+            if i == 0:  # first clip keeps the first image latent
+                clip_latent_len = 1 + int(round((clip_frame_lens[0, 0:1].item() - 1) / self.opt.compression_ratio[0]))
+                clip_latent_lens.append(clip_latent_len)
+            elif i == clip_frame_lens.shape[1] - 1:  # last clip
+                all_latent_len = 1 + int(round((clip_frame_lens[0, :].sum().item() - 1) / self.opt.compression_ratio[0]))
+                clip_latent_len = all_latent_len - sum(clip_latent_lens)  # the last clip takes all remaining latents
+                clip_latent_lens.append(clip_latent_len)
+            else:  # middle clips
+                clip_latent_len = int(round(clip_frame_lens[0, i:i+1].sum().item() / self.opt.compression_ratio[0]))
+                clip_latent_lens.append(clip_latent_len)
+        clip_latent_lens = torch.tensor(clip_latent_lens, dtype=torch.long)[None, :]  # (B=1, num_clips)
+
+        return new_data, clip_latent_lens
+
+    def _encode_prompt_batch(self, prompts: List[str] | List[List[str]]) -> Tensor:
+        if len(prompts) == 0:
+            raise ValueError("Prompts should not be empty")
+        if isinstance(prompts[0], list):
+            B, num_clips = len(prompts), len(prompts[0])
+            flat_prompts = [p for sample in prompts for p in sample]
+            embeds = self.text_encoder(flat_prompts)
+            return embeds.reshape(B, num_clips, embeds.shape[1], embeds.shape[2])  # (B, num_clips, N=512, D')
+        return self.text_encoder(prompts)  # (B, N=512, D')
+
+    def _build_negative_prompt_embeds(self, batch_size: int, num_clips: int = 1) -> Tensor:
+        neg = self.text_encoder([self.opt.negative_prompt]).repeat(batch_size * num_clips, 1, 1)
+        if num_clips > 1:
+            neg = neg.reshape(batch_size, num_clips, neg.shape[1], neg.shape[2])
+        return neg  # (B, N=512, D') or (B, num_clips, N=512, D')
 
     def _initialize_kv_cache(self, batch_size: int, dtype: torch.dtype, device: torch.device):
         """

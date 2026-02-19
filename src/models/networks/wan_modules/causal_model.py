@@ -301,6 +301,9 @@ class CausalWanAttentionBlock(nn.Module):
         kv_cache=None,
         crossattn_cache=None,
         current_start=0,
+        #
+        clip_query_lens=None,
+        clip_context_lens=None,
     ):
         r"""
         Args:
@@ -326,15 +329,31 @@ class CausalWanAttentionBlock(nn.Module):
         x = x + y * e[2]
 
         # cross-attention & ffn function
-        def cross_attn_ffn(x, context, context_lens, e, crossattn_cache=None):
-            x = x + self.cross_attn(self.norm3(x), context, context_lens,
-                                    crossattn_cache=crossattn_cache)
+        def cross_attn_ffn(
+            x,
+            context,
+            context_lens,
+            e,
+            crossattn_cache=None,
+            clip_query_lens=None,
+            clip_context_lens=None,
+        ):
+            x = x + self.cross_attn(
+                self.norm3(x), context, context_lens,
+                crossattn_cache=crossattn_cache,
+                clip_query_lens=clip_query_lens,
+                clip_context_lens=clip_context_lens,
+            )
             y = self.ffn(self.norm2(x) * (1 + e[4]) + e[3])
             # with torch.amp.autocast('cuda', dtype=torch.float32):
             x = x + y * e[5]
             return x
 
-        x = cross_attn_ffn(x, context, context_lens, e, crossattn_cache)
+        x = cross_attn_ffn(
+            x, context, context_lens, e, crossattn_cache,
+            clip_query_lens=clip_query_lens,
+            clip_context_lens=clip_context_lens,
+        )
 
         return x
 
@@ -687,6 +706,9 @@ class CausalWanModel(ModelMixin, ConfigMixin):
         kv_cache: dict = None,
         crossattn_cache: dict = None,
         current_start: int = 0,
+        #
+        clip_query_lens=None,
+        clip_context_lens=None,
     ):
         r"""
         Run the diffusion model with kv caching.
@@ -773,7 +795,11 @@ class CausalWanModel(ModelMixin, ConfigMixin):
             context=context,
             context_lens=context_lens,
             #
-            block_mask=self.block_mask)
+            block_mask=self.block_mask,
+            #
+            clip_query_lens=clip_query_lens,
+            clip_context_lens=clip_context_lens,
+        )
 
         def create_custom_forward(module):
             def custom_forward(*inputs, **kwargs):
@@ -836,6 +862,9 @@ class CausalWanModel(ModelMixin, ConfigMixin):
         #
         clean_x=None,
         aug_t=None,
+        #
+        clip_query_lens=None,
+        clip_context_lens=None,
     ):
         r"""
         Forward pass through the diffusion model
@@ -932,6 +961,8 @@ class CausalWanModel(ModelMixin, ConfigMixin):
             e0_clean = self.time_projection(e_clean).unflatten(1, (6, self.dim)).unflatten(0, (bt, seq_lens_clean.max()))
             # assert e_clean.dtype == torch.float32 and e0_clean.dtype == torch.float32
             e0 = torch.cat([e0_clean, e0], dim=1)
+            if clip_query_lens is not None:
+                clip_query_lens = torch.cat([clip_query_lens, clip_query_lens], dim=1)
 
         # Construct blockwise causal attn mask
         if self.block_mask is None:
@@ -964,6 +995,9 @@ class CausalWanModel(ModelMixin, ConfigMixin):
             context_lens=context_lens,
             #
             block_mask=self.block_mask,
+            #
+            clip_query_lens=clip_query_lens,
+            clip_context_lens=clip_context_lens,
         )
 
         def create_custom_forward(module):
