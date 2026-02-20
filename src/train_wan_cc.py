@@ -428,7 +428,7 @@ def main():
         wandb.log_artifact(arti_exp_info)
 
     # Start training
-    global_update_step = 0
+    NONE_COUNT, global_update_step = 0, 0
     if is_main_process:
         logger.removeHandler(logger.handlers[0])  # remove console handler during training
     progress_bar = tqdm(
@@ -479,6 +479,17 @@ def main():
 
             # Backpropagate
             loss.backward()
+
+            # Gradient check
+            max_name, max_grad_norm = util.get_max_grad_norm(model)
+            if max_name in ["NONE", "ZERO"]:
+                logger.info(f"Gradient norm is [{max_name}]! Skip updating model parameters")
+                optimizer.zero_grad()
+                NONE_COUNT += 1
+                if NONE_COUNT > 10:
+                    raise ValueError(f"Gradient norm is [{max_name}] for {NONE_COUNT} times!")
+                continue
+            NONE_COUNT = 0  # reset NONE_COUNT after a successful update
 
             # Gradient clip
             torch.nn.utils.clip_grad_norm_(
