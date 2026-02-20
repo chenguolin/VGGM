@@ -214,7 +214,9 @@ def main():
         dist.broadcast(random_seed, src=0)
         args.seed = random_seed.item()
     logger.info(f"Random seed: [{args.seed}]\n")
-    util.set_seed(args.seed + global_rank)
+    # Keep RNG streams identical within each SP group (same dp_rank)
+    # while preserving different streams across DP groups
+    util.set_seed(args.seed + dp_rank)  # util.set_seed(args.seed + global_rank)
 
     # Load train and validation datasets
     if configs["opt_type"] == "sf_rep":
@@ -482,12 +484,12 @@ def main():
 
             # Gradient check
             max_name, max_grad_norm = util.get_max_grad_norm(model)
-            if max_name in ["NONE", "ZERO"]:
-                logger.info(f"Gradient norm is [{max_name}]! Skip updating model parameters")
+            if max_name == "NONE":
+                logger.info(f"Gradient norm is NONE! Skip updating model parameters")
                 optimizer.zero_grad()
                 NONE_COUNT += 1
                 if NONE_COUNT > 10:
-                    raise ValueError(f"Gradient norm is [{max_name}] for {NONE_COUNT} times!")
+                    raise ValueError(f"Gradient norm is NONE for [{NONE_COUNT}] times!")
                 continue
             NONE_COUNT = 0  # reset NONE_COUNT after a successful update
 

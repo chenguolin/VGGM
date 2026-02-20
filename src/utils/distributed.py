@@ -90,7 +90,10 @@ def fsdp_wrap(
 
 def barrier():
     if dist.is_initialized():
-        dist.barrier()
+        if dist.get_backend() == "nccl" and torch.cuda.is_available():
+            dist.barrier(device_ids=[torch.cuda.current_device()])
+        else:
+            dist.barrier()
 
 
 def launch_distributed_job(backend: str = "nccl"):
