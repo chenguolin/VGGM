@@ -22,7 +22,9 @@ from .model import (
     rope_params,
     get_1d_rotary_pos_embed_riflex,
     rope_apply,
+    rope_apply_sp,
 )
+from src.utils.distributed import get_sp_rank, get_sp_world_size, all_gather, all_to_all
 
 # wan 1.3B model has a weird channel / head configurations and require max-autotune to work with flexattention
 # see https://github.com/pytorch/pytorch/issues/133254
@@ -61,6 +63,98 @@ def causal_rope_apply(x, grid_sizes, freqs, start_frame=0):
         # append to collection
         output.append(x_i)
     return torch.stack(output).type_as(x)
+
+
+# ============================================================================
+# Sequence Parallelism Support
+# ============================================================================
+
+@torch.amp.autocast('cuda', enabled=False)
+def rope_apply_sp_tf(x, grid_sizes, freqs):
+    """
+    Apply RoPE with sequence parallelism support for teacher forcing.
+
+    Args:
+        x: [B, L//sp, N, C]
+        grid_sizes: [B, 3] containing (F, H, W)
+        freqs: [M, C//2]
+    """
+    s, n, c = x.size(1), x.size(2), x.size(3) // 2
+
+    # split freqs
+    freqs = freqs.split([c - 2 * (c // 3), c // 3, c // 3], dim=1)
+
+    # loop over samples
+    output = []
+    for i, (f, h, w) in enumerate(grid_sizes.tolist()):
+        seq_len = f * h * w
+
+        # precompute multipliers
+        x_i = torch.view_as_complex(x[i, :s].to(torch.float64).reshape(
+            s, n, -1, 2))
+        freqs_i = torch.cat([
+            freqs[0][:f].view(f, 1, 1, -1).expand(f, h, w, -1),
+            freqs[1][:h].view(1, h, 1, -1).expand(f, h, w, -1),
+            freqs[2][:w].view(1, 1, w, -1).expand(f, h, w, -1)
+        ],
+                            dim=-1).reshape(seq_len, 1, -1)
+
+        # for teacher forcing, RoPE applied to clean and noisy parts are the same
+        freqs_i = torch.cat([freqs_i, freqs_i], dim=0)
+
+        # apply rotary embedding with SP offset
+        sp_rank = get_sp_rank()
+        freqs_i_rank = freqs_i[(sp_rank * s):((sp_rank + 1) * s), :, :]
+        x_i = torch.view_as_real(x_i * freqs_i_rank).flatten(2)
+        x_i = torch.cat([x_i, x[i, s:]])
+
+        # append to collection
+        output.append(x_i)
+    return torch.stack(output).type_as(x)
+
+
+def distributed_flex_attention(
+    q,
+    k,
+    v,
+    block_mask,
+):
+    """
+    Ulysses-style distributed flex attention using all-to-all communication.
+
+    Args:
+        q: [B, Lq // sp, Nq, C1]
+        k: [B, Lk // sp, Nk, C1]
+        v: [B, Lk // sp, Nk, C2]
+
+    Returns:
+        x: [B, Lq // sp, Nq, C2]
+    """
+    # Scatter heads, gather sequence
+    q = all_to_all(q, scatter_dim=2, gather_dim=1)  # [B, Lq, Nq//sp, C1]
+    k = all_to_all(k, scatter_dim=2, gather_dim=1)  # [B, Lk, Nk//sp, C1]
+    v = all_to_all(v, scatter_dim=2, gather_dim=1)  # [B, Lk, Nk//sp, C2]
+
+    # Padding for flexattention
+    padded_length = math.ceil(q.shape[1] / 128) * 128 - q.shape[1]  # `128`: block size for flexattention; TODO: make it configurable
+    if padded_length > 0:
+        q = torch.cat([q, torch.zeros([q.shape[0], padded_length, q.shape[2], q.shape[3]], device=q.device, dtype=q.dtype)], dim=1)
+        k = torch.cat([k, torch.zeros([k.shape[0], padded_length, k.shape[2], k.shape[3]], device=k.device, dtype=k.dtype)], dim=1)
+        v = torch.cat([v, torch.zeros([v.shape[0], padded_length, v.shape[2], v.shape[3]], device=v.device, dtype=v.dtype)], dim=1)
+
+    # Apply flex attention on full sequence with split heads
+    x = flex_attention(
+        query=q.transpose(2, 1),
+        key=k.transpose(2, 1),
+        value=v.transpose(2, 1),
+        block_mask=block_mask,
+    ).transpose(2, 1)
+    if padded_length > 0:
+        x = x[:, :-padded_length, ...]
+
+    # Scatter sequence, gather heads
+    x = all_to_all(x, scatter_dim=1, gather_dim=2)  # [B, Lq//sp, Nq, C2]
+    return x
 
 
 class CausalWanSelfAttention(nn.Module):
@@ -115,6 +209,7 @@ class CausalWanSelfAttention(nn.Module):
             freqs(Tensor): Rope freqs, shape [1024, C / num_heads / 2]
         """
         b, s, n, d = *x.shape[:2], self.num_heads, self.head_dim
+        sp_size = get_sp_world_size()
 
         # query, key, value function
         def qkv_fn(x):
@@ -128,44 +223,63 @@ class CausalWanSelfAttention(nn.Module):
         # No KV cache
         if kv_cache is None:
             # Teacher forcing training
-            if (s == seq_lens[0].item() * 2):
-                q_chunk = torch.chunk(q, 2, dim=1)
-                k_chunk = torch.chunk(k, 2, dim=1)
-                roped_query = []
-                roped_key = []
-                # RoPE should be same for clean and noisy parts
-                for ii in range(2):
-                    rq = rope_apply(q_chunk[ii], grid_sizes, freqs).type_as(v)
-                    rk = rope_apply(k_chunk[ii], grid_sizes, freqs).type_as(v)
-                    roped_query.append(rq)
-                    roped_key.append(rk)
+            if (s == seq_lens[0].item() * 2 // sp_size):
+                if sp_size > 1:
+                    roped_query = rope_apply_sp_tf(q, grid_sizes, freqs).type_as(v)
+                    roped_key = rope_apply_sp_tf(k, grid_sizes, freqs).type_as(v)
+                else:
+                    q_chunk = torch.chunk(q, 2, dim=1)
+                    k_chunk = torch.chunk(k, 2, dim=1)
+                    roped_query = []
+                    roped_key = []
+                    # RoPE should be same for clean and noisy parts
+                    for ii in range(2):
+                        rq = rope_apply(q_chunk[ii], grid_sizes, freqs).type_as(v)
+                        rk = rope_apply(k_chunk[ii], grid_sizes, freqs).type_as(v)
+                        roped_query.append(rq)
+                        roped_key.append(rk)
 
-                roped_query = torch.cat(roped_query, dim=1)
-                roped_key = torch.cat(roped_key, dim=1)
+                    roped_query = torch.cat(roped_query, dim=1)
+                    roped_key = torch.cat(roped_key, dim=1)
 
             # Not teacher forcing training
             else:
-                roped_query = rope_apply(q, grid_sizes, freqs).type_as(v)
-                roped_key = rope_apply(k, grid_sizes, freqs).type_as(v)
+                if sp_size > 1:
+                    roped_query = rope_apply_sp(q, grid_sizes, freqs).type_as(v)
+                    roped_key = rope_apply_sp(k, grid_sizes, freqs).type_as(v)
+                else:
+                    roped_query = rope_apply(q, grid_sizes, freqs).type_as(v)
+                    roped_key = rope_apply(k, grid_sizes, freqs).type_as(v)
 
-            # Padding for flexattention
-            padded_length = math.ceil(roped_query.shape[1] / 128) * 128 - roped_query.shape[1]  # `128`: block size for flexattention; TODO: make it configurable
-            if padded_length > 0:
-                roped_query = torch.cat([roped_query, torch.zeros([q.shape[0], padded_length, q.shape[2], q.shape[3]], device=q.device, dtype=v.dtype)], dim=1)
-                roped_key = torch.cat([roped_key, torch.zeros([k.shape[0], padded_length, k.shape[2], k.shape[3]], device=k.device, dtype=v.dtype)], dim=1)
-                v = torch.cat([v, torch.zeros([v.shape[0], padded_length, v.shape[2], v.shape[3]], device=v.device, dtype=v.dtype)], dim=1)
+            if sp_size > 1:
+                x = distributed_flex_attention(
+                    roped_query,
+                    roped_key,
+                    v,
+                    block_mask,
+                )
+            else:
+                # Padding for flexattention
+                padded_length = math.ceil(roped_query.shape[1] / 128) * 128 - roped_query.shape[1]  # `128`: block size for flexattention; TODO: make it configurable
+                if padded_length > 0:
+                    roped_query = torch.cat([roped_query, torch.zeros([q.shape[0], padded_length, q.shape[2], q.shape[3]], device=q.device, dtype=v.dtype)], dim=1)
+                    roped_key = torch.cat([roped_key, torch.zeros([k.shape[0], padded_length, k.shape[2], k.shape[3]], device=k.device, dtype=v.dtype)], dim=1)
+                    v = torch.cat([v, torch.zeros([v.shape[0], padded_length, v.shape[2], v.shape[3]], device=v.device, dtype=v.dtype)], dim=1)
 
-            x = flex_attention(
-                query=roped_query.transpose(2, 1),
-                key=roped_key.transpose(2, 1),
-                value=v.transpose(2, 1),
-                block_mask=block_mask,
-            ).transpose(2, 1)
-            if padded_length > 0:
-                x = x[:, :-padded_length, ...]
+                x = flex_attention(
+                    query=roped_query.transpose(2, 1),
+                    key=roped_key.transpose(2, 1),
+                    value=v.transpose(2, 1),
+                    block_mask=block_mask,
+                ).transpose(2, 1)
+                if padded_length > 0:
+                    x = x[:, :-padded_length, ...]
 
         # Use KV cache
         else:
+            if get_sp_world_size() > 1:
+                raise NotImplementedError("KV cache is not implemented for sequence parallelism yet")
+
             frame_seqlen = math.prod(grid_sizes[0][1:]).item()
             if not self.rope_outside:
                 current_start_frame = current_start // frame_seqlen
@@ -786,6 +900,13 @@ class CausalWanModel(ModelMixin, ConfigMixin):
             context_clip = self.img_emb(clip_fea)  # bs x 257 x dim
             context = torch.concat([context_clip, context], dim=1)
 
+        # Sequence parallelism: chunk sequences across ranks
+        sp_size = get_sp_world_size()
+        if sp_size > 1:
+            assert x.size(1) % sp_size == 0
+            x = torch.chunk(x, sp_size, dim=1)[get_sp_rank()]
+            e0 = torch.chunk(e0, sp_size, dim=1)[get_sp_rank()]
+
         # arguments
         kwargs = dict(
             e=e0,
@@ -842,6 +963,10 @@ class CausalWanModel(ModelMixin, ConfigMixin):
                     }
                 )
                 x = block(x, **kwargs)
+
+        # Sequence parallelism: gather sequences before head
+        if sp_size > 1:
+            x = all_gather(x, dim=1)
 
         # head
         x = self.head(x, e.unflatten(0, (bt, seq_len)))
@@ -985,6 +1110,13 @@ class CausalWanModel(ModelMixin, ConfigMixin):
                     max_attention_size=self.max_attention_size,
                 )
 
+        # Sequence parallelism: chunk sequences across ranks
+        sp_size = get_sp_world_size()
+        if sp_size > 1:
+            assert x.size(1) % sp_size == 0
+            x = torch.chunk(x, sp_size, dim=1)[get_sp_rank()]
+            e0 = torch.chunk(e0, sp_size, dim=1)[get_sp_rank()]
+
         # arguments
         kwargs = dict(
             e=e0,
@@ -1025,6 +1157,10 @@ class CausalWanModel(ModelMixin, ConfigMixin):
 
         if clean_x is not None:
             x = x[:, x.shape[1] // 2:]
+
+        # Sequence parallelism: gather sequences before head
+        if sp_size > 1:
+            x = all_gather(x, dim=1)
 
         # head
         x = self.head(x, e.unflatten(0, (bt, seq_len)))

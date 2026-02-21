@@ -193,11 +193,11 @@ def rope_apply_sp(x, grid_sizes, freqs):
 
 
 def distributed_attention(
-        q,
-        k,
-        v,
-        seq_lens,
-        window_size=(-1, -1),
+    q,
+    k,
+    v,
+    seq_lens,
+    window_size=(-1, -1),
 ):
     """
     Ulysses-style distributed attention using all-to-all communication.
@@ -297,6 +297,7 @@ class WanSelfAttention(nn.Module):
             freqs(Tensor): Rope freqs, shape [1024, C / num_heads / 2]
         """
         b, s, n, d = *x.shape[:2], self.num_heads, self.head_dim
+        sp_size = get_sp_world_size()
 
         # query, key, value function
         def qkv_fn(x):
@@ -308,7 +309,7 @@ class WanSelfAttention(nn.Module):
         q, k, v = qkv_fn(x)
 
         # Apply attention with or without sequence parallelism
-        if get_sp_world_size() > 1:
+        if sp_size > 1:
             # Sequence parallelism enabled: use distributed attention
             q_rope = rope_apply_sp(q, grid_sizes, freqs)
             k_rope = rope_apply_sp(k, grid_sizes, freqs)
@@ -377,6 +378,7 @@ class WanT2VCrossAttention(WanSelfAttention):
             crossattn_cache (Optional[Dict[str, Any]]): Contains the cached key and value tensors for context embedding
         """
         b, n, d = x.size(0), self.num_heads, self.head_dim
+        sp_size = get_sp_world_size()
 
         # compute query, key, value
         q = self.norm_q(self.q(x)).view(b, -1, n, d)
@@ -398,7 +400,6 @@ class WanT2VCrossAttention(WanSelfAttention):
         # compute attention
         if clip_query_lens is not None and clip_context_lens is not None:
             # For clipwise cross attention with SP: need to gather queries first
-            sp_size = get_sp_world_size()
             if sp_size > 1:
                 q = all_gather(q, dim=1)
 

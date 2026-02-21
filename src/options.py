@@ -253,8 +253,7 @@ opt_dict["wan2.1_t2v_1.3b"] = Options(
 
 # Diffusion/Teacher Forcing
 opt_dict["wan2.1_t2v_1.3b_causal"] = Options(
-    first_latent_cond=False,
-    input_plucker=True,
+    # sp_size=2,
     #
     load_da3=True,
     da3_interactive=False,
@@ -271,7 +270,10 @@ opt_dict["wan2.1_t2v_1.3b_causal"] = Options(
     max_window_size=9,
     rope_outside=True,
     #
+    # wan_dir=f"{ROOT}/.cache/huggingface/hub/Wan-AI/Wan2.1-T2V-14B",
     generator_path=f"{ROOT}/projects/VGGM/.pth",
+    #
+    input_plucker=True,
     exclude_name_lr_mult="plucker_embed,extra_condition_embed,da3_adapter",
     #
     # num_input_frames=201,
