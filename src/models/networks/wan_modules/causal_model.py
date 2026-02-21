@@ -277,8 +277,10 @@ class CausalWanSelfAttention(nn.Module):
 
         # Use KV cache
         else:
-            if get_sp_world_size() > 1:
-                raise NotImplementedError("KV cache is not implemented for sequence parallelism yet")
+            if sp_size > 1:
+                q = all_gather(q, dim=1)
+                k = all_gather(k, dim=1)
+                v = all_gather(v, dim=1)
 
             frame_seqlen = math.prod(grid_sizes[0][1:]).item()
             if not self.rope_outside:
@@ -350,6 +352,9 @@ class CausalWanSelfAttention(nn.Module):
 
             kv_cache["global_end_index"].fill_(current_end)
             kv_cache["local_end_index"].fill_(local_end_index)
+
+            if sp_size > 1:
+                x = torch.chunk(x, sp_size, dim=1)[get_sp_rank()]
 
         # output
         x = x.flatten(2)
