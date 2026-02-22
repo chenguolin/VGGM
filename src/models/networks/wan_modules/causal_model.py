@@ -1160,12 +1160,12 @@ class CausalWanModel(ModelMixin, ConfigMixin):
             else:
                 x = block(x, **kwargs)
 
-        if clean_x is not None:
-            x = x[:, x.shape[1] // 2:]
-
         # Sequence parallelism: gather sequences before head
         if sp_size > 1:
             x = all_gather(x, dim=1)
+
+        if clean_x is not None:
+            x = x[:, x.shape[1] // 2:]
 
         # head
         x = self.head(x, e.unflatten(0, (bt, seq_len)))
