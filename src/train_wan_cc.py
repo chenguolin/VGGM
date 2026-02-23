@@ -166,6 +166,8 @@ def main():
         args.gradient_accumulation_steps,
         configs["train"].get("gradient_accumulation_steps", 1),
     )
+    if args.gradient_accumulation_steps != 1:
+        raise NotImplementedError  # TODO: support gradient accumulation
     args.sharding_strategy = configs["train"].get("sharding_strategy", args.sharding_strategy)
     args.wrap_strategy = configs["train"].get("wrap_strategy", args.wrap_strategy)
     args.use_ema = args.use_ema or configs["train"].get("use_ema", False)
@@ -430,7 +432,7 @@ def main():
         wandb.log_artifact(arti_exp_info)
 
     # Start training
-    NONE_COUNT, global_update_step = 0, 0
+    NONFINITE_SKIP_COUNT, global_update_step = 0, 0
     if is_main_process:
         logger.removeHandler(logger.handlers[0])  # remove console handler during training
     progress_bar = tqdm(
@@ -469,6 +471,16 @@ def main():
 
             loss = outputs["loss"]
 
+            # Skip the step if any rank produces NaN/Inf losses
+            local_nonfinite_loss = not util.tensor_is_finite(loss)
+            any_nonfinite_loss = util.dist_any_true(local_nonfinite_loss, loss.device)
+            if any_nonfinite_loss:
+                optimizer.zero_grad()
+                NONFINITE_SKIP_COUNT += 1
+                if NONFINITE_SKIP_COUNT > 10:
+                    raise ValueError(f"Non-finite loss/grad skipped for [{NONFINITE_SKIP_COUNT}] consecutive steps!")
+                continue
+
             # Some extra outputs for logging
             diffusion_loss = outputs["diffusion_loss"] if "diffusion_loss" in outputs else None
             critic_loss = outputs["critic_loss"] if "critic_loss" in outputs else None
@@ -482,16 +494,16 @@ def main():
             # Backpropagate
             loss.backward()
 
-            # Gradient check
-            max_name, max_grad_norm = util.get_max_grad_norm(model)
-            if max_name == "NONE":
-                logger.info(f"Gradient norm is NONE! Skip updating model parameters")
+            # Skip the step if any rank produces NaN/Inf gradients
+            local_nonfinite_grad_names = util.find_nonfinite_grad_names(model)
+            local_nonfinite_grad = len(local_nonfinite_grad_names) > 0
+            any_nonfinite_grad = util.dist_any_true(local_nonfinite_grad, loss.device)
+            if any_nonfinite_grad:
                 optimizer.zero_grad()
-                NONE_COUNT += 1
-                if NONE_COUNT > 10:
-                    raise ValueError(f"Gradient norm is NONE for [{NONE_COUNT}] times!")
+                NONFINITE_SKIP_COUNT += 1
+                if NONFINITE_SKIP_COUNT > 10:
+                    raise ValueError(f"Non-finite loss/grad skipped for [{NONFINITE_SKIP_COUNT}] consecutive steps!")
                 continue
-            NONE_COUNT = 0  # reset NONE_COUNT after a successful update
 
             # Gradient clip
             torch.nn.utils.clip_grad_norm_(

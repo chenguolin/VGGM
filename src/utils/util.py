@@ -11,21 +11,31 @@ from omegaconf import OmegaConf
 import random
 import numpy as np
 import torch
+import torch.distributed as dist
 
 
-def get_max_grad_norm(model: Module) -> Union[str, Tensor]:
-    max_name, max_grad_norm = "NONE", torch.tensor(0.)
-    for (name, param) in model.named_parameters():
-        if param.grad is not None:
-            grad_norm = param.grad.data.norm(2)  # (1,)
-            if grad_norm >= max_grad_norm:
-                max_grad_norm = grad_norm
-                max_name = name
+def tensor_is_finite(x: Tensor) -> bool:
+    return bool(torch.isfinite(x.detach()).all().item())
 
-    if max_grad_norm.item() == 0. and max_name != "NONE":
-        max_name = "ZERO"
 
-    return max_name, max_grad_norm
+def dist_any_true(flag: bool, device: torch.device) -> bool:
+    if not (dist.is_available() and dist.is_initialized()):
+        return flag
+    flag_tensor = torch.tensor([int(flag)], device=device, dtype=torch.int32)
+    dist.all_reduce(flag_tensor, op=dist.ReduceOp.MAX)
+    return bool(flag_tensor.item())
+
+
+def find_nonfinite_grad_names(model: Module, max_names: int = 3) -> List[str]:
+    nonfinite_names = []
+    for name, param in model.named_parameters():
+        if param.grad is None:
+            continue
+        if not torch.isfinite(param.grad).all().item():
+            nonfinite_names.append(name)
+            if len(nonfinite_names) >= max_names:
+                break
+    return nonfinite_names
 
 
 def set_seed(seed: int, deterministic: bool = False):
