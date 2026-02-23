@@ -124,7 +124,7 @@ class InternalDataset(BaseDataset):
             "C2W": C2W,            # List[(F, 4, 4)]
             "fxfycxcy": fxfycxcy,  # List[(F, 4)]
         }
-        if images is not None:
+        if self.opt.load_image:
             return_dict["image"] = images  # List[(F, 3, H, W)] in [0, 1]
 
         # Unpack the single clip

@@ -67,7 +67,7 @@ class RealcamvidDataset(BaseDataset):
             intrinsics[:, 1, 2] /= 280
             fxfycxcy = intrinsics_to_fxfycxcy(torch.from_numpy(intrinsics).float()[None, ...])[0]  # (F, 4)
 
-            if self.opt.load_depth:
+            if self.opt.load_depth or self.opt.normalize_xyz:
                 depths = torch.from_numpy(da3_data["depth"][input_frame_idxs, ...]).float()  # (F, H, W)
             if self.opt.load_conf:
                 confs = torch.from_numpy(da3_data["conf"][input_frame_idxs, ...]).float()  # (F, H, W)
@@ -105,7 +105,8 @@ class RealcamvidDataset(BaseDataset):
 
         # (Optional) Normalize XYZ
         scaling_factor = 1.
-        if self.opt.normalize_xyz and depths is not None:
+        if self.opt.normalize_xyz:
+            assert depths is not None  # need depth to compute the scaling factor
             _xyz = unproject_depth(depths[None, ...], C2W[None, ...], fxfycxcy[None, ...])[0]  # (F, 3, H, W)
             _xyz_norm = _xyz.norm(dim=1).mean().item()
             scaling_factor = 1. / (_xyz_norm + 1e-6)
@@ -118,10 +119,10 @@ class RealcamvidDataset(BaseDataset):
             "C2W": C2W,            # (F, 4, 4)
             "fxfycxcy": fxfycxcy,  # (F, 4)
         }
-        if images is not None:
+        if self.opt.load_image:
             return_dict["image"] = images  # (F, 3, H, W) in [0, 1]
-        if depths is not None:
+        if self.opt.load_depth:
             return_dict["depth"] = depths  # (F, H, W)
-        if confs is not None:
+        if self.opt.load_conf:
             return_dict["conf"] = confs  # (F, H, W)
         return return_dict
