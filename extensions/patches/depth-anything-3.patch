@@ -1,0 +1,532 @@
+diff --git a/src/depth_anything_3/model/cam_dec.py b/src/depth_anything_3/model/cam_dec.py
+index 3353b40..b3723bc 100644
+--- a/src/depth_anything_3/model/cam_dec.py
++++ b/src/depth_anything_3/model/cam_dec.py
+@@ -34,10 +34,10 @@ class CameraDec(nn.Module):
+         B, N = feat.shape[:2]
+         feat = feat.reshape(B * N, -1)
+         feat = self.backbone(feat)
+-        out_t = self.fc_t(feat.float()).reshape(B, N, 3)
++        out_t = self.fc_t(feat).reshape(B, N, 3)
+         if camera_encoding is None:
+-            out_qvec = self.fc_qvec(feat.float()).reshape(B, N, 4)
+-            out_fov = self.fc_fov(feat.float()).reshape(B, N, 2)
++            out_qvec = self.fc_qvec(feat).reshape(B, N, 4)
++            out_fov = self.fc_fov(feat).reshape(B, N, 2)
+         else:
+             out_qvec = camera_encoding[..., 3:7]
+             out_fov = camera_encoding[..., -2:]
+diff --git a/src/depth_anything_3/model/cam_enc.py b/src/depth_anything_3/model/cam_enc.py
+index bf28e70..645b7be 100644
+--- a/src/depth_anything_3/model/cam_enc.py
++++ b/src/depth_anything_3/model/cam_enc.py
+@@ -67,12 +67,12 @@ class CameraEnc(nn.Module):
+         ixt,
+         image_size,
+     ) -> tuple:
+-        c2ws = affine_inverse(ext)
++        c2ws = affine_inverse(ext).to(ext.dtype)
+         pose_encoding = extri_intri_to_pose_encoding(
+             c2ws,
+             ixt,
+             image_size,
+-        )
++        ).to(ext.dtype)
+         pose_tokens = self.pose_branch(pose_encoding)
+         pose_tokens = self.token_norm(pose_tokens)
+         pose_tokens = self.trunk(pose_tokens)
+diff --git a/src/depth_anything_3/model/da3.py b/src/depth_anything_3/model/da3.py
+index f9e5bd6..af41f91 100644
+--- a/src/depth_anything_3/model/da3.py
++++ b/src/depth_anything_3/model/da3.py
+@@ -32,6 +32,9 @@ from depth_anything_3.utils.alignment import (
+ from depth_anything_3.utils.geometry import affine_inverse, as_homogeneous, map_pdf_to_opacity
+ from depth_anything_3.utils.ray_utils import get_extrinsic_from_camray
+ 
++from depth_anything_3.model.dinov2.dinov2 import DinoV2
++from depth_anything_3.model.dualdpt import DualDPT
++
+ 
+ def _wrap_cfg(cfg_obj):
+     return OmegaConf.create(cfg_obj)
+@@ -97,6 +100,9 @@ class DepthAnything3Net(nn.Module):
+                 ), f"gs_head output_dim should set to {gs_out_dim}, got {gs_head['output_dim']}"
+                 self.gs_head = create_object(_wrap_cfg(gs_head))
+ 
++        self.backbone: DinoV2
++        self.head: DualDPT
++
+     def forward(
+         self,
+         x: torch.Tensor,
+@@ -170,7 +176,7 @@ class DepthAnything3Net(nn.Module):
+             sampled_depth = non_sky_depth[idx]
+         else:
+             sampled_depth = non_sky_depth
+-        non_sky_max = torch.quantile(sampled_depth, 0.99)
++        non_sky_max = torch.quantile(sampled_depth.float(), 0.99).to(sampled_depth.dtype)
+ 
+         # Set sky regions to maximum depth and high confidence
+         output.depth, _ = set_sky_regions_to_max_depth(
+@@ -395,7 +401,7 @@ class NestedDepthAnything3Net(nn.Module):
+         # Sample depth confidence for quantile computation
+         depth_conf_ns = output.depth_conf[non_sky_mask]
+         depth_conf_sampled = sample_tensor_for_quantile(depth_conf_ns, max_samples=100000)
+-        median_conf = torch.quantile(depth_conf_sampled, 0.5)
++        median_conf = torch.quantile(depth_conf_sampled.float(), 0.5).to(depth_conf_sampled.dtype)
+ 
+         # Compute alignment mask
+         align_mask = compute_alignment_mask(
+@@ -405,7 +411,7 @@ class NestedDepthAnything3Net(nn.Module):
+         # Compute scale factor using least squares
+         valid_depth = output.depth[align_mask]
+         valid_metric_depth = metric_output.depth[align_mask]
+-        scale_factor = least_squares_scale_scalar(valid_metric_depth, valid_depth)
++        scale_factor = least_squares_scale_scalar(valid_metric_depth.to(valid_depth.dtype), valid_depth)
+ 
+         # Apply scaling to depth and extrinsics
+         output.depth *= scale_factor
+@@ -432,7 +438,7 @@ class NestedDepthAnything3Net(nn.Module):
+             sampled_depth = non_sky_depth[idx]
+         else:
+             sampled_depth = non_sky_depth
+-        non_sky_max = min(torch.quantile(sampled_depth, 0.99), sky_depth_def)
++        non_sky_max = min(torch.quantile(sampled_depth.float(), 0.99).to(sampled_depth.dtype), sky_depth_def)
+ 
+         # Set sky regions to maximum depth and high confidence
+         output.depth, output.depth_conf = set_sky_regions_to_max_depth(
+diff --git a/src/depth_anything_3/model/dinov2/dinov2.py b/src/depth_anything_3/model/dinov2/dinov2.py
+index ee0d88b..c33a6ba 100644
+--- a/src/depth_anything_3/model/dinov2/dinov2.py
++++ b/src/depth_anything_3/model/dinov2/dinov2.py
+@@ -28,6 +28,10 @@ class DinoV2(nn.Module):
+         qknorm_start: int = -1,
+         rope_start: int = -1,
+         cat_token: bool = True,
++        #
++        sink_size: int = 3,
++        max_attention_size: int = ((288 // 16) * (512 // 16) + 1) * (3 + 9),
++        #
+         **kwargs,
+     ):
+         super().__init__()
+@@ -54,6 +58,9 @@ class DinoV2(nn.Module):
+             qknorm_start=qknorm_start,
+             rope_start=rope_start,
+             cat_token=cat_token,
++            #
++            sink_size=sink_size,
++            max_attention_size=max_attention_size,
+         )
+ 
+     def forward(self, x, **kwargs):
+diff --git a/src/depth_anything_3/model/dinov2/layers/attention.py b/src/depth_anything_3/model/dinov2/layers/attention.py
+index 096b9d4..80555da 100644
+--- a/src/depth_anything_3/model/dinov2/layers/attention.py
++++ b/src/depth_anything_3/model/dinov2/layers/attention.py
+@@ -12,9 +12,82 @@ import logging
+ import torch.nn.functional as F
+ from torch import Tensor, nn
+ 
++import math
++import torch
++from torch.nn.attention.flex_attention import flex_attention
++
++# try:
++import sys; sys.path.append(os.path.join(os.path.dirname(__file__), ".."))  # for src modules
++from src.utils.distributed import get_sp_rank, get_sp_world_size, all_gather, all_to_all
++# except Exception:
++#     # Keep standalone Depth-Anything-3 usable when the host project utilities are unavailable.
++#     def get_sp_rank():
++#         return 0
++
++#     def get_sp_world_size():
++#         return 1
++
++#     def all_gather(x, dim, group=None):
++#         return x
++
++#     def all_to_all(x, scatter_dim, gather_dim, group=None):
++#         return x
++
++flex_attention = torch.compile(flex_attention)
++
+ logger = logging.getLogger("dinov2")
+ 
+ 
++# ============================================================================
++# Sequence Parallelism Support
++# ============================================================================
++
++def _distributed_attention(q: Tensor, k: Tensor, v: Tensor, dropout_p: float, block_mask) -> Tensor:
++    # Ulysses-style SP: scatter heads and gather sequence
++    q = all_to_all(q, scatter_dim=1, gather_dim=2)  # (B, H//sp, N, D)
++    k = all_to_all(k, scatter_dim=1, gather_dim=2)  # (B, H//sp, N, D)
++    v = all_to_all(v, scatter_dim=1, gather_dim=2)  # (B, H//sp, N, D)
++
++    x = F.scaled_dot_product_attention(
++        q,
++        k,
++        v,
++        dropout_p=dropout_p,
++        attn_mask=attn_mask,
++    )
++
++    # Scatter sequence back and gather heads
++    x = all_to_all(x, scatter_dim=2, gather_dim=1)  # (B, H, N//sp, D)
++    return x
++
++
++def _distributed_flex_attention(q: Tensor, k: Tensor, v: Tensor, block_mask) -> Tensor:
++    # Ulysses-style SP: scatter heads and gather sequence
++    q = all_to_all(q, scatter_dim=1, gather_dim=2)  # (B, H//sp, N, D)
++    k = all_to_all(k, scatter_dim=1, gather_dim=2)  # (B, H//sp, N, D)
++    v = all_to_all(v, scatter_dim=1, gather_dim=2)  # (B, H//sp, N, D)
++
++    # Padding for flexattention (`128`: block size for flexattention)
++    padded_length = math.ceil(q.shape[2] / 128) * 128 - q.shape[2]
++    if padded_length > 0:
++        q = torch.cat([q, torch.zeros([q.shape[0], q.shape[1], padded_length, q.shape[3]], device=q.device, dtype=q.dtype)], dim=2)
++        k = torch.cat([k, torch.zeros([k.shape[0], k.shape[1], padded_length, k.shape[3]], device=k.device, dtype=k.dtype)], dim=2)
++        v = torch.cat([v, torch.zeros([v.shape[0], v.shape[1], padded_length, v.shape[3]], device=v.device, dtype=v.dtype)], dim=2)
++
++    x = flex_attention(
++        q,
++        k,
++        v,
++        block_mask=block_mask,
++    )
++    if padded_length > 0:
++        x = x[:, :, :-padded_length, ...]
++
++    # Scatter sequence back and gather heads
++    x = all_to_all(x, scatter_dim=2, gather_dim=1)  # (B, H, N//sp, D)
++    return x
++
++
+ class Attention(nn.Module):
+     def __init__(
+         self,
+@@ -28,6 +101,9 @@ class Attention(nn.Module):
+         qk_norm: bool = False,
+         fused_attn: bool = True,  # use F.scaled_dot_product_attention or not
+         rope=None,
++        #
++        sink_size: int = 0,
++        max_attention_size: int = 32760 + 21,  # 21 x 480 x 832 + 21 camera tokens
+     ) -> None:
+         super().__init__()
+         assert dim % num_heads == 0, "dim should be divisible by num_heads"
+@@ -35,6 +111,9 @@ class Attention(nn.Module):
+         head_dim = dim // num_heads
+         self.scale = head_dim**-0.5
+         self.fused_attn = fused_attn
++        #
++        self.sink_size = sink_size
++        self.max_attention_size = max_attention_size
+ 
+         self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
+         self.q_norm = norm_layer(head_dim) if qk_norm else nn.Identity()
+@@ -44,8 +123,20 @@ class Attention(nn.Module):
+         self.proj_drop = nn.Dropout(proj_drop)
+         self.rope = rope
+ 
+-    def forward(self, x: Tensor, pos=None, attn_mask=None) -> Tensor:
++    def forward(self, x: Tensor, pos=None, attn_mask=None,
++        #
++        block_mask=None,
++        kv_cache=None,
++        current_start=0,    # use with `kv_cache`
++        frame_seqlen=None,  # use with `kv_cache`
++    ) -> Tensor:
+         B, N, C = x.shape
++        sp_size = get_sp_world_size()
++        if sp_size > 1 and self.num_heads % sp_size != 0:
++            raise ValueError(
++                f"num_heads ({self.num_heads}) must be divisible by sequence parallel size ({sp_size})"
++            )
++
+         qkv = (
+             self.qkv(x)
+             .reshape(B, N, 3, self.num_heads, C // self.num_heads)
+@@ -54,26 +145,128 @@ class Attention(nn.Module):
+         q, k, v = qkv[0], qkv[1], qkv[2]
+         q, k = self.q_norm(q), self.k_norm(k)
+         if self.rope is not None and pos is not None:
+-            q = self.rope(q, pos)
+-            k = self.rope(k, pos)
+-        if self.fused_attn:
++            q = self.rope(q, pos).to(v.dtype)
++            k = self.rope(k, pos).to(v.dtype)
++
++        # No KV cache
++        if kv_cache is None:
++            ## Not causal attention
++            if block_mask is None:
++                if sp_size > 1:
++                    x = _distributed_attention(
++                        q,
++                        k,
++                        v,
++                        dropout_p=self.attn_drop.p if self.training else 0.0,
++                        attn_mask=(
++                            (attn_mask)[:, None].repeat(1, self.num_heads, 1, 1)
++                            if attn_mask is not None
++                            else None
++                        ),
++                    )
++                elif self.fused_attn:
++                    x = F.scaled_dot_product_attention(
++                        q,
++                        k,
++                        v,
++                        dropout_p=self.attn_drop.p if self.training else 0.0,
++                        attn_mask=(
++                            (attn_mask)[:, None].repeat(1, self.num_heads, 1, 1)
++                            if attn_mask is not None
++                            else None
++                        ),
++                    )
++                else:
++                    q = q * self.scale
++                    attn = q @ k.transpose(-2, -1)
++                    attn = attn.softmax(dim=-1)
++                    attn = self.attn_drop(attn)
++                    x = attn @ v
++            ## Causal attention with block mask
++            else:
++                if sp_size > 1:
++                    x = _distributed_flex_attention(q, k, v, block_mask)
++                else:
++                    # Padding for flexattention
++                    padded_length = math.ceil(q.shape[2] / 128) * 128 - q.shape[2]  # `128`: block size for flexattention; TODO: make it configurable
++                    if padded_length > 0:
++                        q = torch.cat([q, torch.zeros([q.shape[0], q.shape[1], padded_length, q.shape[3]], device=q.device, dtype=v.dtype)], dim=2)
++                        k = torch.cat([k, torch.zeros([k.shape[0], k.shape[1], padded_length, k.shape[3]], device=k.device, dtype=v.dtype)], dim=2)
++                        v = torch.cat([v, torch.zeros([v.shape[0], v.shape[1], padded_length, v.shape[3]], device=v.device, dtype=v.dtype)], dim=2)
++
++                    x = flex_attention(
++                        q,
++                        k,
++                        v,
++                        block_mask=block_mask,
++                    )
++                    if padded_length > 0:
++                        x = x[:, :, :-padded_length, ...]
++
++        # Use KV cache
++        else:
++            assert frame_seqlen is not None
++            if sp_size > 1:
++                q = all_gather(q, dim=2)
++                k = all_gather(k, dim=2)
++                v = all_gather(v, dim=2)
++
++            current_end = current_start + q.shape[2]
++            sink_tokens = self.sink_size * frame_seqlen
++            kv_cache_size = kv_cache["k"].shape[2]
++            num_new_tokens = q.shape[2]
++
++            # If the current KV cache size is larger than the local attention size, we need to truncate the KV cache
++            if (current_end > kv_cache["global_end_index"].item()) and \
++                (num_new_tokens + kv_cache["local_end_index"].item() > kv_cache_size):
++                # Calculate the number of new tokens added in this step
++                # Shift existing cache content left to discard oldest tokens
++                # Clone the source slice to avoid overlapping memory error
++                num_evicted_tokens = num_new_tokens + kv_cache["local_end_index"].item() - kv_cache_size
++                num_rolled_tokens = kv_cache["local_end_index"].item() - num_evicted_tokens - sink_tokens
++                kv_cache["k"][:, :, sink_tokens:sink_tokens + num_rolled_tokens] = \
++                    kv_cache["k"][:, :, sink_tokens + num_evicted_tokens:sink_tokens + num_evicted_tokens + num_rolled_tokens].clone()
++                kv_cache["v"][:, :, sink_tokens:sink_tokens + num_rolled_tokens] = \
++                    kv_cache["v"][:, :, sink_tokens + num_evicted_tokens:sink_tokens + num_evicted_tokens + num_rolled_tokens].clone()
++                # Insert the new keys/values at the end
++                local_end_index = kv_cache["local_end_index"].item() + current_end - \
++                    kv_cache["global_end_index"].item() - num_evicted_tokens
++                local_start_index = local_end_index - num_new_tokens
++                kv_cache["k"][:, :, local_start_index:local_end_index] = k
++                kv_cache["v"][:, :, local_start_index:local_end_index] = v
++            # Not exceeding the local attention size
++            else:
++                # Assign new keys/values directly up to current_end
++                local_end_index = kv_cache["local_end_index"].item() + current_end - kv_cache["global_end_index"].item()
++                local_start_index = local_end_index - num_new_tokens
++                kv_cache["k"][:, :, local_start_index:local_end_index] = k
++                kv_cache["v"][:, :, local_start_index:local_end_index] = v
++
++            if sink_tokens > 0:
++                k = torch.cat([
++                    kv_cache["k"][:, :, :sink_tokens],
++                    kv_cache["k"][:, :, max(sink_tokens, local_end_index - self.max_attention_size + sink_tokens):local_end_index],
++                ], dim=2)
++                v = torch.cat([
++                    kv_cache["v"][:, :, :sink_tokens],
++                    kv_cache["v"][:, :, max(sink_tokens, local_end_index - self.max_attention_size + sink_tokens):local_end_index],
++                ], dim=2)
++            else:
++                k = kv_cache["k"][:, :, max(0, local_end_index - self.max_attention_size):local_end_index]
++                v = kv_cache["v"][:, :, max(0, local_end_index - self.max_attention_size):local_end_index]
++
+             x = F.scaled_dot_product_attention(
+                 q,
+                 k,
+                 v,
+                 dropout_p=self.attn_drop.p if self.training else 0.0,
+-                attn_mask=(
+-                    (attn_mask)[:, None].repeat(1, self.num_heads, 1, 1)
+-                    if attn_mask is not None
+-                    else None
+-                ),
+             )
+-        else:
+-            q = q * self.scale
+-            attn = q @ k.transpose(-2, -1)
+-            attn = attn.softmax(dim=-1)
+-            attn = self.attn_drop(attn)
+-            x = attn @ v
++
++            kv_cache["global_end_index"].fill_(current_end)
++            kv_cache["local_end_index"].fill_(local_end_index)
++
++            if sp_size > 1:
++                x = torch.chunk(x, sp_size, dim=2)[get_sp_rank()]
+ 
+         x = x.transpose(1, 2).reshape(B, N, C)
+         x = self.proj(x)
+diff --git a/src/depth_anything_3/model/dinov2/layers/block.py b/src/depth_anything_3/model/dinov2/layers/block.py
+index 731519b..292ab5c 100644
+--- a/src/depth_anything_3/model/dinov2/layers/block.py
++++ b/src/depth_anything_3/model/dinov2/layers/block.py
+@@ -43,6 +43,9 @@ class Block(nn.Module):
+         qk_norm: bool = False,
+         rope=None,
+         ln_eps: float = 1e-6,
++        #
++        sink_size: int = 0,
++        max_attention_size: int = 32760 + 21,  # 21 x 480 x 832 + 21 camera tokens
+     ) -> None:
+         super().__init__()
+         # print(f"biases: qkv: {qkv_bias}, proj: {proj_bias}, ffn: {ffn_bias}")
+@@ -56,6 +59,9 @@ class Block(nn.Module):
+             proj_drop=drop,
+             qk_norm=qk_norm,
+             rope=rope,
++            #
++            sink_size=sink_size,
++            max_attention_size=max_attention_size,
+         )
+         self.ls1 = LayerScale(dim, init_values=init_values) if init_values else nn.Identity()
+         self.drop_path1 = DropPath(drop_path) if drop_path > 0.0 else nn.Identity()
+@@ -74,9 +80,21 @@ class Block(nn.Module):
+ 
+         self.sample_drop_ratio = drop_path
+ 
+-    def forward(self, x: Tensor, pos=None, attn_mask=None) -> Tensor:
++    def forward(self, x: Tensor, pos=None, attn_mask=None,
++        #
++        block_mask=None,
++        kv_cache=None,
++        current_start=0,    # use with `kv_cache`
++        frame_seqlen=None,  # use with `kv_cache`
++    ) -> Tensor:
+         def attn_residual_func(x: Tensor, pos=None, attn_mask=None) -> Tensor:
+-            return self.ls1(self.attn(self.norm1(x), pos=pos, attn_mask=attn_mask))
++            return self.ls1(self.attn(self.norm1(x), pos=pos, attn_mask=attn_mask,
++                #
++                block_mask=block_mask,
++                kv_cache=kv_cache,
++                current_start=current_start,
++                frame_seqlen=frame_seqlen,
++            ))
+ 
+         def ffn_residual_func(x: Tensor) -> Tensor:
+             return self.ls2(self.mlp(self.norm2(x)))
+diff --git a/src/depth_anything_3/model/dinov2/vision_transformer.py b/src/depth_anything_3/model/dinov2/vision_transformer.py
+index f0f8e23..86cf1b8 100644
+--- a/src/depth_anything_3/model/dinov2/vision_transformer.py
++++ b/src/depth_anything_3/model/dinov2/vision_transformer.py
+@@ -110,6 +110,9 @@ class DinoVisionTransformer(nn.Module):
+         rope_freq=100,
+         plus_cam_token=False,
+         cat_token=True,
++        #
++        sink_size: int = 0,
++        max_attention_size: int = 32760 + 21,  # 21 x 480 x 832 + 21 camera tokens
+     ):
+         """
+         Args:
+@@ -211,6 +214,9 @@ class DinoVisionTransformer(nn.Module):
+                 init_values=init_values,
+                 qk_norm=i >= qknorm_start if qknorm_start != -1 else False,
+                 rope=self.rope if i >= rope_start and rope_start != -1 else None,
++                #
++                sink_size=sink_size,
++                max_attention_size=max_attention_size,
+             )
+             for i in range(depth)
+         ]
+@@ -314,7 +320,7 @@ class DinoVisionTransformer(nn.Module):
+             if self.alt_start != -1 and (i == self.alt_start - 1) and x.shape[1] >= THRESH_FOR_REF_SELECTION and kwargs.get("cam_token", None) is None:
+                 # Select reference view using configured strategy
+                 strategy = kwargs.get("ref_view_strategy", "saddle_balanced")
+-                logger.info(f"Selecting reference view using strategy: {strategy}")
++                # logger.info(f"Selecting reference view using strategy: {strategy}")
+                 b_idx = select_reference_view(x, strategy=strategy)
+                 # Reorder views to place reference view first
+                 x = reorder_by_reference(x, b_idx)
+@@ -348,7 +354,15 @@ class DinoVisionTransformer(nn.Module):
+                 aux_output.append(x)
+         return output, aux_output
+ 
+-    def process_attention(self, x, block, attn_type="global", pos=None, attn_mask=None):
++    def process_attention(self, x, block, attn_type="global", pos=None, attn_mask=None,
++        #
++        gradient_checkpointing=False,
++        #
++        block_mask=None,
++        kv_cache=None,
++        current_start=0,    # use with `kv_cache`
++        frame_seqlen=None,  # use with `kv_cache`
++    ):
+         b, s, n = x.shape[:3]
+         if attn_type == "local":
+             x = rearrange(x, "b s n c -> (b s) n c")
+@@ -361,7 +375,25 @@ class DinoVisionTransformer(nn.Module):
+         else:
+             raise ValueError(f"Invalid attention type: {attn_type}")
+ 
+-        x = block(x, pos=pos, attn_mask=attn_mask)
++        if not gradient_checkpointing:
++            x = block(x, pos=pos, attn_mask=attn_mask,
++                #
++                block_mask=block_mask,
++                kv_cache=kv_cache,
++                current_start=current_start,
++                frame_seqlen=frame_seqlen,
++            )
++        else:
++            x = torch.utils.checkpoint.checkpoint(
++                block, x, pos=pos, attn_mask=attn_mask,
++                #
++                block_mask=block_mask,
++                kv_cache=kv_cache,
++                current_start=current_start,
++                frame_seqlen=frame_seqlen,
++                #
++                use_reentrant=False
++            )
+ 
+         if attn_type == "local":
+             x = rearrange(x, "(b s) n c -> b s n c", b=b, s=s)
+diff --git a/src/depth_anything_3/model/dualdpt.py b/src/depth_anything_3/model/dualdpt.py
+index 229e1a9..ff09bf6 100644
+--- a/src/depth_anything_3/model/dualdpt.py
++++ b/src/depth_anything_3/model/dualdpt.py
+@@ -314,7 +314,7 @@ class DualDPT(nn.Module):
+         """Simple UV positional embedding added to feature maps."""
+         pw, ph = x.shape[-1], x.shape[-2]
+         pe = create_uv_grid(pw, ph, aspect_ratio=W / H, dtype=x.dtype, device=x.device)
+-        pe = position_grid_to_embed(pe, x.shape[1]) * ratio
++        pe = position_grid_to_embed(pe, x.shape[1]).to(x.dtype) * ratio
+         pe = pe.permute(2, 0, 1)[None].expand(x.shape[0], -1, -1, -1)
+         return x + pe
+ 
