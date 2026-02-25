@@ -23,7 +23,7 @@ from diffusers.models.modeling_utils import ModelMixin
 
 from .attention import attention
 
-from src.utils.distributed import get_sp_rank, get_sp_world_size, all_gather, all_to_all
+from src.utils.distributed import get_sp_rank, get_sp_world_size, all_gather, all_to_all, all_split
 
 __all__ = ['WanModel']
 
@@ -407,7 +407,7 @@ class WanT2VCrossAttention(WanSelfAttention):
 
             # For clipwise cross attention with SP: scatter the output back
             if sp_size > 1:
-                x = torch.chunk(x, sp_size, dim=1)[get_sp_rank()]
+                x = all_split(x, dim=1)
         else:
             x = attention(q, k, v, k_lens=context_lens)
 
@@ -874,8 +874,8 @@ class WanModel(ModelMixin, ConfigMixin):
         sp_size = get_sp_world_size()
         if sp_size > 1:
             assert x.size(1) % sp_size == 0
-            x = torch.chunk(x, sp_size, dim=1)[get_sp_rank()]
-            e0 = torch.chunk(e0, sp_size, dim=1)[get_sp_rank()]
+            x = all_split(x, dim=1)
+            e0 = all_split(e0, dim=1)
 
         # arguments
         kwargs = dict(

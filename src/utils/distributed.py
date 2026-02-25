@@ -120,6 +120,23 @@ def launch_distributed_job(backend: str = "nccl"):
 # ============================================================================
 # Sequence Parallelism Utilities
 # ============================================================================
+#
+# Sequence Parallelism (SP) splits the sequence dimension across multiple GPUs
+# to reduce memory usage and enable longer sequences. This is complementary to
+# data parallelism and model parallelism.
+#
+# Key operations:
+# - all_gather: Gather tensors from all ranks (forward), reduce_scatter (backward)
+# - all_split: Split tensor to ranks (forward), all_gather gradients (backward)
+# - all_to_all: Scatter one dim and gather another (Ulysses-style attention)
+#
+# Example with sp_size=2:
+#   Input sequence length L=1000
+#   - Rank 0 processes tokens [0:500]
+#   - Rank 1 processes tokens [500:1000]
+#   - Communication happens via all_gather/all_to_all during attention
+#
+# ============================================================================
 
 # Global variables for SP process groups
 _SP_GROUP = None
@@ -207,6 +224,17 @@ def _all_to_all_impl(x: Tensor, scatter_dim: int, gather_dim: int, group, world_
 
 
 class _AllToAll(torch.autograd.Function):
+    """
+    All-to-all communication primitive for sequence parallelism.
+
+    Scatters along one dimension and gathers along another dimension.
+    Used in Ulysses-style distributed attention to switch between
+    sequence-parallel and head-parallel layouts.
+
+    Example:
+        Input:  [B, L//sp, N, C] (sequence split, full heads)
+        Output: [B, L, N//sp, C] (full sequence, heads split)
+    """
 
     @staticmethod
     def forward(ctx, x: Tensor, scatter_dim: int, gather_dim: int, group):
@@ -226,6 +254,9 @@ class _AllToAll(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx, grad_output: Tensor):
+        """
+        Backward pass: reverse the all-to-all by swapping scatter and gather dims.
+        """
         if ctx.world_size <= 1:
             return grad_output, None, None, None
         grad_input = _all_to_all_impl(
@@ -239,6 +270,22 @@ class _AllToAll(torch.autograd.Function):
 
 
 class _AllGather(torch.autograd.Function):
+    """
+    All-gather communication primitive for sequence parallelism.
+
+    Forward: Gather tensors from all ranks along specified dimension
+    Backward: Reduce-scatter gradients back to each rank
+
+    This is used to collect distributed sequences before operations that
+    require the full sequence (e.g., certain attention patterns).
+
+    Example with sp_size=2:
+        Forward:
+            Rank 0: [B, L//2, C] -> [B, L, C]
+            Rank 1: [B, L//2, C] -> [B, L, C]
+        Backward:
+            Each rank receives sum of gradients for its portion
+    """
 
     @staticmethod
     def forward(ctx, input: Tensor, dim: int, group):
@@ -260,6 +307,13 @@ class _AllGather(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx, grad_output: Tensor):
+        """
+        Backward: Use reduce_scatter to sum gradients and distribute to ranks.
+
+        Each rank contributed a chunk to the gathered output, so gradients
+        for each chunk need to be summed across all ranks (since all ranks
+        see the full output and compute gradients for all positions).
+        """
         if ctx.world_size <= 1:
             return grad_output, None, None
 
@@ -268,8 +322,70 @@ class _AllGather(torch.autograd.Function):
                 f"all_gather backward requires grad_output.size({ctx.dim}) divisible by world_size, "
                 f"got {grad_output.size(ctx.dim)} and {ctx.world_size}"
             )
-        grad_input = torch.chunk(grad_output, ctx.world_size, dim=ctx.dim)[ctx.rank].contiguous()
-        dist.all_reduce(grad_input, group=ctx.group)
+        grad_output_chunks = [u.contiguous() for u in torch.chunk(grad_output, ctx.world_size, dim=ctx.dim)]
+        grad_input = torch.empty_like(grad_output_chunks[0])
+        dist.reduce_scatter(grad_input, grad_output_chunks, group=ctx.group)
+        return grad_input, None, None
+
+
+class _AllSplit(torch.autograd.Function):
+    """
+    Split (scatter) communication primitive for sequence parallelism.
+
+    Forward: Split tensor and return this rank's chunk
+    Backward: All-gather gradients from all ranks
+
+    This is the inverse of all_gather:
+    - all_gather: forward gathers, backward reduces and scatters
+    - all_split: forward splits, backward gathers
+
+    Used to distribute sequences at the start of SP regions.
+
+    Example with sp_size=2:
+        Forward:
+            Input: [B, L, C] -> Rank 0: [B, L//2, C], Rank 1: [B, L//2, C]
+        Backward:
+            Each rank's gradient [B, L//2, C] -> gathered to [B, L, C]
+    """
+
+    @staticmethod
+    def forward(ctx, input: Tensor, dim: int, group):
+        group, world_size, rank = _resolve_group_info(group)
+        if world_size <= 1:
+            ctx.group = None
+            ctx.world_size = 1
+            return input
+
+        if input.size(dim) % world_size != 0:
+            raise ValueError(
+                f"split requires input.size({dim}) divisible by world_size, "
+                f"got {input.size(dim)} and {world_size}"
+            )
+
+        dim = dim % input.dim()
+        ctx.group = group
+        ctx.world_size = world_size
+        ctx.dim = dim
+
+        # Forward: split and take this rank's chunk
+        return torch.chunk(input, world_size, dim=dim)[rank].contiguous()
+
+    @staticmethod
+    def backward(ctx, grad_output: Tensor):
+        """
+        Backward: All-gather to collect gradients from all ranks.
+
+        Since forward split the input, backward needs to gather the gradients
+        back together. No reduction is needed because each rank only computed
+        gradients for its own chunk.
+        """
+        if ctx.world_size <= 1:
+            return grad_output, None, None
+
+        # Backward: all_gather to collect gradients from all ranks
+        tensor_list = [torch.empty_like(grad_output) for _ in range(ctx.world_size)]
+        dist.all_gather(tensor_list, grad_output, group=ctx.group)
+        grad_input = torch.cat(tensor_list, dim=ctx.dim).contiguous()
         return grad_input, None, None
 
 
@@ -302,3 +418,25 @@ def all_gather(input: Tensor, dim: int, group=None):
         Gathered tensor
     """
     return _AllGather.apply(input, dim, group)
+
+
+def all_split(input: Tensor, dim: int, group=None):
+    """
+    Split tensor along specified dimension and take this rank's chunk.
+
+    Forward: Split input and return this rank's portion
+    Backward: All-gather gradients from all ranks
+
+    This is the inverse of all_gather:
+    - all_gather: forward gathers, backward scatters (reduce_scatter)
+    - all_split: forward scatters, backward gathers (all_gather)
+
+    Args:
+        input: Input tensor
+        dim: Dimension to split along
+        group: Process group (default: None, uses SP group)
+
+    Returns:
+        This rank's chunk of the tensor
+    """
+    return _Split.apply(input, dim, group)
