@@ -188,7 +188,92 @@ def get_sp_group():
     return _SP_GROUP
 
 
-def all_to_all(x: Tensor, scatter_dim: int, gather_dim: int, group=None, **kwargs):
+def _resolve_group_info(group=None):
+    if group is None:
+        return get_sp_group(), get_sp_world_size(), get_sp_rank()
+    return group, dist.get_world_size(group=group), dist.get_rank(group=group)
+
+
+def _all_to_all_impl(x: Tensor, scatter_dim: int, gather_dim: int, group, world_size: int, **kwargs):
+    if x.size(scatter_dim) % world_size != 0:
+        raise ValueError(
+            f"all_to_all requires x.size({scatter_dim}) divisible by world_size, "
+            f"got {x.size(scatter_dim)} and {world_size}"
+        )
+    inputs = [u.contiguous() for u in x.chunk(world_size, dim=scatter_dim)]
+    outputs = [torch.empty_like(u) for u in inputs]
+    dist.all_to_all(outputs, inputs, group=group, **kwargs)
+    return torch.cat(outputs, dim=gather_dim).contiguous()
+
+
+class _AllToAll(torch.autograd.Function):
+
+    @staticmethod
+    def forward(ctx, x: Tensor, scatter_dim: int, gather_dim: int, group):
+        group, world_size, _ = _resolve_group_info(group)
+        if world_size <= 1:
+            ctx.group = None
+            ctx.world_size = 1
+            return x
+
+        scatter_dim = scatter_dim % x.dim()
+        gather_dim = gather_dim % x.dim()
+        ctx.group = group
+        ctx.world_size = world_size
+        ctx.scatter_dim = scatter_dim
+        ctx.gather_dim = gather_dim
+        return _all_to_all_impl(x, scatter_dim, gather_dim, group, world_size)
+
+    @staticmethod
+    def backward(ctx, grad_output: Tensor):
+        if ctx.world_size <= 1:
+            return grad_output, None, None, None
+        grad_input = _all_to_all_impl(
+            grad_output,
+            scatter_dim=ctx.gather_dim,
+            gather_dim=ctx.scatter_dim,
+            group=ctx.group,
+            world_size=ctx.world_size,
+        )
+        return grad_input, None, None, None
+
+
+class _AllGather(torch.autograd.Function):
+
+    @staticmethod
+    def forward(ctx, input: Tensor, dim: int, group):
+        group, world_size, rank = _resolve_group_info(group)
+        if world_size <= 1:
+            ctx.group = None
+            ctx.world_size = 1
+            return input
+
+        dim = dim % input.dim()
+        ctx.group = group
+        ctx.world_size = world_size
+        ctx.rank = rank
+        ctx.dim = dim
+
+        tensor_list = [torch.empty_like(input) for _ in range(world_size)]
+        dist.all_gather(tensor_list, input, group=group)
+        return torch.cat(tensor_list, dim=dim).contiguous()
+
+    @staticmethod
+    def backward(ctx, grad_output: Tensor):
+        if ctx.world_size <= 1:
+            return grad_output, None, None
+
+        if grad_output.size(ctx.dim) % ctx.world_size != 0:
+            raise ValueError(
+                f"all_gather backward requires grad_output.size({ctx.dim}) divisible by world_size, "
+                f"got {grad_output.size(ctx.dim)} and {ctx.world_size}"
+            )
+        grad_input = torch.chunk(grad_output, ctx.world_size, dim=ctx.dim)[ctx.rank].contiguous()
+        dist.all_reduce(grad_input, group=ctx.group)
+        return grad_input, None, None
+
+
+def all_to_all(x: Tensor, scatter_dim: int, gather_dim: int, group=None):
     """
     Scatter along one dimension and gather along another.
 
@@ -201,16 +286,7 @@ def all_to_all(x: Tensor, scatter_dim: int, gather_dim: int, group=None, **kwarg
     Returns:
         Tensor with scatter_dim split and gather_dim concatenated
     """
-    if group is None:
-        group = get_sp_group()
-
-    world_size = get_sp_world_size()
-    if world_size > 1:
-        inputs = [u.contiguous() for u in x.chunk(world_size, dim=scatter_dim)]
-        outputs = [torch.empty_like(u) for u in inputs]
-        dist.all_to_all(outputs, inputs, group=group, **kwargs)
-        x = torch.cat(outputs, dim=gather_dim).contiguous()
-    return x
+    return _AllToAll.apply(x, scatter_dim, gather_dim, group)
 
 
 def all_gather(input: Tensor, dim: int, group=None):
@@ -225,14 +301,4 @@ def all_gather(input: Tensor, dim: int, group=None):
     Returns:
         Gathered tensor
     """
-    if group is None:
-        group = get_sp_group()
-
-    world_size = get_sp_world_size()
-    if world_size == 1:
-        return input
-
-    # Gather from all ranks in SP group
-    tensor_list = [torch.empty_like(input) for _ in range(world_size)]
-    dist.all_gather(tensor_list, input, group=group)
-    return torch.cat(tensor_list, dim=dim).contiguous()
+    return _AllGather.apply(input, dim, group)
