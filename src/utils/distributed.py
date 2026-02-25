@@ -439,4 +439,4 @@ def all_split(input: Tensor, dim: int, group=None):
     Returns:
         This rank's chunk of the tensor
     """
-    return _Split.apply(input, dim, group)
+    return _AllSplit.apply(input, dim, group)
