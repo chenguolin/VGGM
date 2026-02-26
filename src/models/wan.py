@@ -461,19 +461,19 @@ class Wan(nn.Module):
             outputs["camera_loss"] = camera_loss.mean()
             outputs["loss"] = outputs["diffusion_loss"] + da3_loss.mean()
 
-        # For visualizaiton
-        if is_eval:
-            pred_x0 = self.diffusion._convert_flow_pred_to_x0(model_outputs, noisy_latents, timesteps).to(dtype)
-            outputs["images_predx0"] = (self.decode_latent(pred_x0, vae).clamp(-1., 1.) + 1.) / 2.
-            if "image" in data:
-                outputs["images_recon"] = (self.decode_latent(latents, vae).clamp(-1., 1.) + 1.) / 2.
+        # # For visualizaiton
+        # if is_eval:
+        #     pred_x0 = self.diffusion._convert_flow_pred_to_x0(model_outputs, noisy_latents, timesteps).to(dtype)
+        #     outputs["images_predx0"] = (self.decode_latent(pred_x0, vae).clamp(-1., 1.) + 1.) / 2.
+        #     if "image" in data:
+        #         outputs["images_recon"] = (self.decode_latent(latents, vae).clamp(-1., 1.) + 1.) / 2.
 
-            if self.opt.load_da3:
-                outputs["images_gt_depth"] = colorize_depth(1./gt_depths, batch_mode=True)
-                outputs["images_pred_depth"] = colorize_depth(1./da3_outputs["depth"], batch_mode=True)
+        #     if self.opt.load_da3:
+        #         outputs["images_gt_depth"] = colorize_depth(1./gt_depths, batch_mode=True)
+        #         outputs["images_pred_depth"] = colorize_depth(1./da3_outputs["depth"], batch_mode=True)
 
-            if render_images is not None:
-                outputs["images_render"] = render_images
+        #     if render_images is not None:
+        #         outputs["images_render"] = render_images
 
         return outputs
 

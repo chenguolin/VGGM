@@ -360,6 +360,42 @@ class WanT2VCrossAttention(WanSelfAttention):
                 k_start += k_len
         return out
 
+    def _clipwise_attention_sp(
+        self,
+        q: Tensor,
+        k: Tensor,
+        v: Tensor,
+        clip_query_lens: Tensor,
+        clip_context_lens: Tensor,
+    ) -> Tensor:
+        out = q.new_zeros(q.shape)
+        B, q_local_len = q.shape[0], q.shape[1]
+        sp_rank = get_sp_rank()
+        q_global_start = sp_rank * q_local_len
+        q_global_end = q_global_start + q_local_len
+
+        for b_idx in range(B):
+            q_start, k_start = 0, 0
+            q_lens = clip_query_lens[b_idx].tolist()
+            k_lens = clip_context_lens[b_idx].tolist()
+            for q_len, k_len in zip(q_lens, k_lens):
+                q_len, k_len = int(q_len), int(k_len)
+                q_end, k_end = q_start + q_len, k_start + k_len
+
+                overlap_start = max(q_start, q_global_start)
+                overlap_end = min(q_end, q_global_end)
+                if overlap_end > overlap_start:
+                    q_local_start = overlap_start - q_global_start
+                    q_local_end = overlap_end - q_global_start
+                    q_chunk = q[b_idx:b_idx+1, q_local_start:q_local_end]
+                    k_chunk = k[b_idx:b_idx+1, k_start:k_end]
+                    v_chunk = v[b_idx:b_idx+1, k_start:k_end]
+                    out[b_idx:b_idx+1, q_local_start:q_local_end] = attention(
+                        q_chunk, k_chunk, v_chunk, k_lens=None)
+                q_start = q_end
+                k_start = k_end
+        return out
+
     def forward(
         self,
         x,
@@ -399,15 +435,12 @@ class WanT2VCrossAttention(WanSelfAttention):
 
         # compute attention
         if clip_query_lens is not None and clip_context_lens is not None:
-            # For clipwise cross attention with SP: need to gather queries first
             if sp_size > 1:
-                q = all_gather(q, dim=1)
-
-            x = self._clipwise_attention(q, k, v, clip_query_lens, clip_context_lens)
-
-            # For clipwise cross attention with SP: scatter the output back
-            if sp_size > 1:
-                x = all_split(x, dim=1)
+                x = self._clipwise_attention_sp(
+                    q, k, v, clip_query_lens, clip_context_lens)
+            else:
+                x = self._clipwise_attention(
+                    q, k, v, clip_query_lens, clip_context_lens)
         else:
             x = attention(q, k, v, k_lens=context_lens)
 

@@ -475,7 +475,7 @@ def main():
             local_nonfinite_loss = not util.tensor_is_finite(loss)
             any_nonfinite_loss = util.dist_any_true(local_nonfinite_loss, loss.device)
             if any_nonfinite_loss:
-                optimizer.zero_grad()
+                optimizer.zero_grad(set_to_none=True)
                 NONFINITE_SKIP_COUNT += 1
                 if NONFINITE_SKIP_COUNT > 10:
                     raise ValueError(f"Non-finite loss/grad skipped for [{NONFINITE_SKIP_COUNT}] consecutive steps!")
@@ -499,7 +499,7 @@ def main():
             local_nonfinite_grad = len(local_nonfinite_grad_names) > 0
             any_nonfinite_grad = util.dist_any_true(local_nonfinite_grad, loss.device)
             if any_nonfinite_grad:
-                optimizer.zero_grad()
+                optimizer.zero_grad(set_to_none=True)
                 NONFINITE_SKIP_COUNT += 1
                 if NONFINITE_SKIP_COUNT > 10:
                     raise ValueError(f"Non-finite loss/grad skipped for [{NONFINITE_SKIP_COUNT}] consecutive steps!")
@@ -512,7 +512,7 @@ def main():
             # Update the model parameters
             optimizer.step()
             lr_scheduler.step()
-            optimizer.zero_grad()
+            optimizer.zero_grad(set_to_none=True)
 
             # Update the EMA model
             if ema_params is not None:
@@ -602,7 +602,7 @@ def main():
                 # Use EMA parameters for saving
                 if ema_params is not None:
                     # Store the model parameters temporarily and load the EMA parameters
-                    ema_params.cache_model(cpu=False)
+                    ema_params.cache_model(cpu=True)
                     ema_params.copy_to_model()
                 barrier()  # make sure all processes have finished the above operations before saving checkpoints
 
@@ -633,11 +633,11 @@ def main():
                 # Use EMA parameters for evaluation
                 if ema_params is not None:
                     # Store the model parameters temporarily and load the EMA parameters
-                    ema_params.cache_model(cpu=False)
+                    ema_params.cache_model(cpu=True)
                     ema_params.copy_to_model()
                 barrier()  # make sure all processes have finished the above operations before evaluation
 
-                with torch.no_grad():
+                with torch.inference_mode():
                     model.eval()
 
                     all_val_outputs, all_val_matrics, val_steps = [], {}, 0
@@ -650,7 +650,14 @@ def main():
                     )
                     val_sampler.set_epoch(global_update_step)  # for shuffling the validation dataset
                     for val_batch in val_loader:
-                        val_outputs = model(val_batch, func_name="evaluate", vae=vae)
+                        val_outputs_gpu = model(val_batch, func_name="evaluate", vae=vae)
+                        # Move validation outputs to CPU to save GPU memory
+                        val_outputs = {}
+                        for k, v in val_outputs_gpu.items():
+                            if torch.is_tensor(v):
+                                val_outputs[k] = v.detach().cpu()
+                            else:
+                                val_outputs[k] = v
                         all_val_outputs.append(val_outputs)
 
                         val_logs = {}
@@ -674,6 +681,7 @@ def main():
                         val_progress_bar.set_postfix(**val_logs)
                         val_progress_bar.update(1)
                         val_steps += 1
+                        del val_outputs_gpu  # to save GPU memory
 
                         if args.max_val_steps is not None and val_steps == args.max_val_steps:
                             break
@@ -735,6 +743,7 @@ def main():
                             val_outputs, max_res=512, fps=16)  # resize videos to `512` for logging
                     }, step=global_update_step)
 
+                del all_val_outputs, val_outputs, outputs
                 torch.cuda.empty_cache()
                 gc.collect()
 
