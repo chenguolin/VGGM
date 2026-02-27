@@ -55,6 +55,5 @@ torchrun \
     ${FILE} \
         --config_file ${CONFIG_FILE} \
         --tag ${TAG} \
-        --pin_memory \
         --allow_tf32 \
 $@

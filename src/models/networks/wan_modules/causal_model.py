@@ -278,9 +278,10 @@ class CausalWanSelfAttention(nn.Module):
         # Use KV cache
         else:
             if sp_size > 1:
-                q = all_gather(q, dim=1)
-                k = all_gather(k, dim=1)
-                v = all_gather(v, dim=1)
+                # Scatter heads, gather sequence; KV cache is stored head-sharded
+                q = all_to_all(q, scatter_dim=2, gather_dim=1)
+                k = all_to_all(k, scatter_dim=2, gather_dim=1)
+                v = all_to_all(v, scatter_dim=2, gather_dim=1)
 
             frame_seqlen = math.prod(grid_sizes[0][1:]).item()
             if not self.rope_outside:
@@ -354,7 +355,8 @@ class CausalWanSelfAttention(nn.Module):
             kv_cache["local_end_index"].fill_(local_end_index)
 
             if sp_size > 1:
-                x = all_split(x, dim=1)
+                # Scatter sequence, gather heads
+                x = all_to_all(x, scatter_dim=1, gather_dim=2)
 
         # output
         x = x.flatten(2)

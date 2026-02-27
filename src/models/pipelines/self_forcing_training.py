@@ -13,6 +13,7 @@ from src.options import Options
 from src.models.networks.decoder_wrapper import ZERO_VAE_CACHE_512, ZERO_VAE_CACHE
 from src.models.losses import XYZLoss, CameraLoss
 from src.utils import plucker_ray, filter_da3_points, render_pt3d_points, mv_interpolate
+from src.utils.distributed import get_sp_world_size
 
 
 class SelfForcingTrainingPipeline:
@@ -396,11 +397,15 @@ class SelfForcingTrainingPipeline:
         num_heads = self.diffusion.model.num_heads
         head_dim = self.diffusion.model.dim // num_heads
 
+        # When SP is active, KV cache is stored head-sharded
+        sp_size = get_sp_world_size()
+        num_heads_per_rank = num_heads // sp_size
+
         kv_cache_pos = []
         for _ in range(num_blocks):
             kv_cache_pos.append({
-                "k": torch.zeros((batch_size, self.opt.max_kvcache_attention_size, num_heads, head_dim), dtype=dtype, device=device),
-                "v": torch.zeros((batch_size, self.opt.max_kvcache_attention_size, num_heads, head_dim), dtype=dtype, device=device),
+                "k": torch.zeros((batch_size, self.opt.max_kvcache_attention_size, num_heads_per_rank, head_dim), dtype=dtype, device=device),
+                "v": torch.zeros((batch_size, self.opt.max_kvcache_attention_size, num_heads_per_rank, head_dim), dtype=dtype, device=device),
                 "global_end_index": torch.tensor([0], dtype=torch.long, device=device),
                 "local_end_index": torch.tensor([0], dtype=torch.long, device=device),
             })
@@ -411,11 +416,14 @@ class SelfForcingTrainingPipeline:
             num_heads_da3 = self.diffusion.da3_model.backbone.pretrained.num_heads
             head_dim_da3 = self.diffusion.da3_model.backbone.pretrained.embed_dim // num_heads_da3
 
+            # When SP is active, KV cache is stored head-sharded
+            num_heads_da3_per_rank = num_heads_da3 // sp_size
+
             kv_cache_pos_da3 = []
             for _ in range(num_da3_blocks):
                 kv_cache_pos_da3.append({
-                    "k": torch.zeros((batch_size, num_heads_da3, self.opt.da3_max_kvcache_attention_size, head_dim_da3), dtype=dtype, device=device),
-                    "v": torch.zeros((batch_size, num_heads_da3, self.opt.da3_max_kvcache_attention_size, head_dim_da3), dtype=dtype, device=device),
+                    "k": torch.zeros((batch_size, num_heads_da3_per_rank, self.opt.da3_max_kvcache_attention_size, head_dim_da3), dtype=dtype, device=device),
+                    "v": torch.zeros((batch_size, num_heads_da3_per_rank, self.opt.da3_max_kvcache_attention_size, head_dim_da3), dtype=dtype, device=device),
                     "global_end_index": torch.tensor([0], dtype=torch.long, device=device),
                     "local_end_index": torch.tensor([0], dtype=torch.long, device=device),
                 })

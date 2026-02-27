@@ -236,7 +236,7 @@ def main():
         sampler=train_sampler,
         num_workers=args.num_workers,
         pin_memory=args.pin_memory,
-        persistent_workers=True,
+        # persistent_workers=True,
         collate_fn=BaseDataset.collate_fn,
     )
     if configs["opt_type"] == "sf_rep":
@@ -253,7 +253,7 @@ def main():
         sampler=val_sampler,
         num_workers=args.num_workers,
         pin_memory=args.pin_memory,
-        persistent_workers=True,
+        # persistent_workers=True,
         collate_fn=BaseDataset.collate_fn,
     )
     logger.info(f"Load [{len(train_dataset)}] training samples and [{len(val_dataset)}] validation samples\n")
