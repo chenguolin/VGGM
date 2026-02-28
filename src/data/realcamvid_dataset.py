@@ -4,7 +4,6 @@ import os
 import numpy as np
 from decord import VideoReader, cpu
 import torch
-import torchvision.transforms as tvT
 
 from src.options import Options
 from src.data.base_dataset import BaseDataset

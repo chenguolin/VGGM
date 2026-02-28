@@ -13,7 +13,7 @@ from src.options import Options
 from src.models.networks import WanDiffusionWrapper, WanVAEWrapper
 from src.models.wan import Wan
 from src.models.pipelines.self_forcing_training import SelfForcingTrainingPipeline
-from src.utils import convert_to_buffer, plucker_ray, colorize_depth, filter_da3_points, render_pt3d_points, mv_interpolate
+from src.utils import plucker_ray, colorize_depth, filter_da3_points, render_pt3d_points, mv_interpolate
 
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -92,13 +92,17 @@ class DMD_Wan(Wan):
                 target_modules=opt.lora_target_modules_in_fake_score.split(","),
                 lora_rank=opt.lora_rank_in_fake_score,
             )
+            # Load LoRA checkpoint if specified
+            if opt.fake_lora_path is not None:
+                lora_state_dict = torch.load(opt.fake_lora_path, map_location="cpu", weights_only=True)
+                self.load_fake_score_lora_weights(lora_state_dict, strict=True)
 
         # Set other trainable parameters except LoRA layers in the diffusion model
         if opt.more_trainable_fake_score_params is not None:
             trainble_names = opt.more_trainable_fake_score_params.split(",")
             if opt.use_lora_in_fake_score:
                 trainble_names.append("lora")
-            for name, param in self.fake_score.model.named_parameters():
+            for name, param in self.fake_score.named_parameters():
                 _flag = False
                 for trainble_name in trainble_names:
                     if trainble_name in name:
@@ -1064,4 +1068,88 @@ class DMD_Wan(Wan):
             lora_alpha = lora_rank
 
         lora_config = LoraConfig(r=lora_rank, lora_alpha=lora_alpha, target_modules=target_modules)
-        self.fake_score.model = inject_adapter_in_model(lora_config, self.fake_score.model)
+        self.fake_score = inject_adapter_in_model(lora_config, self.fake_score)
+
+        # Freeze all base model parameters, only train LoRA weights
+        for name, param in self.fake_score.named_parameters():
+            if "lora_" not in name:
+                param.requires_grad_(False)
+            else:
+                param.requires_grad_(True)
+
+    def get_fake_score_lora_state_dict(self):
+        """Get only LoRA parameters from fake_score for saving.
+
+        This method is FSDP-aware and will gather sharded parameters from all ranks.
+        When using FSDP, this should be called on all ranks, but only rank 0 will
+        receive the full state dict.
+        """
+        from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
+        from torch.distributed.fsdp import FullStateDictConfig, StateDictType
+
+        # Check if the model is wrapped with FSDP
+        if isinstance(self.fake_score, FSDP):
+            # Use FSDP API to gather full state dict on rank 0
+            cfg = FullStateDictConfig(offload_to_cpu=True, rank0_only=True)
+            with FSDP.state_dict_type(self.fake_score, StateDictType.FULL_STATE_DICT, cfg):
+                full_state_dict = self.fake_score.state_dict()
+
+            # Filter for LoRA parameters
+            lora_state_dict = {}
+            for name, param in full_state_dict.items():
+                # Remove FSDP wrapper prefixes
+                clean_name = name.replace("_fsdp_wrapped_module.", "") \
+                                .replace("_checkpoint_wrapped_module.", "") \
+                                .replace("_orig_mod.", "") \
+                                .replace("module.", "")
+                if "lora_" in clean_name:
+                    lora_state_dict[clean_name] = param
+            return lora_state_dict
+        else:
+            # Non-FSDP case: directly access parameters
+            lora_state_dict = {}
+            for name, param in self.fake_score.named_parameters():
+                if "lora_" in name:
+                    lora_state_dict[name] = param.cpu().clone()
+            return lora_state_dict
+
+    def load_fake_score_lora_weights(self, lora_state_dict: dict, strict: bool = True):
+        """Load LoRA weights into the fake_score model."""
+        missing_keys, unexpected_keys = [], []
+        for name, param in lora_state_dict.items():
+            if name in dict(self.fake_score.named_parameters()):
+                dict(self.fake_score.named_parameters())[name].data.copy_(param)
+            else:
+                unexpected_keys.append(name)
+
+        if strict:
+            for name, param in self.fake_score.named_parameters():
+                if "lora_" in name and name not in lora_state_dict:
+                    missing_keys.append(name)
+
+            if missing_keys or unexpected_keys:
+                error_msg = f"Error loading fake_score LoRA weights:\n"
+                if missing_keys:
+                    error_msg += f"Missing keys: {missing_keys}\n"
+                if unexpected_keys:
+                    error_msg += f"Unexpected keys: {unexpected_keys}\n"
+                raise RuntimeError(error_msg)
+
+    def merge_fake_score_lora_weights(self):
+        """Merge LoRA weights into the fake_score base model and remove LoRA adapters.
+
+        This is useful when you want to:
+        1. Create a standalone fake_score model with LoRA weights baked in
+        2. Train a new LoRA on top of the merged weights
+
+        After calling this method, the fake_score model will no longer have LoRA adapters,
+        and all LoRA weights will be merged into the base model parameters.
+
+        Returns:
+            None
+        """
+        if not hasattr(self.fake_score, 'merge_and_unload'):
+            raise RuntimeError("fake_score model does not have LoRA adapters. Cannot merge.")
+
+        # `merge_and_unload()` returns a new model with LoRA weights merged
+        self.fake_score = self.fake_score.merge_and_unload()

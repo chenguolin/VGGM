@@ -124,8 +124,10 @@ class Options:
     prefill_image: bool = True
         ## Load pre-trained models
     generator_path: Optional[str] = None
+    lora_path: Optional[str] = None  # Path to LoRA weights file (lora_weights.pth)
     teacher_path: Optional[str] = None
     fake_path: Optional[str] = None
+    fake_lora_path: Optional[str] = None  # Path to fake_score LoRA weights file
     is_teacher_causal: bool = False
     teacher_input_plucker: bool = False
     teacher_input_pcrender: bool = False
@@ -161,6 +163,7 @@ class Options:
     deterministic_inference: bool = True
     use_lpips: bool = False  # False to save memory
         ## LoRA
+    save_lora_only: bool = True
     use_lora_in_wan: bool = False
     lora_target_modules_in_wan: str = "q,k,v,o,ffn.0,ffn.2"
     lora_rank_in_wan: int = 32

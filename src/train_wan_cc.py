@@ -610,12 +610,30 @@ def main():
                     ema_params.copy_to_model()
                 barrier()  # make sure all processes have finished the above operations before saving checkpoints
 
-                # NOTE: For FSDP full state dict, all ranks must participate in `state_dict()` collectives even when `rank0_only=True`.
-                save_state_dict = fsdp_state_dict(model.diffusion)
-                if is_main_process:
-                    os.makedirs(os.path.join(ckpt_dir, f"{global_update_step:06d}"), exist_ok=True)
-                    torch.save(save_state_dict, os.path.join(ckpt_dir, f"{global_update_step:06d}", "model_states.pth"))
-                del save_state_dict
+                # NOTE: For FSDP full state dict, all ranks must participate in `state_dict()` collectives even when `rank0_only=True`
+                if opt.use_lora_in_wan and opt.save_lora_only:
+                    # Only save LoRA weights
+                    lora_state_dict = model.get_lora_state_dict()  # all ranks must call get_lora_state_dict() for FSDP collective communication
+                    if is_main_process:
+                        os.makedirs(os.path.join(ckpt_dir, f"{global_update_step:06d}"), exist_ok=True)
+                        torch.save(lora_state_dict, os.path.join(ckpt_dir, f"{global_update_step:06d}", "lora_weights.pth"))
+                        print(f"Saved LoRA-only weights to {os.path.join(ckpt_dir, f'{global_update_step:06d}', 'lora_weights.pth')}")
+
+                else:
+                    # Save full model state dict
+                    save_state_dict = fsdp_state_dict(model.diffusion)
+                    if opt.use_lora_in_wan:
+                        lora_state_dict = model.get_lora_state_dict()  # all ranks must call get_lora_state_dict() for FSDP collective communication
+                    if is_main_process:
+                        os.makedirs(os.path.join(ckpt_dir, f"{global_update_step:06d}"), exist_ok=True)
+                        torch.save(save_state_dict, os.path.join(ckpt_dir, f"{global_update_step:06d}", "model_states.pth"))
+                        print(f"Saved model checkpoints to {os.path.join(ckpt_dir, f'{global_update_step:06d}', 'model_states.pth')}")
+
+                        # If using LoRA, also save LoRA weights separately for easier loading
+                        if opt.use_lora_in_wan:
+                            torch.save(lora_state_dict, os.path.join(ckpt_dir, f"{global_update_step:06d}", "lora_weights.pth"))
+                            print(f"Saved LoRA weights to {os.path.join(ckpt_dir, f'{global_update_step:06d}', 'lora_weights.pth')}")
+                    del save_state_dict
 
                 if ema_params is not None:
                     # Switch back to the original model parameters
