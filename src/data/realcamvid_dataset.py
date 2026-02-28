@@ -89,15 +89,15 @@ class RealcamvidDataset(BaseDataset):
 
         if self.opt.load_image:
             # Load video
-            images = {
-                idx: tvT.ToTensor()(vr[idx].asnumpy())
-                for idx in input_frame_idxs
-            }
-            images = torch.stack([images[idx] for idx in input_frame_idxs]).float()  # (F, 3, H, W)
+            frames = vr.get_batch(input_frame_idxs).asnumpy()  # (F, H, W, C) uint8
+            del vr
+            images = torch.from_numpy(frames).permute(0, 3, 1, 2).float() / 255.0  # (F, 3, H, W)
+            del frames
 
             # Data augmentation
             images, depths, confs, fxfycxcy = self._data_augment(images, depths, confs, fxfycxcy)
         else:
+            del vr
             images = None
 
         # Camera normalization
