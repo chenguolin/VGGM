@@ -44,7 +44,7 @@ export NCCL_SOCKET_IFNAME=bond1  # 指定的socket协议网口，默认是eth0
 # export WANDB_BASE_URL=https://api.bandw.top
 export HF_HOME=$ROOT/.cache/huggingface
 export TORCH_HOME=$ROOT/.cache/torch
-export NCCL_DEBUG=VERSION
+export NCCL_DEBUG=ERROR
 
 torchrun \
   --nnodes $TAIJI_HOST_NUM \
