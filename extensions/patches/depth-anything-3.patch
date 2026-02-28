@@ -529,4 +529,26 @@ index 229e1a9..ff09bf6 100644
 +        pe = position_grid_to_embed(pe, x.shape[1]).to(x.dtype) * ratio
          pe = pe.permute(2, 0, 1)[None].expand(x.shape[0], -1, -1, -1)
          return x + pe
- 
+
+diff --git a/src/depth_anything_3/model/utils/gs_renderer.py b/src/depth_anything_3/model/utils/gs_renderer.py
+index 91414d3..7c72168 100644
+--- a/src/depth_anything_3/model/utils/gs_renderer.py
++++ b/src/depth_anything_3/model/utils/gs_renderer.py
+@@ -34,11 +34,12 @@ from depth_anything_3.utils.logger import logger
+ try:
+     from gsplat import rasterization
+ except ImportError:
+-    logger.warn(
+-        "Dependency `gsplat` is required for rendering 3DGS. "
+-        "Install via: pip install git+https://github.com/nerfstudio-project/"
+-        "gsplat.git@0b4dddf04cb687367602c01196913cde6a743d70"
+-    )
++    pass
++    # logger.warn(
++    #     "Dependency `gsplat` is required for rendering 3DGS. "
++    #     "Install via: pip install git+https://github.com/nerfstudio-project/"
++    #     "gsplat.git@0b4dddf04cb687367602c01196913cde6a743d70"
++    # )
+
+
+ def render_3dgs(
