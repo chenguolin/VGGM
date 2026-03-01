@@ -201,9 +201,6 @@ class Options:
         if self.load_da3:
             self.load_depth = True
 
-        if self.fake_path is None:
-            self.fake_path = self.generator_path
-
         # Dataset directories
         self.dataset_dir_train = {
             "realcamvid": f"{self.root}/RealCam-Vid",
