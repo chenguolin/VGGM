@@ -20,6 +20,7 @@ from .scheduler import FlowMatchScheduler
 
 from .wan_modules.model import sinusoidal_embedding_1d
 from src.utils import zero_init_module, inverse_c2w, fxfycxcy_to_intrinsics
+from src.utils.distributed import get_sp_world_size, all_gather, all_split, sync_across_sp_group
 
 from depth_anything_3.api import DepthAnything3
 from depth_anything_3.model.utils.transform import quat_to_mat
@@ -654,6 +655,13 @@ class WanDiffusionDA3Wrapper(nn.Module):
                         max_attention_size=self.da3_max_attention_size,
                     )
 
+        # Sequence parallelism: chunk sequences across ranks
+        sp_size = get_sp_world_size()
+        if sp_size > 1:
+            assert x.size(1) % sp_size == 0
+            x = all_split(sync_across_sp_group(x), dim=1)
+            e0 = all_split(sync_across_sp_group(e0), dim=1)
+
         # arguments
         kwargs = dict(
             e=e0,
@@ -770,7 +778,9 @@ class WanDiffusionDA3Wrapper(nn.Module):
 
                 ### DA3
                 if da3_x is None:  # optional: downsample DiT features for DA3 input
-                    da3_x = rearrange(x, "b (f h w) d -> (b f) d h w", f=tff, h=h//2, w=w//2)  # `2`: hard-coded for patch embedding
+                    da3_x = all_gather(x, dim=1)  # NOTE: only SP on `dit_x`
+
+                    da3_x = rearrange(da3_x, "b (f h w) d -> (b f) d h w", f=tff, h=h//2, w=w//2)  # `2`: hard-coded for patch embedding
                     if self.da3_down_ratio > 1:
                         da3_x = tF.interpolate(da3_x, scale_factor=1/self.da3_down_ratio, mode="bilinear", align_corners=True)
                     da3_x = rearrange(da3_x, "(b f) d h w -> b (f h w) d", f=tff, h=h//(2*self.da3_down_ratio), w=w//(2*self.da3_down_ratio))  # `2`: hard-coded for patch embedding
@@ -829,12 +839,20 @@ class WanDiffusionDA3Wrapper(nn.Module):
 
                 ### (Optional) Interaction
                 if self.da3_interactive:
+                    dit_x = all_gather(dit_x, dim=1)
+
                     dit_x = rearrange(dit_x, "b (f h w) d -> (b f) (h w) d", f=tff, h=h//2, w=w//2)  # `2`: hard-coded for patch embedding
                     da3_x = rearrange(da3_x, "b f n d -> (b f) n d")
                     dit_x_res, da3_x_res = self.dit_da3_interactive[da3_i](dit_x, da3_x[:, 1:, :], h=h//2, w=w//2)
                     dit_x, da3_x = dit_x + dit_x_res, torch.cat([da3_x[:, :1, :], da3_x[:, 1:, :] + da3_x_res], dim=1)
                     dit_x = rearrange(dit_x, "(b f) (h w) d -> b (f h w) d", f=tff, h=h//2, w=w//2)  # `2`: hard-coded for patch embedding
                     da3_x = rearrange(da3_x, "(b f) n d -> b f n d", f=tff)
+
+                    dit_x = all_split(dit_x, dim=1)
+
+        # Sequence parallelism: gather sequences before head
+        if sp_size > 1:
+            dit_x = all_gather(dit_x, dim=1)
 
         # Wan DiT head & unpatchify
         if self.is_causal and clean_x is not None:
