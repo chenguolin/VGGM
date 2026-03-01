@@ -2,8 +2,9 @@
 
 # Modified:
     ## 1. Reformat code style
-    ## 2. Delete EMA_FSDP
-    ## 3. Support sequence parallelism
+    ## 2. `sync_module_states=True` in FSDP
+    ## 3. Delete EMA_FSDP
+    ## 4. Support sequence parallelism (SP)
 
 from typing import *
 from torch import Tensor
@@ -83,7 +84,7 @@ def fsdp_wrap(
         limit_all_gathers=True,
         use_orig_params=True,
         cpu_offload=CPUOffload(offload_params=cpu_offload),
-        sync_module_states=False  # load ckpt on rank 0 and sync to other ranks
+        sync_module_states=True  # load ckpt on rank 0 and sync to other ranks
     )
     return module
 

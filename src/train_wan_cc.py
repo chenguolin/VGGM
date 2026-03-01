@@ -435,6 +435,9 @@ def main():
         arti_exp_info.add_file(os.path.join(exp_dir, "log.txt"))  # only save the log before training
         wandb.log_artifact(arti_exp_info)
 
+    # Set the random seed again before training loop
+    util.set_seed(args.seed + dp_rank)  # util.set_seed(args.seed + global_rank)
+
     # Start training
     NONFINITE_SKIP_COUNT, global_update_step = 0, 0
     if is_main_process:
