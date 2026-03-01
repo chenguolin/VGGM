@@ -23,7 +23,7 @@ from diffusers.models.modeling_utils import ModelMixin
 
 from .attention import attention
 
-from src.utils.distributed import get_sp_rank, get_sp_world_size, all_gather, all_to_all, all_split
+from src.utils.distributed import get_sp_rank, get_sp_world_size, all_gather, all_to_all, all_split, sync_across_sp_group
 
 __all__ = ['WanModel']
 
@@ -907,8 +907,8 @@ class WanModel(ModelMixin, ConfigMixin):
         sp_size = get_sp_world_size()
         if sp_size > 1:
             assert x.size(1) % sp_size == 0
-            x = all_split(x, dim=1)
-            e0 = all_split(e0, dim=1)
+            x = all_split(sync_across_sp_group(x), dim=1)
+            e0 = all_split(sync_across_sp_group(e0), dim=1)
 
         # arguments
         kwargs = dict(

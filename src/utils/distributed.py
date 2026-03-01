@@ -441,3 +441,40 @@ def all_split(input: Tensor, dim: int, group=None):
         This rank's chunk of the tensor
     """
     return _AllSplit.apply(input, dim, group)
+
+
+def sync_across_sp_group(tensor: Tensor, group=None) -> Tensor:
+    """
+    Synchronize tensor across SP group by broadcasting from rank 0.
+
+    This ensures all ranks in the same SP group have identical tensors,
+    which is critical for operations like random noise generation in
+    sequence parallelism where different ranks process different parts
+    of the same sequence.
+
+    Args:
+        tensor: Tensor to synchronize. Will be made contiguous if needed.
+        group: Process group (default: None, uses SP group)
+
+    Returns:
+        Synchronized tensor (same across all ranks in SP group)
+
+    Example:
+        # Generate random noise and synchronize across SP group
+        noise = torch.randn(B, D, f, h, w, device=device)
+        noise = sync_across_sp_group(noise)
+
+        # Now all ranks in the same SP group have identical noise
+    """
+    group, world_size, rank = _resolve_group_info(group)
+
+    if world_size <= 1:
+        return tensor
+
+    # Ensure tensor is contiguous for broadcast
+    tensor = tensor.contiguous()
+
+    # Broadcast from rank 0 of the group
+    dist.broadcast(tensor, src=dist.get_global_rank(group, 0), group=group)
+
+    return tensor

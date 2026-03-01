@@ -24,7 +24,7 @@ from .model import (
     rope_apply,
     rope_apply_sp,
 )
-from src.utils.distributed import get_sp_rank, get_sp_world_size, all_gather, all_to_all, all_split
+from src.utils.distributed import get_sp_rank, get_sp_world_size, all_gather, all_to_all, all_split, sync_across_sp_group
 
 # wan 1.3B model has a weird channel / head configurations and require max-autotune to work with flexattention
 # see https://github.com/pytorch/pytorch/issues/133254
@@ -911,8 +911,8 @@ class CausalWanModel(ModelMixin, ConfigMixin):
         sp_size = get_sp_world_size()
         if sp_size > 1:
             assert x.size(1) % sp_size == 0
-            x = all_split(x, dim=1)
-            e0 = all_split(e0, dim=1)
+            x = all_split(sync_across_sp_group(x), dim=1)
+            e0 = all_split(sync_across_sp_group(e0), dim=1)
 
         # arguments
         kwargs = dict(
@@ -1121,8 +1121,8 @@ class CausalWanModel(ModelMixin, ConfigMixin):
         sp_size = get_sp_world_size()
         if sp_size > 1:
             assert x.size(1) % sp_size == 0
-            x = all_split(x, dim=1)
-            e0 = all_split(e0, dim=1)
+            x = all_split(sync_across_sp_group(x), dim=1)
+            e0 = all_split(sync_across_sp_group(e0), dim=1)
 
         # arguments
         kwargs = dict(
