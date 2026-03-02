@@ -244,6 +244,17 @@ opt_dict: Dict[str, Options] = {}
 
 # Wan2.1-T2V-1.3B
 opt_dict["wan2.1_t2v_1.3b"] = Options(
+    # use_internal_dataset=True,
+    #
+    # input_res=(480, 832),
+    # num_input_frames=81,
+    #
+    # num_clips=3,
+    # sp_size=8,
+    #
+    # wan_dir=f"{ROOT}/.cache/huggingface/hub/Wan-AI/Wan2.1-T2V-14B",
+    # generator_path=f"{ROOT}/projects/VGGM/.pth",
+    #
     input_plucker=True,
     exclude_name_lr_mult="plucker_embed,extra_condition_embed",
     #
