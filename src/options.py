@@ -295,6 +295,69 @@ opt_dict["wan2.1_t2v_1.3b_causal"] = Options(
     # load_tae=True,
 )
 
+# Self-Forcing DMD
+opt_dict["wan2.1_t2v_1.3b_dmd"] = Options(
+    # sp_size=8,
+    #
+    only_static_data=False,
+    use_vidprom=True,
+    vidprom_prob=1.,  # 0.5
+    use_short_caption=False,
+    first_latent_cond=False,
+    input_plucker=True,
+    #
+    load_da3=False,  # True
+    da3_interactive=False,
+    da3_weight_type="uniform",
+    da3_down_ratio=1,
+    only_train_resdit=True,
+    #
+    da3_loss_in_sf=False,  # True
+    render_loss_in_sf=False,
+    #
+    diffusion_loss_prob=0.,
+    no_noise_for_da3=False,
+    #
+    is_causal=True,
+    use_teacher_forcing=False,
+    #
+    sink_size=3,
+    chunk_size=3,
+    max_window_size=9,
+    rope_outside=True,
+    #
+    # wan_dir=f"{ROOT}/.cache/huggingface/hub/Wan-AI/Wan2.1-T2V-14B",
+    # real_wan_dir=f"{ROOT}/.cache/huggingface/hub/Wan-AI/Wan2.1-T2V-14B",
+    # fake_wan_dir=f"{ROOT}/.cache/huggingface/hub/Wan-AI/Wan2.1-T2V-14B",
+    #
+    generator_path=f"{ROOT}/projects/VGGM/.pth",
+    teacher_path=f"{ROOT}/projects/VGGM/.pth",
+    fake_path=f"{ROOT}/projects/VGGM/.pth",
+    #
+    is_teacher_causal=False,
+    teacher_input_plucker=True,
+    teacher_first_latent_cond=False,
+    #
+    use_dmd=True,
+    self_forcing_prob=1.,
+    real_guidance_scale=4.,
+    last_step_only=False,
+    context_noise=0,
+    same_step_across_chunks=True,
+    #
+    name_lr_mult="fake_score",
+    lr_mult=0.2,
+    #
+    # num_input_frames_test=201,
+    num_inference_steps=4,
+    cfg_scale=(1.,),
+    deterministic_inference=False,
+    #
+    # load_conf=True,
+    # input_pcrender=True,
+    # load_tae=True,
+)
+
 # Self-Forcing reproduction
 opt_dict["sf_rep"] = Options(
     input_res=(480, 832),
@@ -326,59 +389,4 @@ opt_dict["sf_rep"] = Options(
     num_inference_steps=4,
     cfg_scale=(1.,),
     deterministic_inference=False,
-)
-
-# Self-Forcing DMD
-opt_dict["wan2.1_t2v_1.3b_dmd"] = Options(
-    only_static_data=False,
-    use_vidprom=True,
-    vidprom_prob=0.5,
-    use_short_caption=False,
-    first_latent_cond=False,
-    input_plucker=True,
-    #
-    load_da3=True,
-    da3_interactive=False,
-    da3_weight_type="uniform",
-    da3_down_ratio=1,
-    only_train_resdit=True,
-    #
-    da3_loss_in_sf=True,
-    render_loss_in_sf=False,
-    #
-    diffusion_loss_prob=0.,
-    no_noise_for_da3=False,
-    #
-    is_causal=True,
-    use_teacher_forcing=False,
-    #
-    sink_size=3,
-    chunk_size=3,
-    max_window_size=9,
-    rope_outside=True,
-    #
-    generator_path=f"{ROOT}/projects/VGGM/.pth",
-    teacher_path=f"{ROOT}/projects/VGGM/.pth",
-    is_teacher_causal=False,
-    teacher_input_plucker=True,
-    teacher_first_latent_cond=False,
-    #
-    use_dmd=True,
-    self_forcing_prob=1.,
-    real_guidance_scale=4.,
-    last_step_only=False,
-    context_noise=0,
-    same_step_across_chunks=True,
-    #
-    name_lr_mult="fake_score",
-    lr_mult=0.2,
-    #
-    num_input_frames_test=201,
-    num_inference_steps=4,
-    cfg_scale=(1.,),
-    deterministic_inference=False,
-    #
-    load_conf=True,
-    input_pcrender=True,
-    load_tae=True,
 )
