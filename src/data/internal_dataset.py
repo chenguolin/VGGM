@@ -69,6 +69,17 @@ class InternalDataset(BaseDataset):
         video_path = os.path.join(self.root, "video", f"{uid}.mp4")
         vr = VideoReader(str(video_path), ctx=cpu(0))
         num_frames, fps, (H, W) = len(vr), vr.get_avg_fps(), vr[0].shape[:2]
+
+        # Skip high-resolution videos to reduce CPU load during decoding
+        MAX_RES = 2048  # skip videos with resolution > 2048 (e.g., 4K)
+        if max(H, W) > MAX_RES:
+            del vr
+            if idx in self.valid_idxs:
+                self.valid_idxs.remove(idx)
+                if len(self.valid_idxs) == 0:
+                    raise ValueError("No valid data in InternalDataset!")
+            return self.__getitem__(int(np.random.choice(self.valid_idxs)))
+
         # `5`: hard-coded for 5s-clip; `12`: hard-coded for clip-overlap
         start_frame_idx = int(round((clip_idxs[0] - 1) * 5 * fps)) - 12 * (clip_idxs[0] - 1)
         end_frame_idx = int(round((clip_idxs[-1] - 1) * 5 * fps)) - 12 * (clip_idxs[-1] - 1) + int(round(5 * fps))
