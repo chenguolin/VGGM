@@ -255,7 +255,7 @@ opt_dict["wan2.1_t2v_1.3b"] = Options(
 opt_dict["wan2.1_t2v_1.3b_causal"] = Options(
     # sp_size=2,
     #
-    load_da3=True,
+    load_da3=False,  # True
     da3_interactive=False,
     da3_weight_type="inverse_timestep",
     da3_down_ratio=1,
@@ -263,7 +263,7 @@ opt_dict["wan2.1_t2v_1.3b_causal"] = Options(
     # no_noise_for_da3=True,
     #
     is_causal=True,
-    use_teacher_forcing=False,
+    use_teacher_forcing=True,  # False
     #
     sink_size=3,
     chunk_size=3,
@@ -277,11 +277,11 @@ opt_dict["wan2.1_t2v_1.3b_causal"] = Options(
     exclude_name_lr_mult="plucker_embed,extra_condition_embed,da3_adapter",
     #
     # num_input_frames=201,
-    num_input_frames_test=201,
+    # num_input_frames_test=201,
     #
-    load_conf=True,
-    input_pcrender=True,
-    load_tae=True,
+    # load_conf=True,
+    # input_pcrender=True,
+    # load_tae=True,
 )
 
 # Self-Forcing reproduction
