@@ -103,6 +103,12 @@ def main():
         help="Use EMA model for training"
     )
     parser.add_argument(
+        "--max_loss",
+        type=float,
+        default=None,
+        help="Samples with loss larger than `max_loss` will be skipped during training"
+    )
+    parser.add_argument(
         "--max_grad_norm",
         type=float,
         default=1.,
@@ -162,6 +168,7 @@ def main():
     os.makedirs(ckpt_dir, exist_ok=True)
 
     # Set args by configs
+    args.max_loss = configs["train"].get("max_loss", args.max_loss)
     args.gradient_accumulation_steps = max(
         args.gradient_accumulation_steps,
         configs["train"].get("gradient_accumulation_steps", 1),
@@ -478,10 +485,20 @@ def main():
 
             loss = outputs["loss"]
 
+            # Skip the step if the loss is larger than `max_loss`
+            if args.max_loss is not None and loss.item() > args.max_loss:
+                logger.info(f"Step [{global_update_step:06d}] loss [{loss.item():.4f}] is larger than max_loss [{args.max_loss}], skip the step")
+                optimizer.zero_grad(set_to_none=True)
+                NONFINITE_SKIP_COUNT += 1
+                if NONFINITE_SKIP_COUNT > 10:
+                    raise ValueError(f"Non-finite loss/grad skipped for [{NONFINITE_SKIP_COUNT}] consecutive steps!")
+                continue
+
             # Skip the step if any rank produces NaN/Inf losses
             local_nonfinite_loss = not util.tensor_is_finite(loss)
             any_nonfinite_loss = util.dist_any_true(local_nonfinite_loss, loss.device)
             if any_nonfinite_loss:
+                logger.info(f"Step [{global_update_step:06d}] loss is non-finite on rank [{global_rank}], skip the step")
                 optimizer.zero_grad(set_to_none=True)
                 NONFINITE_SKIP_COUNT += 1
                 if NONFINITE_SKIP_COUNT > 10:
@@ -506,6 +523,7 @@ def main():
             local_nonfinite_grad = len(local_nonfinite_grad_names) > 0
             any_nonfinite_grad = util.dist_any_true(local_nonfinite_grad, loss.device)
             if any_nonfinite_grad:
+                logger.info(f"Step [{global_update_step:06d}] gradients are non-finite on rank [{global_rank}], skip the step. Non-finite grad param names: {local_nonfinite_grad_names}")
                 optimizer.zero_grad(set_to_none=True)
                 NONFINITE_SKIP_COUNT += 1
                 if NONFINITE_SKIP_COUNT > 10:
