@@ -226,7 +226,9 @@ class Wan(nn.Module):
 
         # For multi-clip generation
         data, clip_latent_lens = self._multiclip_batch(data)
-        if self.opt.num_clips > 1:
+        # Determine actual num_clips from data
+        actual_num_clips = len(data["prompt"][0]) if isinstance(data["prompt"][0], list) else 1
+        if actual_num_clips > 1:
             assert clip_latent_lens is not None
 
         if "image" in data:
@@ -234,7 +236,7 @@ class Wan(nn.Module):
             (B, F, _, H, W) = images.shape
         else:
             B = len(data["prompt"])
-            F, H, W = (self.opt.num_input_frames - 1) * self.opt.num_clips + 1, self.opt.input_res[0], self.opt.input_res[1]
+            F, H, W = (self.opt.num_input_frames - 1) * actual_num_clips + 1, self.opt.input_res[0], self.opt.input_res[1]
 
         idxs = torch.arange(0, F, 4).to(device=device, dtype=torch.long)
         if self.opt.load_da3:
@@ -497,7 +499,9 @@ class Wan(nn.Module):
 
         # For multi-clip generation
         data, clip_latent_lens = self._multiclip_batch(data)
-        if self.opt.num_clips > 1:
+        # Determine actual num_clips from data
+        actual_num_clips = len(data["prompt"][0]) if isinstance(data["prompt"][0], list) else 1
+        if actual_num_clips > 1:
             assert clip_latent_lens is not None
 
         self.diffusion.eval()
@@ -511,7 +515,7 @@ class Wan(nn.Module):
             outputs["images_gt"] = images
         else:
             B = len(data["prompt"])
-            F, H, W = (self.opt.num_input_frames_test - 1) * self.opt.num_clips + 1, self.opt.input_res[0], self.opt.input_res[1]
+            F, H, W = (self.opt.num_input_frames_test - 1) * actual_num_clips + 1, self.opt.input_res[0], self.opt.input_res[1]
             images = torch.zeros((B, F, 3, H, W), dtype=dtype, device=device)  # (B, F, 3, H, W); not really used
 
         idxs = torch.arange(0, F, 4).to(device=device, dtype=torch.long)
@@ -543,11 +547,11 @@ class Wan(nn.Module):
             if self.prompt_list is None or np.random.rand() >= self.opt.vidprom_prob:
                 prompts = data["prompt"]  # a list of strings
             else:
-                assert self.opt.num_clips == 1  # num_clips=1 for VidProm
+                assert actual_num_clips == 1  # VidProm only supports single clip
                 prompts = np.random.choice(self.prompt_list, B, replace=False).tolist()
             self.text_encoder.eval()
             prompt_embeds = self._encode_prompt_batch(prompts)  # (B, N=512, D') or (B, num_clips, N=512, D')
-            negative_prompt_embeds = self._build_negative_prompt_embeds(B, self.opt.num_clips)  # (B, N=512, D') or (B, num_clips, N=512, D')
+            negative_prompt_embeds = self._build_negative_prompt_embeds(B, actual_num_clips)  # (B, N=512, D') or (B, num_clips, N=512, D')
         else:
             raise NotImplementedError
 
@@ -719,7 +723,9 @@ class Wan(nn.Module):
 
         # For multi-clip generation
         data, clip_latent_lens = self._multiclip_batch(data)
-        if self.opt.num_clips > 1:
+        # Determine actual num_clips from data
+        actual_num_clips = len(data["prompt"][0]) if isinstance(data["prompt"][0], list) else 1
+        if actual_num_clips > 1:
             assert clip_latent_lens is not None
 
         self.diffusion.eval()
@@ -733,7 +739,7 @@ class Wan(nn.Module):
             outputs["images_gt"] = images
         else:
             B = len(data["prompt"])
-            F, H, W = (self.opt.num_input_frames_test - 1) * self.opt.num_clips + 1, self.opt.input_res[0], self.opt.input_res[1]
+            F, H, W = (self.opt.num_input_frames_test - 1) * actual_num_clips + 1, self.opt.input_res[0], self.opt.input_res[1]
             images = torch.zeros((B, F, 3, H, W), dtype=dtype, device=device)  # (B, F, 3, H, W); not really used
 
         idxs = torch.arange(0, F, 4).to(device=device, dtype=torch.long)
@@ -765,11 +771,11 @@ class Wan(nn.Module):
             if self.prompt_list is None or np.random.rand() >= self.opt.vidprom_prob:
                 prompts = data["prompt"]  # a list of strings
             else:
-                assert self.opt.num_clips == 1  # num_clips=1 for VidProm
+                assert actual_num_clips == 1  # VidProm only supports single clip
                 prompts = np.random.choice(self.prompt_list, B, replace=False).tolist()
             self.text_encoder.eval()
             prompt_embeds = self._encode_prompt_batch(prompts)  # (B, N=512, D') or (B, num_clips, N=512, D')
-            negative_prompt_embeds = self._build_negative_prompt_embeds(B, self.opt.num_clips)  # (B, N=512, D') or (B, num_clips, N=512, D')
+            negative_prompt_embeds = self._build_negative_prompt_embeds(B, actual_num_clips)  # (B, N=512, D') or (B, num_clips, N=512, D')
         else:
             raise NotImplementedError
 
@@ -1577,7 +1583,8 @@ class Wan(nn.Module):
         if not isinstance(prompts[0], list):  # one-clip
             return data, None
 
-        assert len(prompts) == 1 and len(prompts[0]) == self.opt.num_clips  # only support batch_size=1 for multi-clip inputs
+        # Support dynamic num_clips: only check batch_size=1, not the exact num_clips
+        assert len(prompts) == 1 and len(prompts[0]) <= self.opt.num_clips  # only support batch_size=1 for multi-clip inputs
 
         new_data = dict(data)
         clip_frame_lens = []

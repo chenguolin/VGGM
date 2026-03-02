@@ -36,7 +36,10 @@ class InternalDataset(BaseDataset):
                 all_captions = json.load(f)  # Dict[str, str]: clip_idx -> long caption
             dataset_source = "Internal"
 
-            num_clips = max(1, int(self.opt.num_clips))
+            # Randomly sample num_clips from [1, `opt.num_clips`]
+            max_num_clips = max(1, int(self.opt.num_clips))
+            num_clips = np.random.randint(1, max_num_clips + 1)
+
             all_clip_idxs = sorted([int(k) for k in all_captions.keys()])
             all_clip_idx_set = set(all_clip_idxs)
             valid_start_clip_idxs = [
@@ -126,8 +129,8 @@ class InternalDataset(BaseDataset):
         if self.opt.load_image:
             return_dict["image"] = images  # List[(F, 3, H, W)] in [0, 1]
 
-        # Unpack the single clip
-        if self.opt.num_clips == 1:
+        # Unpack the single clip (based on actual num_clips, not opt.num_clips)
+        if len(prompt) == 1:
             for key in return_dict:
                 if key != "uid":
                     return_dict[key] = return_dict[key][0]
