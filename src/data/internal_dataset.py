@@ -38,7 +38,10 @@ class InternalDataset(BaseDataset):
 
             # Randomly sample num_clips from [1, `opt.num_clips`]
             max_num_clips = max(1, int(self.opt.num_clips))
-            num_clips = np.random.randint(1, max_num_clips + 1)
+            if self.training:
+                num_clips = np.random.randint(1, max_num_clips + 1)
+            else:
+                num_clips = max_num_clips  # fixed to `max_num_clips` for evaluation
 
             all_clip_idxs = sorted([int(k) for k in all_captions.keys()])
             all_clip_idx_set = set(all_clip_idxs)
