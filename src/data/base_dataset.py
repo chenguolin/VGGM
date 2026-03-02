@@ -52,6 +52,7 @@ class BaseDataset(EasyDataset):
         pingpong_threshold: int = -1,
         start_frame_idx: Optional[int] = None,
         end_frame_idx: Optional[int] = None,
+        target_num_frames: Optional[int] = None,  # override `num_input_frames` for dynamic clip count
     ) -> List[int]:
         frame_idxs = np.arange(num_frames, dtype=int)
         if start_frame_idx is not None:
@@ -59,7 +60,8 @@ class BaseDataset(EasyDataset):
         if end_frame_idx is not None:
             frame_idxs = frame_idxs[frame_idxs < end_frame_idx]
         F_all, F = len(frame_idxs), \
-            self.opt.num_input_frames if self.training else self.opt.num_input_frames_test
+            target_num_frames if target_num_frames is not None else \
+            (self.opt.num_input_frames if self.training else self.opt.num_input_frames_test)
 
         if start_frame_idx is not None or end_frame_idx is not None:
             return frame_idxs[np.linspace(0, F_all-1, F, dtype=int)].tolist()

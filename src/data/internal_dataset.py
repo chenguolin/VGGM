@@ -69,10 +69,15 @@ class InternalDataset(BaseDataset):
         # `5`: hard-coded for 5s-clip; `12`: hard-coded for clip-overlap
         start_frame_idx = int(round((clip_idxs[0] - 1) * 5 * fps)) - 12 * (clip_idxs[0] - 1)
         end_frame_idx = int(round((clip_idxs[-1] - 1) * 5 * fps)) - 12 * (clip_idxs[-1] - 1) + int(round(5 * fps))
+
+        # Calculate total frames based on actual `num_clips`
+        total_frames = (self.opt.num_input_frames - 1) * num_clips + 1
+
         input_frame_idxs = self._frame_sample(
             num_frames,
             start_frame_idx=start_frame_idx,
             end_frame_idx=end_frame_idx,
+            target_num_frames=total_frames,
         )
 
         depths, confs = None, None  # no depth and conf for InternalDataset
