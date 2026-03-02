@@ -247,7 +247,6 @@ opt_dict["wan2.1_t2v_1.3b"] = Options(
     # use_internal_dataset=True,
     #
     # input_res=(480, 832),
-    # num_input_frames=81,
     #
     # num_clips=3,
     # sp_size=8,
