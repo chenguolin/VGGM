@@ -28,7 +28,7 @@ train:
   use_ema: true
   ema_weight: 0.999
   ema_start_step: 0
-  max_loss: 0.5
+  max_loss: 1.
 
 val:
   batch_size_per_gpu: 1
