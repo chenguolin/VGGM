@@ -541,6 +541,7 @@ def main():
             optimizer.step()
             lr_scheduler.step()
             optimizer.zero_grad(set_to_none=True)
+            NONFINITE_SKIP_COUNT = 0
 
             # Update the EMA model
             if ema_params is not None:
