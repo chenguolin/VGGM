@@ -21,6 +21,13 @@ class InternalDataset(BaseDataset):
         else:
             self.uids = [uids[i].strip(".json") for i in indices[int(0.95 * len(uids)):]]
 
+        # Filter out high-resolution videos using a prepared blacklist
+        high_res_file = os.path.join(self.root, "high_res_uids.json")
+        if os.path.exists(high_res_file):
+            with open(high_res_file, "r") as f:
+                high_res_uids = set(json.load(f))
+            self.uids = [uid for uid in self.uids if uid not in high_res_uids]
+
         self.valid_idxs = list(range(len(self.uids)))
 
     def __len__(self) -> int:
