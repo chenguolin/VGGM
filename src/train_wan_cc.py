@@ -478,23 +478,6 @@ def main():
 
             loss = outputs["loss"]
 
-            # Skip the step if any rank produces NaN/Inf losses
-            local_nonfinite_loss = not util.tensor_is_finite(loss)
-            any_nonfinite_loss = util.dist_any_true(local_nonfinite_loss, loss.device)
-            if any_nonfinite_loss:
-                logger.warning(f"Step [{global_update_step:06d}] loss [{loss.item():.4f}] is non-finite on some rank, skip the step")
-                optimizer.zero_grad(set_to_none=True)
-                torch.cuda.empty_cache()
-
-                NONFINITE_SKIP_COUNT += 1
-                if NONFINITE_SKIP_COUNT > 10:
-                    logger.error(f"Non-finite loss/grad skipped for [{NONFINITE_SKIP_COUNT}] consecutive steps! Training will abort.")
-                    barrier()  # ensure all ranks see this error before raising
-                    raise ValueError(f"Non-finite loss/grad skipped for [{NONFINITE_SKIP_COUNT}] consecutive steps!")
-
-                barrier()  # ensure all ranks are synchronized before continuing
-                continue
-
             # Some extra outputs for logging
             diffusion_loss = outputs["diffusion_loss"] if "diffusion_loss" in outputs else None
             critic_loss = outputs["critic_loss"] if "critic_loss" in outputs else None
