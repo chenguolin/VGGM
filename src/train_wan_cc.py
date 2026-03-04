@@ -52,7 +52,7 @@ def main():
     parser.add_argument(
         "--output_dir",
         type=str,
-        default=f"./out",
+        default="./out",
         help="Path to the output directory"
     )
     parser.add_argument(
