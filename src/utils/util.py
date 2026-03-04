@@ -14,10 +14,6 @@ import torch
 import torch.distributed as dist
 
 
-def tensor_is_finite(x: Tensor) -> bool:
-    return bool(torch.isfinite(x.detach()).all().item())
-
-
 def dist_any_true(flag: bool, device: torch.device) -> bool:
     if not (dist.is_available() and dist.is_initialized()):
         return flag
