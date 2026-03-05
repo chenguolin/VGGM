@@ -118,7 +118,7 @@ def main():
         "--mixed_precision",
         type=str,
         default="bf16",
-        choices=["no", "bf16"],
+        choices=["no", "fp16", "bf16"],
         help="Type of mixed precision training"
     )
     parser.add_argument(
@@ -170,6 +170,7 @@ def main():
         raise NotImplementedError  # TODO: support gradient accumulation
     args.sharding_strategy = configs["train"].get("sharding_strategy", args.sharding_strategy)
     args.wrap_strategy = configs["train"].get("wrap_strategy", args.wrap_strategy)
+    args.mixed_precision = configs["train"].get("mixed_precision", args.mixed_precision)
     args.use_ema = args.use_ema or configs["train"].get("use_ema", False)
 
     # Enable TF32 for faster training
@@ -181,7 +182,8 @@ def main():
     launch_distributed_job()
     global_rank = dist.get_rank()
     world_size = dist.get_world_size()
-    dtype = torch.float32 if args.mixed_precision == "no" else torch.bfloat16
+    dtype = {"no": torch.float32,
+        "fp16": torch.float16, "bf16": torch.bfloat16}[args.mixed_precision]
     device = torch.cuda.current_device()
     is_main_process = (global_rank == 0)
     dp_size = world_size // opt.sp_size
@@ -296,14 +298,14 @@ def main():
         sharding_strategy=args.sharding_strategy,
         wrap_strategy=args.wrap_strategy,
         transformer_module=transformer_blocks,
-        mixed_precision=(args.mixed_precision != "no"),
+        mixed_precision=args.mixed_precision,
     )
     model.text_encoder = fsdp_wrap(
         model.text_encoder,
         sharding_strategy=args.sharding_strategy,
         wrap_strategy=args.wrap_strategy,
         transformer_module=transformer_blocks,
-        mixed_precision=(args.mixed_precision != "no"),
+        mixed_precision=args.mixed_precision,
     )
     if opt.use_dmd:
         model.real_score = fsdp_wrap(
@@ -311,14 +313,14 @@ def main():
             sharding_strategy=args.sharding_strategy,
             wrap_strategy=args.wrap_strategy,
             transformer_module=transformer_blocks,
-            mixed_precision=(args.mixed_precision != "no"),
+            mixed_precision=args.mixed_precision,
         )
         model.fake_score = fsdp_wrap(
             model.fake_score,
             sharding_strategy=args.sharding_strategy,
             wrap_strategy=args.wrap_strategy,
             transformer_module=transformer_blocks,
-            mixed_precision=(args.mixed_precision != "no"),
+            mixed_precision=args.mixed_precision,
         )
 
     # Prepare VAE and optionally other modules

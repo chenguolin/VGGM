@@ -5,6 +5,7 @@
     ## 2. `sync_module_states=True` in FSDP
     ## 3. Delete EMA_FSDP
     ## 4. Support sequence parallelism (SP)
+    ## 5. Support fp16 mixed precision in FSDP
 
 from typing import *
 from torch import Tensor
@@ -37,21 +38,21 @@ def fsdp_state_dict(model: nn.Module):
 def fsdp_wrap(
     module: nn.Module,
     sharding_strategy: Literal["full", "hybrid_full", "hybrid_zero2", "no_shard"] = "hybrid_full",
-    mixed_precision: bool = False,
+    mixed_precision: Literal["no", "fp16", "bf16"] = "bf16",
     wrap_strategy: Literal["size", "transformer"] = "size",
     min_num_params: int = int(5e7),
     transformer_module: Optional[Set[Type[nn.Module]]] = None,
     cpu_offload: bool = False,
 ):
-    if mixed_precision:
+    if mixed_precision == "no":
+        mixed_precision_policy = None
+    else:
         mixed_precision_policy = MixedPrecision(
-            param_dtype=torch.bfloat16,  # hard-coded to bf16
+            param_dtype=torch.bfloat16 if mixed_precision == "bf16" else torch.float16,
             reduce_dtype=torch.float32,
             buffer_dtype=torch.float32,
             cast_forward_inputs=False,
         )
-    else:
-        mixed_precision_policy = None
 
     if wrap_strategy == "transformer":
         auto_wrap_policy = partial(

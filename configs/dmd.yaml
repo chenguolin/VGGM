@@ -16,6 +16,7 @@ train:
   gradient_accumulation_steps: 1
   sharding_strategy: "hybrid_full"
   wrap_strategy: "transformer"
+  mixed_precision: "bf16"
   epochs: 10
   log_freq: 1
   early_eval_freq: 20
