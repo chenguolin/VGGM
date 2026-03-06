@@ -43,6 +43,7 @@ class Options:
         ## Interal
     use_internal_dataset: bool = False
     num_clips: int = 1
+    random_num_clips: bool = True
         ## RealCamVid
     load_da3_cam: bool = True
     load_depth: bool = True

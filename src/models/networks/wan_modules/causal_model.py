@@ -197,7 +197,7 @@ class CausalWanSelfAttention(nn.Module):
         grid_sizes,
         freqs,
         #
-        block_mask,
+        block_mask=None,
         kv_cache=None,
         current_start=0,  # use with `kv_cache`
     ):
@@ -418,7 +418,7 @@ class CausalWanAttentionBlock(nn.Module):
         context,
         context_lens,
         #
-        block_mask,
+        block_mask=None,
         kv_cache=None,
         crossattn_cache=None,
         current_start=0,
@@ -614,7 +614,7 @@ class CausalWanModel(ModelMixin, ConfigMixin):
         self.use_gradient_checkpointing = False
         self.use_gradient_checkpointing_offload = False
 
-        self.block_mask = None
+        self.block_masks = {}
 
     @staticmethod
     def _prepare_teacher_forcing_mask(
@@ -695,8 +695,16 @@ class CausalWanModel(ModelMixin, ConfigMixin):
             sink_mask = (kv_idx <= sink_size * frame_seqlen) & ((q_idx < clean_ends) | (q_idx > clean_ends + chunk_size * frame_seqlen))
             return eye_mask | clean_mask | noise_mask | sink_mask
 
-        block_mask = create_block_mask(attention_mask, B=None, H=None, Q_LEN=total_length + padded_length,
-                                       KV_LEN=total_length + padded_length, _compile=True, device=device)
+        block_mask = create_block_mask(
+            attention_mask,
+            B=None,
+            H=None,
+            Q_LEN=total_length + padded_length,
+            KV_LEN=total_length + padded_length,
+            _compile=True,
+            device=device,
+            BLOCK_SIZE=128,  # `128`: block size for flexattention; TODO: make it configurable
+        )
 
         import torch.distributed as dist
         if not dist.is_initialized() or dist.get_rank() == 0:
@@ -896,12 +904,13 @@ class CausalWanModel(ModelMixin, ConfigMixin):
 
         # context
         context_lens = None
-        context = self.text_embedding(
-            torch.stack([
-                torch.cat(
-                    [u, u.new_zeros(self.text_len - u.size(0), u.size(1))])
-                for u in context
-            ]))
+        # context = self.text_embedding(
+        #     torch.stack([
+        #         torch.cat(
+        #             [u, u.new_zeros(self.text_len - u.size(0), u.size(1))])
+        #         for u in context
+        #     ]))
+        context = self.text_embedding(torch.stack(context))  # (B, L*num_clips, D')
 
         if clip_fea is not None:
             context_clip = self.img_emb(clip_fea)  # bs x 257 x dim
@@ -922,8 +931,6 @@ class CausalWanModel(ModelMixin, ConfigMixin):
             freqs=self.freqs,
             context=context,
             context_lens=context_lens,
-            #
-            block_mask=self.block_mask,
             #
             clip_query_lens=clip_query_lens,
             clip_context_lens=clip_context_lens,
@@ -1061,12 +1068,13 @@ class CausalWanModel(ModelMixin, ConfigMixin):
 
         # context
         context_lens = None
-        context = self.text_embedding(
-            torch.stack([
-                torch.cat(
-                    [u, u.new_zeros(self.text_len - u.size(0), u.size(1))])
-                for u in context
-            ]))
+        # context = self.text_embedding(
+        #     torch.stack([
+        #         torch.cat(
+        #             [u, u.new_zeros(self.text_len - u.size(0), u.size(1))])
+        #         for u in context
+        #     ]))
+        context = self.text_embedding(torch.stack(context))  # (B, L*num_clips, D')
 
         if clip_fea is not None:
             context_clip = self.img_emb(clip_fea)  # bs x 257 x dim
@@ -1097,9 +1105,11 @@ class CausalWanModel(ModelMixin, ConfigMixin):
                 clip_query_lens = torch.cat([clip_query_lens, clip_query_lens], dim=1)
 
         # Construct blockwise causal attn mask
-        if self.block_mask is None:
+        if f in self.block_masks:
+            block_mask = self.block_masks[f]
+        else:
             if clean_x is not None:
-                self.block_mask = self._prepare_teacher_forcing_mask(
+                self.block_masks[f] = self._prepare_teacher_forcing_mask(
                     device,
                     num_frames=f,
                     frame_seqlen=h * w // (self.patch_size[1] * self.patch_size[2]),
@@ -1108,7 +1118,7 @@ class CausalWanModel(ModelMixin, ConfigMixin):
                     max_attention_size=self.max_attention_size,
                 )
             else:
-                self.block_mask = self._prepare_blockwise_causal_attn_mask(
+                self.block_masks[f] = self._prepare_blockwise_causal_attn_mask(
                     device,
                     num_frames=f,
                     frame_seqlen=h * w // (self.patch_size[1] * self.patch_size[2]),
@@ -1116,6 +1126,7 @@ class CausalWanModel(ModelMixin, ConfigMixin):
                     chunk_size=self.chunk_size,
                     max_attention_size=self.max_attention_size,
                 )
+            block_mask = self.block_masks[f]
 
         # Sequence parallelism: chunk sequences across ranks
         sp_size = get_sp_world_size()
@@ -1133,7 +1144,7 @@ class CausalWanModel(ModelMixin, ConfigMixin):
             context=context,
             context_lens=context_lens,
             #
-            block_mask=self.block_mask,
+            block_mask=block_mask,
             #
             clip_query_lens=clip_query_lens,
             clip_context_lens=clip_context_lens,

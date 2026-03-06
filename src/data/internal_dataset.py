@@ -46,7 +46,8 @@ class InternalDataset(BaseDataset):
             # # Randomly sample num_clips from [1, `opt.num_clips`]
             max_num_clips = max(1, int(self.opt.num_clips))
             if self.training:
-                num_clips = np.random.randint(1, max_num_clips + 1)
+                num_clips = max_num_clips if not self.opt.random_num_clips else \
+                    np.random.randint(1, max_num_clips + 1)
             else:
                 num_clips = max_num_clips  # fixed to `max_num_clips` for evaluation
 
@@ -82,6 +83,10 @@ class InternalDataset(BaseDataset):
 
         # Calculate total frames based on actual `num_clips`
         total_frames = (self.opt.num_input_frames - 1) * num_clips + 1
+        if self.opt.is_causal:  # make sure video latents can be divided by the causal chunk size
+            total_frames_latent = 1 + (total_frames - 1) // self.opt.compression_ratio[0]
+            total_frames_latent = int(np.ceil(total_frames_latent / self.opt.chunk_size) * self.opt.chunk_size)
+            total_frames = 1 + (total_frames_latent - 1) * self.opt.compression_ratio[0]
 
         input_frame_idxs = self._frame_sample(
             num_frames,
