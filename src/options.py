@@ -331,8 +331,8 @@ opt_dict["wan2.1_t2v_1.3b_dmd"] = Options(
     # fake_wan_dir=f"{ROOT}/.cache/huggingface/hub/Wan-AI/Wan2.1-T2V-14B",
     #
     generator_path=f"{ROOT}/projects/VGGM/.pth",
-    # teacher_path=f"{ROOT}/projects/VGGM/.pth",
-    # fake_path=f"{ROOT}/projects/VGGM/.pth",
+    teacher_path=f"{ROOT}/projects/VGGM/.pth",
+    fake_path=f"{ROOT}/projects/VGGM/.pth",
     #
     is_teacher_causal=False,
     teacher_input_plucker=True,
