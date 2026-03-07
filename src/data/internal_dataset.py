@@ -43,16 +43,17 @@ class InternalDataset(BaseDataset):
                 all_captions = json.load(f)  # Dict[str, str]: clip_idx -> long caption
             dataset_source = "Internal"
 
-            # # Randomly sample num_clips from [1, `opt.num_clips`]
-            max_num_clips = max(1, int(self.opt.num_clips))
+            all_clip_idxs = sorted([int(k) for k in all_captions.keys()])
+            all_clip_idx_set = set(all_clip_idxs)
+
+            # Randomly sample num_clips from [1, `opt.num_clips`], but ensure all selected clips have captions
+            max_num_clips = min(max(1, int(self.opt.num_clips)), len(all_clip_idxs))
             if self.training:
                 num_clips = max_num_clips if not self.opt.random_num_clips else \
                     np.random.randint(1, max_num_clips + 1)
             else:
                 num_clips = max_num_clips  # fixed to `max_num_clips` for evaluation
 
-            all_clip_idxs = sorted([int(k) for k in all_captions.keys()])
-            all_clip_idx_set = set(all_clip_idxs)
             valid_start_clip_idxs = [
                 clip_idx for clip_idx in all_clip_idxs
                 if all((clip_idx + i) in all_clip_idx_set for i in range(num_clips))
