@@ -614,7 +614,7 @@ class CausalWanModel(ModelMixin, ConfigMixin):
         self.use_gradient_checkpointing = False
         self.use_gradient_checkpointing_offload = False
 
-        self.block_masks = {}
+        self.block_mask = None
 
     @staticmethod
     def _prepare_teacher_forcing_mask(
@@ -1105,28 +1105,24 @@ class CausalWanModel(ModelMixin, ConfigMixin):
                 clip_query_lens = torch.cat([clip_query_lens, clip_query_lens], dim=1)
 
         # Construct blockwise causal attn mask
-        if f in self.block_masks:
-            block_mask = self.block_masks[f]
+        if clean_x is not None:
+            self.block_mask = self._prepare_teacher_forcing_mask(
+                device,
+                num_frames=f,
+                frame_seqlen=h * w // (self.patch_size[1] * self.patch_size[2]),
+                sink_size=self.sink_size,
+                chunk_size=self.chunk_size,
+                max_attention_size=self.max_attention_size,
+            )
         else:
-            if clean_x is not None:
-                self.block_masks[f] = self._prepare_teacher_forcing_mask(
-                    device,
-                    num_frames=f,
-                    frame_seqlen=h * w // (self.patch_size[1] * self.patch_size[2]),
-                    sink_size=self.sink_size,
-                    chunk_size=self.chunk_size,
-                    max_attention_size=self.max_attention_size,
-                )
-            else:
-                self.block_masks[f] = self._prepare_blockwise_causal_attn_mask(
-                    device,
-                    num_frames=f,
-                    frame_seqlen=h * w // (self.patch_size[1] * self.patch_size[2]),
-                    sink_size=self.sink_size,
-                    chunk_size=self.chunk_size,
-                    max_attention_size=self.max_attention_size,
-                )
-            block_mask = self.block_masks[f]
+            self.block_mask = self._prepare_blockwise_causal_attn_mask(
+                device,
+                num_frames=f,
+                frame_seqlen=h * w // (self.patch_size[1] * self.patch_size[2]),
+                sink_size=self.sink_size,
+                chunk_size=self.chunk_size,
+                max_attention_size=self.max_attention_size,
+            )
 
         # Sequence parallelism: chunk sequences across ranks
         sp_size = get_sp_world_size()
@@ -1144,7 +1140,7 @@ class CausalWanModel(ModelMixin, ConfigMixin):
             context=context,
             context_lens=context_lens,
             #
-            block_mask=block_mask,
+            block_mask=self.block_mask,
             #
             clip_query_lens=clip_query_lens,
             clip_context_lens=clip_context_lens,
