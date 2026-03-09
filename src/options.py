@@ -264,7 +264,12 @@ opt_dict["wan2.1_t2v_1.3b"] = Options(
 
 # Diffusion/Teacher Forcing
 opt_dict["wan2.1_t2v_1.3b_causal"] = Options(
-    # sp_size=2,
+    # use_internal_dataset=True,
+    #
+    # input_res=(480, 832),
+    #
+    num_clips=1,
+    sp_size=1,
     #
     load_da3=False,  # True
     da3_interactive=False,
@@ -297,7 +302,13 @@ opt_dict["wan2.1_t2v_1.3b_causal"] = Options(
 
 # Self-Forcing DMD
 opt_dict["wan2.1_t2v_1.3b_dmd"] = Options(
-    # sp_size=8,
+    # use_internal_dataset=True,
+    #
+    # input_res=(480, 832),
+    #
+    num_clips=1,
+    max_kvcache_size=21,
+    sp_size=1,
     #
     only_static_data=False,
     use_vidprom=True,
