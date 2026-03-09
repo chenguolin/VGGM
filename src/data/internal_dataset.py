@@ -82,8 +82,8 @@ class InternalDataset(BaseDataset):
         start_frame_idx = int(round((clip_idxs[0] - 1) * 5 * fps)) - 12 * (clip_idxs[0] - 1)
         end_frame_idx = int(round((clip_idxs[-1] - 1) * 5 * fps)) - 12 * (clip_idxs[-1] - 1) + int(round(5 * fps))
 
-        # Calculate total frames based on `self.opt.num_clips`
-        total_frames = (self.opt.num_input_frames - 1) * self.opt.num_clips + 1
+        # Calculate total frames based on `num_clips`
+        total_frames = (self.opt.num_input_frames - 1) * num_clips + 1
         if self.opt.is_causal:  # make sure video latents can be divided by the causal chunk size
             total_frames_latent = 1 + (total_frames - 1) // self.opt.compression_ratio[0]
             total_frames_latent = int(np.ceil(total_frames_latent / self.opt.chunk_size) * self.opt.chunk_size)
