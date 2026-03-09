@@ -1583,8 +1583,8 @@ class Wan(nn.Module):
         if not isinstance(prompts[0], list):  # one-clip
             return data, None
 
-        # Support dynamic num_clips: only check batch_size=1, not the exact num_clips
-        assert len(prompts) == 1 and len(prompts[0]) <= self.opt.num_clips  # only support batch_size=1 for multi-clip inputs
+        # Support dynamic num_clips: only support batch_size=1
+        assert len(prompts) == 1 and len(prompts[0]) <= self.opt.num_clips
 
         new_data = dict(data)
         clip_frame_lens = []
@@ -1594,9 +1594,6 @@ class Wan(nn.Module):
             value = data[key]  # a list (batch) of tuple (clip)
             clip_frame_lens = [[clip.shape[0] for clip in sample] for sample in value]
             new_data[key] = torch.stack([torch.cat(sample, dim=0) for sample in value], dim=0)  # (B=1, sum(F_clip), ...)
-
-        if len(clip_frame_lens) == 0:
-            return new_data, None
 
         clip_frame_lens = torch.tensor(clip_frame_lens, dtype=torch.long)  # (B=1, num_clips)
         clip_latent_lens = []
