@@ -7,6 +7,7 @@
     ## 6. Support RIFLEx RoPE
     ## 7. Support multi-clip cross attention
     ## 8. Support sequence parallelism
+    ## 9. Support `return_feat_layer_idx`
 
 from typing import *
 from numpy import ndarray
@@ -828,6 +829,8 @@ class WanModel(ModelMixin, ConfigMixin):
         clip_query_lens: Optional[Tensor] = None,
         clip_context_lens: Optional[Tensor] = None,
         #
+        return_feat_layer_idx: Optional[int] = None,
+        #
         **kwargs  # to compatible with causal models
     ):
         r"""
@@ -928,7 +931,8 @@ class WanModel(ModelMixin, ConfigMixin):
                 return module(*inputs, **kwargs)
             return custom_forward
 
-        for block in self.blocks:
+        inter_feats = None
+        for block_index, block in enumerate(self.blocks):
 
             if self.training and self.use_gradient_checkpointing_offload:
                 with torch.autograd.graph.save_on_cpu():
@@ -948,16 +952,27 @@ class WanModel(ModelMixin, ConfigMixin):
             else:
                 x = block(x, **kwargs)
 
+            if return_feat_layer_idx is not None and (
+                block_index == return_feat_layer_idx or
+                block_index == int(return_feat_layer_idx * len(self.blocks))
+            ):
+                inter_feats = x.clone()
+
         # Sequence parallelism: gather sequences before head
         if sp_size > 1:
             x = all_gather(x, dim=1)
+            if inter_feats is not None:
+                inter_feats = all_gather(inter_feats, dim=1)
 
         # head
         x = self.head(x, e.unflatten(0, (bt, seq_len)))
 
         # unpatchify
         x = self.unpatchify(x, grid_sizes)
-        return [u.float() for u in x]
+        if inter_feats is None:
+            return [u.float() for u in x]
+        else:
+            return [u.float() for u in x], [v.float() for v in inter_feats]
 
     def unpatchify(self, x, grid_sizes):
         r"""

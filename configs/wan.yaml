@@ -13,7 +13,7 @@ lr_scheduler:
   num_warmup_steps: 1000
 
 train:
-  batch_size_per_gpu: 2
+  batch_size_per_gpu: 1
   gradient_accumulation_steps: 1
   sharding_strategy: "hybrid_full"
   wrap_strategy: "transformer"
@@ -22,8 +22,8 @@ train:
   log_freq: 1
   early_eval_freq: 100
   early_eval: 1000
-  eval_freq: 500
-  save_freq: 2000
+  eval_freq: 200
+  save_freq: 1000
   eval_freq_epoch: 5
   save_freq_epoch: 10
   use_ema: true

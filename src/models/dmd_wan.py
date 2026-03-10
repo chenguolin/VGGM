@@ -13,6 +13,7 @@ from src.options import Options
 from src.models.networks import WanDiffusionWrapper, WanVAEWrapper
 from src.models.wan import Wan
 from src.models.pipelines.self_forcing_training import SelfForcingTrainingPipeline
+from src.utils.ema import EMAParams
 from src.utils import plucker_ray, colorize_depth, filter_da3_points, render_pt3d_points, mv_interpolate
 
 
@@ -112,7 +113,14 @@ class DMD_Wan(Wan):
                 if not _flag:
                     param.requires_grad_(False)
 
-    def compute_loss(self, data: Dict[str, Any], dtype: torch.dtype = torch.float32, train_generator: bool = True, is_eval: bool = False, vae: Optional[WanVAEWrapper] = None):
+    def compute_loss(self,
+        data: Dict[str, Any],
+        dtype: torch.dtype = torch.float32,
+        train_generator: bool = True,
+        is_eval: bool = False,
+        vae: Optional[WanVAEWrapper] = None,
+        ema_params: Optional[EMAParams] = None,
+    ):
         outputs = {}
         device = self.diffusion.model.device
 

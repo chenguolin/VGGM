@@ -182,11 +182,17 @@ class Options:
     sp_size: int = 1
         ## Losses
     diffusion_loss_prob: float = 0.
+            ### DA3 losses
     conf_alpha: float = 0.2
     gradient_loss_scale: int = 4
     xyz_loss_threshold: float = 10.
     depth_loss_threshold: float = 10.
     camera_loss_threshold: float = 10.
+            ### Self-supervised loss
+    self_supervised_loss_weight: float = 0.
+    student_layer_idx: Optional[int] = None
+    teacher_layer_idx: Optional[int] = None
+    self_supervised_mask_ratio: float = 0.1
         ## LR scheduler
     name_lr_mult: Optional[str] = None
     exclude_name_lr_mult: Optional[str] = None
@@ -249,8 +255,8 @@ opt_dict["wan2.1_t2v_1.3b"] = Options(
     #
     # input_res=(480, 832),
     #
-    # num_clips=3,
-    # sp_size=8,
+    num_clips=1,
+    sp_size=1,
     #
     # wan_dir=f"{ROOT}/.cache/huggingface/hub/Wan-AI/Wan2.1-T2V-14B",
     # generator_path=f"{ROOT}/projects/VGGM/.pth",

@@ -474,9 +474,9 @@ def main():
 
             if opt.use_dmd:
                 train_generator = global_update_step % opt.generator_train_every == 0
-                outputs = model(batch, dtype=dtype, train_generator=train_generator, is_eval=is_eval, vae=vae)
+                outputs = model(batch, dtype=dtype, train_generator=train_generator, is_eval=is_eval, vae=vae, ema_params=ema_params)
             else:
-                outputs = model(batch, dtype=dtype, is_eval=is_eval, vae=vae)
+                outputs = model(batch, dtype=dtype, is_eval=is_eval, vae=vae, ema_params=ema_params)
 
             loss = outputs["loss"]
 
@@ -489,6 +489,7 @@ def main():
             ray_loss = outputs["ray_loss"] if "ray_loss" in outputs else None
             camera_loss = outputs["camera_loss"] if "camera_loss" in outputs else None
             render_loss = outputs["render_loss"] if "render_loss" in outputs else None
+            ss_loss = outputs["ss_loss"] if "ss_loss" in outputs else None
 
             # Backpropagate
             loss.backward()
@@ -547,6 +548,8 @@ def main():
                 logs.update({"camera": camera_loss.item()})
             if render_loss is not None:
                 logs.update({"render": render_loss.item()})
+            if ss_loss is not None:
+                logs.update({"ss": ss_loss.item()})
 
             progress_bar.set_postfix(**logs)
             progress_bar.update(1)
@@ -597,6 +600,10 @@ def main():
                     if render_loss is not None:
                         wandb.log({
                             "training/render_loss": render_loss.item()
+                        }, step=global_update_step)
+                    if ss_loss is not None:
+                        wandb.log({
+                            "training/ss_loss": ss_loss.item()
                         }, step=global_update_step)
 
             # Save checkpoint
