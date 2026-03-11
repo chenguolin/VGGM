@@ -115,6 +115,8 @@ class Options:
     rand_pcrender_ratio: float = 1.
     min_num_points: int = 1000
     max_num_points: int = 100000
+        ## DDT
+    use_ddt: bool = False
         ## Causal
     is_causal: bool = False
     sink_size: int = 0
@@ -190,8 +192,8 @@ class Options:
     camera_loss_threshold: float = 10.
             ### Self-supervised loss
     self_supervised_loss_weight: float = 0.
-    student_layer_idx: Optional[int] = None
-    teacher_layer_idx: Optional[int] = None
+    student_layer_idx: Optional[Union[int, float]] = None  # int: block index; float: ratio in [0,1]
+    teacher_layer_idx: Optional[Union[int, float]] = None  # int: block index; float: ratio in [0,1]
     self_supervised_mask_ratio: float = 0.1
         ## LR scheduler
     name_lr_mult: Optional[str] = None

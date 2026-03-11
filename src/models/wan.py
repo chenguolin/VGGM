@@ -109,6 +109,8 @@ class Wan(nn.Module):
                 rope_outside=opt.rope_outside,
                 #
                 feat_proj=opt.self_supervised_loss_weight > 0.,
+                use_ddt=opt.use_ddt,
+                ddt_num_layers=opt.ddt_num_layers,
             )
         else:
             self.diffusion = WanDiffusionDA3Wrapper(
@@ -130,8 +132,6 @@ class Wan(nn.Module):
                 chunk_size=opt.chunk_size,
                 max_attention_size=opt.max_attention_size,
                 rope_outside=opt.rope_outside,
-                #
-                feat_proj=opt.self_supervised_loss_weight > 0.,
                 #
                 da3_model_name=opt.da3_model_name,
                 da3_chunk_size=opt.da3_chunk_size,

@@ -1,6 +1,7 @@
 __pycache__/
 .vscode/
 .claude/
+.cursor/
 build/
 *.egg-info/
 dump/

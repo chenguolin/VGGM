@@ -8,6 +8,7 @@
     ## 7. Support multi-clip cross attention
     ## 8. Support sequence parallelism
     ## 9. Support `return_feat_layer_idx`
+    ## 10. Support `not_head_and_unpatchify` and `return_ddt_inputs` for DDT
 
 from typing import *
 from numpy import ndarray
@@ -830,6 +831,8 @@ class WanModel(ModelMixin, ConfigMixin):
         clip_context_lens: Optional[Tensor] = None,
         #
         return_feat_layer_idx: Optional[int] = None,
+        not_head_and_unpatchify: bool = False,
+        return_ddt_inputs: bool = False,
         #
         **kwargs  # to compatible with causal models
     ):
@@ -906,6 +909,13 @@ class WanModel(ModelMixin, ConfigMixin):
             context_clip = self.img_emb(clip_fea)  # bs x 257 (x2) x dim
             context = torch.concat([context_clip, context], dim=1)
 
+        ddt_inputs = dict(
+            e=e,
+            context=context,
+            grid_sizes=grid_sizes,
+            seq_lens=seq_lens,
+        )
+
         # Sequence parallelism: chunk sequences across ranks
         sp_size = get_sp_world_size()
         if sp_size > 1:
@@ -964,15 +974,21 @@ class WanModel(ModelMixin, ConfigMixin):
             if inter_feats is not None:
                 inter_feats = all_gather(inter_feats, dim=1)
 
-        # head
-        x = self.head(x, e.unflatten(0, (bt, seq_len)))
+        # head & unpatchify
+        if not not_head_and_unpatchify:  # (B, N, D) -> (B, C, f, h, w)
+            x = self.head(x, e.unflatten(0, (bt, seq_len)))
+            x = self.unpatchify(x, grid_sizes)
 
-        # unpatchify
-        x = self.unpatchify(x, grid_sizes)
-        if inter_feats is None:
-            return [u.float() for u in x]
+        if return_ddt_inputs:
+            if inter_feats is None:
+                return [u.float() for u in x], ddt_inputs
+            else:
+                return [u.float() for u in x], [v.float() for v in inter_feats], ddt_inputs
         else:
-            return [u.float() for u in x], [v.float() for v in inter_feats]
+            if inter_feats is None:
+                return [u.float() for u in x]
+            else:
+                return [u.float() for u in x], [v.float() for v in inter_feats]
 
     def unpatchify(self, x, grid_sizes):
         r"""

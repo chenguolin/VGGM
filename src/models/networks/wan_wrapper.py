@@ -19,6 +19,7 @@ from .wan_modules.causal_model import CausalWanModel
 from .scheduler import FlowMatchScheduler
 
 from .wan_modules.model import sinusoidal_embedding_1d
+from .ddt import DDT
 from src.utils import zero_init_module, inverse_c2w, fxfycxcy_to_intrinsics
 from src.utils.distributed import get_sp_world_size, all_gather, all_split, sync_across_sp_group
 
@@ -151,6 +152,8 @@ class WanDiffusionWrapper(nn.Module):
         rope_outside: bool = False,
         #
         feat_proj: bool = False,
+        use_ddt: bool = False,
+        ddt_num_layers: int = 8,
         #
         **kwargs,  # for compatibility
     ):
@@ -190,6 +193,25 @@ class WanDiffusionWrapper(nn.Module):
                 nn.SiLU(),
                 nn.Linear(self.model.dim + self.model.dim, self.model.dim),
             )
+
+        # (Optional) DDT
+        self.use_ddt = use_ddt
+        if use_ddt:
+            self.ddt = DDT(
+                model_type=self.model.model_type,
+                patch_size=self.model.patch_size,
+                dim=self.model.dim,
+                ffn_dim=self.model.ffn_dim,
+                out_dim=self.model.out_dim,
+                num_heads=self.model.num_heads,
+                num_layers=ddt_num_layers,  # the only difference from `self.model`
+                window_size=self.model.window_size,
+                qk_norm=self.model.qk_norm,
+                cross_attn_norm=self.model.cross_attn_norm,
+                eps=self.model.eps,
+            )
+            ## Initialize `self.ddt.head` with weights from `self.model.head`
+            self.ddt.head.load_state_dict(self.model.head.state_dict())
 
         self.scheduler = FlowMatchScheduler(
             num_train_timesteps=num_train_timesteps,
@@ -295,6 +317,8 @@ class WanDiffusionWrapper(nn.Module):
                 clip_context_lens=clip_context_lens,
                 #
                 return_feat_layer_idx=return_feat_layer_idx,
+                not_head_and_unpatchify=self.use_ddt,
+                return_ddt_inputs=self.use_ddt,
             )
 
         else:
@@ -317,6 +341,8 @@ class WanDiffusionWrapper(nn.Module):
                     clip_context_lens=clip_context_lens,
                     #
                     return_feat_layer_idx=return_feat_layer_idx,
+                    not_head_and_unpatchify=self.use_ddt,
+                    return_ddt_inputs=self.use_ddt,
                 )
             else:
                 model_outputs = self.model(
@@ -334,15 +360,39 @@ class WanDiffusionWrapper(nn.Module):
                     clip_context_lens=clip_context_lens,
                     #
                     return_feat_layer_idx=return_feat_layer_idx,
+                    not_head_and_unpatchify=self.use_ddt,
+                    return_ddt_inputs=self.use_ddt,
                 )
 
-        if return_feat_layer_idx is not None:
-            model_outputs, inter_feats = model_outputs
-            inter_feats = torch.stack(inter_feats, dim=0).to(noisy_latents.dtype)  # (B, N, D)
-            assert self.feat_proj
-            inter_feats = self.feat_proj_layer(inter_feats)  # (B, N, D) -> (B, N, D)
+        if self.use_ddt:
+            if return_feat_layer_idx is not None:
+                model_outputs, inter_feats, ddt_inputs = model_outputs
+                inter_feats = torch.stack(inter_feats, dim=0).to(noisy_latents.dtype)  # (B, N, D)
+                assert self.feat_proj
+                inter_feats = self.feat_proj_layer(inter_feats)  # (B, N, D) -> (B, N, D)
+            else:
+                model_outputs, ddt_inputs = model_outputs
+        else:
+            if return_feat_layer_idx is not None:
+                model_outputs, inter_feats = model_outputs
+                inter_feats = torch.stack(inter_feats, dim=0).to(noisy_latents.dtype)  # (B, N, D)
+                assert self.feat_proj
+                inter_feats = self.feat_proj_layer(inter_feats)  # (B, N, D) -> (B, N, D)
 
-        model_outputs = torch.stack(model_outputs, dim=0)  # (B, D, f, h, w)
+        model_outputs = torch.stack(model_outputs, dim=0)  # (B, D, f, h, w) or (B, N, D) if `not_head_and_unpatchify`
+
+        if self.use_ddt:
+            assert ddt_inputs is not None
+            model_outputs = torch.stack(self.ddt(
+                x=model_outputs.to(noisy_latents.dtype),  # (B, N, D)
+                e=ddt_inputs["e"],
+                context=ddt_inputs["context"],
+                grid_sizes=ddt_inputs["grid_sizes"],
+                seq_lens=ddt_inputs["seq_lens"],
+                clip_query_lens=clip_query_lens,
+                clip_context_lens=clip_context_lens,
+            ), dim=0)  # (B, D, f, h, w)
+
         if return_feat_layer_idx is None:
             return model_outputs
         else:
@@ -409,8 +459,6 @@ class WanDiffusionDA3Wrapper(nn.Module):
         max_attention_size: int = 32760,  # 81 x 480 x 832 -> 21 x 30 x 52
         rope_outside: bool = False,
         #
-        feat_proj: bool = False,
-        #
         da3_model_name: str = "da3-large-1.1",
         da3_chunk_size: int = 8,
         da3_down_ratio: int = 1,
@@ -446,15 +494,6 @@ class WanDiffusionDA3Wrapper(nn.Module):
         if extra_condition_dim > 0:
             self.extra_condition_embed = nn.Conv2d(extra_condition_dim, self.model.dim, kernel_size=16, stride=16)  # `16`: hard-coded for Wan2.1
             zero_init_module(self.extra_condition_embed)
-
-        # (Optional) Feature projection
-        self.feat_proj = feat_proj
-        if feat_proj:
-            self.feat_proj_layer = nn.Sequential(
-                nn.Linear(self.model.dim, self.model.dim + self.model.dim),
-                nn.SiLU(),
-                nn.Linear(self.model.dim + self.model.dim, self.model.dim),
-            )
 
         self.scheduler = FlowMatchScheduler(
             num_train_timesteps=num_train_timesteps,
@@ -524,12 +563,7 @@ class WanDiffusionDA3Wrapper(nn.Module):
         aug_t: Optional[Tensor] = None,
         #
         clip_latent_lens: Optional[Tensor] = None,  # (B=1, num_clips); for multi-clip generation
-        #
-        return_feat_layer_idx: Optional[int] = None,
     ):
-        if return_feat_layer_idx is not None:
-            raise NotImplementedError  # TODO
-
         B, (f, h, w) = noisy_latents.shape[0], noisy_latents.shape[2:]
         tff = 2 * f if self.is_causal and clean_x is not None else f
         if timesteps.dim() == 1:
