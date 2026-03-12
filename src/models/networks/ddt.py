@@ -15,19 +15,21 @@ class DDT(nn.Module):
     Modified from `WanModel` in `wan_modules.model`.
     """
     def __init__(self,
-                 model_type='t2v',
-                 patch_size=(1, 2, 2),
-                 dim=2048,
-                 ffn_dim=8192,
-                 out_dim=16,
-                 num_heads=16,
-                 num_layers=32,
-                 window_size=(-1, -1),
-                 #
-                 qk_norm=True,
-                 cross_attn_norm=True,
-                 eps=1e-6):
-
+        model_type='t2v',
+        patch_size=(1, 2, 2),
+        dim=2048,
+        ffn_dim=8192,
+        out_dim=16,
+        num_heads=16,
+        num_layers=32,
+        window_size=(-1, -1),
+        #
+        qk_norm=True,
+        cross_attn_norm=True,
+        eps=1e-6,
+        #
+        ddt_fusion=False,
+    ):
         super().__init__()
 
         assert model_type in ['t2v', 'i2v']
@@ -44,6 +46,11 @@ class DDT(nn.Module):
         self.qk_norm = qk_norm
         self.cross_attn_norm = cross_attn_norm
         self.eps = eps
+
+        # fusion
+        self.ddt_fusion = ddt_fusion
+        if ddt_fusion:
+            self.fusion_layer = nn.Linear(2 * dim, dim)
 
         # embeddings
         self.time_projection = nn.Sequential(nn.SiLU(), nn.Linear(dim, dim * 6))
@@ -78,6 +85,7 @@ class DDT(nn.Module):
 
     def forward(self,
         x,
+        v,
         e,
         context,
         grid_sizes,
@@ -90,6 +98,10 @@ class DDT(nn.Module):
         device = x.device
         if self.freqs.device != device:
             self.freqs = self.freqs.to(device)
+
+        # fusion
+        if self.ddt_fusion:
+            x = self.fusion_layer(torch.cat([x, v], dim=-1))
 
         # time embeddings
         bt = x.size(0)
@@ -178,12 +190,14 @@ class DDT(nn.Module):
             out.append(u)
         return out
 
+    @torch.no_grad()
     def init_weights(self):
         r"""
         Initialize model parameters using Xavier or zero initialization.
 
-        Zero-init strategy ensures DDT is identity at initialization:
-            - `time_projection` zero -> e0 = 0 -> `e[2]` and `e[5]` gate self-attn/FFN to zero
+        Zero-init and identity-init strategy ensures DDT is identity at initialization:
+            - `fusion_layer` identity-init -> `fusion_layer(cat([x, v])) = v` -> `x = v`
+            - `time_projection` zero -> `e0 = 0` -> `e[2]` and `e[5]` gate self-attn/FFN to zero
             - `block.modulation` zero -> same gating effect
             - `cross_attn.o` zero -> cross-attention output is zero (not gated by modulation)
         """
@@ -194,6 +208,12 @@ class DDT(nn.Module):
                 nn.init.xavier_uniform_(m.weight)
                 if m.bias is not None:
                     nn.init.zeros_(m.bias)
+
+        # fusion layer: identity-init
+        if self.ddt_fusion:
+            nn.init.zeros_(self.fusion_layer.weight)
+            nn.init.zeros_(self.fusion_layer.bias)
+            self.fusion_layer.weight[:, self.dim:].copy_(torch.eye(self.dim))
 
         # time modulation: zero-init
         for m in self.time_projection.modules():

@@ -111,6 +111,7 @@ class Wan(nn.Module):
                 feat_proj=opt.self_supervised_loss_weight > 0.,
                 use_ddt=opt.use_ddt,
                 ddt_num_layers=opt.ddt_num_layers,
+                ddt_fusion=opt.ddt_fusion,
             )
         else:
             self.diffusion = WanDiffusionDA3Wrapper(

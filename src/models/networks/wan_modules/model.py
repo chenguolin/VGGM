@@ -910,6 +910,7 @@ class WanModel(ModelMixin, ConfigMixin):
             context = torch.concat([context_clip, context], dim=1)
 
         ddt_inputs = dict(
+            x=x.clone(),
             e=e,
             context=context,
             grid_sizes=grid_sizes,

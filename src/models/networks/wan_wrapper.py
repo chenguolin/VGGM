@@ -154,6 +154,7 @@ class WanDiffusionWrapper(nn.Module):
         feat_proj: bool = False,
         use_ddt: bool = False,
         ddt_num_layers: int = 8,
+        ddt_fusion: bool = False,
         #
         **kwargs,  # for compatibility
     ):
@@ -209,6 +210,8 @@ class WanDiffusionWrapper(nn.Module):
                 qk_norm=self.model.qk_norm,
                 cross_attn_norm=self.model.cross_attn_norm,
                 eps=self.model.eps,
+                #
+                ddt_fusion=ddt_fusion,  # specifically for DDT
             )
             ## Initialize `self.ddt.head` with weights from `self.model.head`
             self.ddt.head.load_state_dict(self.model.head.state_dict())
@@ -384,7 +387,8 @@ class WanDiffusionWrapper(nn.Module):
         if self.use_ddt:
             assert ddt_inputs is not None
             model_outputs = torch.stack(self.ddt(
-                x=model_outputs.to(noisy_latents.dtype),  # (B, N, D)
+                x=ddt_inputs["x"],
+                v=model_outputs.to(noisy_latents.dtype),  # (B, N, D)
                 e=ddt_inputs["e"],
                 context=ddt_inputs["context"],
                 grid_sizes=ddt_inputs["grid_sizes"],

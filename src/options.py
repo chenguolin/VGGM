@@ -118,6 +118,7 @@ class Options:
         ## DDT
     use_ddt: bool = False
     ddt_num_layers: int = 8
+    ddt_fusion: bool = False
         ## Causal
     is_causal: bool = False
     sink_size: int = 0

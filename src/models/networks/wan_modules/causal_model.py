@@ -921,6 +921,7 @@ class CausalWanModel(ModelMixin, ConfigMixin):
             context = torch.concat([context_clip, context], dim=1)
 
         ddt_inputs = dict(
+            x=x.clone(),
             e=e,
             context=context,
             grid_sizes=grid_sizes,
@@ -1159,14 +1160,14 @@ class CausalWanModel(ModelMixin, ConfigMixin):
                 )
 
         ddt_inputs = dict(
-            e=e,
+            x=x.clone(),
+            e=torch.cat([e_clean, e], dim=1) \
+                if clean_x is not None else e,
             context=context,
             grid_sizes=grid_sizes,
             seq_lens=seq_lens,
             block_mask=self.block_mask,
         )
-        if clean_x is not None:
-            ddt_inputs["e_clean"] = e_clean
 
         # Sequence parallelism: chunk sequences across ranks
         sp_size = get_sp_world_size()
