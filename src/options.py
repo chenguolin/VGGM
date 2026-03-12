@@ -117,7 +117,7 @@ class Options:
     max_num_points: int = 100000
         ## DDT
     use_ddt: bool = False
-    ddt_num_layers: int = 4
+    ddt_num_layers: int | float = 0.1  # int: number of layers; float: ratio in [0,1]
     ddt_fusion: bool = True
         ## Causal
     is_causal: bool = False
@@ -194,8 +194,8 @@ class Options:
     camera_loss_threshold: float = 10.
             ### Self-supervised loss
     self_supervised_loss_weight: float = 0.
-    student_layer_idx: Optional[Union[int, float]] = None  # int: block index; float: ratio in [0,1]
-    teacher_layer_idx: Optional[Union[int, float]] = None  # int: block index; float: ratio in [0,1]
+    student_layer_idx: Optional[int | float] = None  # int: block index; float: ratio in [0,1]
+    teacher_layer_idx: Optional[int | float] = None  # int: block index; float: ratio in [0,1]
     self_supervised_mask_ratio: float = 0.1
         ## LR scheduler
     name_lr_mult: Optional[str] = None
