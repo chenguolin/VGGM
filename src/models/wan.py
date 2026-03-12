@@ -16,7 +16,7 @@ from lpips import LPIPS
 from depth_anything_3.model.utils.transform import mat_to_quat
 
 from src.options import Options, ROOT
-from src.models.networks import (
+from src.models.modules import (
     WanTextEncoderWrapper,
     WanVAEWrapper,
     WanDiffusionWrapper,
@@ -24,7 +24,7 @@ from src.models.networks import (
     VAEDecoderWrapper,
     TAEHV,
 )
-from src.models.networks.decoder_wrapper import ZERO_VAE_CACHE_512, ZERO_VAE_CACHE
+from src.models.modules.decoder_wrapper import ZERO_VAE_CACHE_512, ZERO_VAE_CACHE
 from src.models.losses import XYZLoss, DepthLoss, CameraLoss
 from src.utils.ema import EMAParams
 from src.utils import convert_to_buffer, plucker_ray, colorize_depth, filter_da3_points, render_pt3d_points, mv_interpolate

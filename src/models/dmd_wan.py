@@ -10,7 +10,7 @@ from peft import LoraConfig, inject_adapter_in_model
 from depth_anything_3.model.utils.transform import mat_to_quat
 
 from src.options import Options
-from src.models.networks import WanDiffusionWrapper, WanVAEWrapper
+from src.models.modules import WanDiffusionWrapper, WanVAEWrapper
 from src.models.wan import Wan
 from src.models.pipelines.self_forcing_training import SelfForcingTrainingPipeline
 from src.utils.ema import EMAParams
