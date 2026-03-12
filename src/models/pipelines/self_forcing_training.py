@@ -1,7 +1,7 @@
 from typing import *
 from torch import Tensor
 from src.models.wan import WanDiffusionWrapper, WanDiffusionDA3Wrapper
-from src.models.networks import VAEDecoderWrapper, TAEHV
+from src.models.modules import VAEDecoderWrapper, TAEHV
 
 import torch
 import torch.distributed as dist
@@ -10,7 +10,7 @@ import torch.nn.functional as tF
 from depth_anything_3.model.utils.transform import mat_to_quat
 
 from src.options import Options
-from src.models.networks.decoder_wrapper import ZERO_VAE_CACHE_512, ZERO_VAE_CACHE
+from src.models.modules.decoder_wrapper import ZERO_VAE_CACHE_512, ZERO_VAE_CACHE
 from src.models.losses import XYZLoss, CameraLoss
 from src.utils import plucker_ray, filter_da3_points, render_pt3d_points, mv_interpolate
 from src.utils.distributed import get_sp_world_size

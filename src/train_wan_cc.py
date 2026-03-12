@@ -22,7 +22,7 @@ import torch.distributed as dist
 import sys; sys.path.append(os.path.join(os.path.dirname(__file__), ".."))  # for src modules
 from src.options import opt_dict, ROOT
 from src.data import *  # import all dataset classes and `yield_forever`
-from src.models.networks import WanVAEWrapper
+from src.models.modules import WanVAEWrapper
 from src.models import Wan, DMD_Wan, get_optimizer, get_lr_scheduler
 import src.utils.util as util
 import src.utils.vis_util as vis_util
@@ -284,9 +284,9 @@ def main():
 
     # FSDP wrap
     if args.wrap_strategy == "transformer":
-        from src.models.networks.wan_modules.t5 import T5Attention
-        from src.models.networks.wan_modules.model import WanAttentionBlock
-        from src.models.networks.wan_modules.causal_model import CausalWanAttentionBlock
+        from src.models.modules.wan_modules.t5 import T5Attention
+        from src.models.modules.wan_modules.model import WanAttentionBlock
+        from src.models.modules.wan_modules.causal_model import CausalWanAttentionBlock
         transformer_blocks = {T5Attention, WanAttentionBlock, CausalWanAttentionBlock}
         if opt.load_da3:
             from depth_anything_3.model.dinov2.layers.block import Block
