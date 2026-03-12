@@ -117,8 +117,8 @@ class Options:
     max_num_points: int = 100000
         ## DDT
     use_ddt: bool = False
-    ddt_num_layers: int = 8
-    ddt_fusion: bool = False
+    ddt_num_layers: int = 4
+    ddt_fusion: bool = True
         ## Causal
     is_causal: bool = False
     sink_size: int = 0
