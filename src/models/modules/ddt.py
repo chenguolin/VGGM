@@ -5,7 +5,7 @@ import math
 import torch
 from torch import nn
 
-from src.models.networks.wan_modules.model import Head, WanAttentionBlock, rope_params
+from .wan_modules.model import Head, WanAttentionBlock, rope_params
 from src.utils.distributed import get_sp_world_size, all_gather, all_split, sync_across_sp_group
 
 

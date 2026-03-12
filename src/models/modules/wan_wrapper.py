@@ -215,6 +215,7 @@ class WanDiffusionWrapper(nn.Module):
             )
             ## Initialize `self.ddt.head` with weights from `self.model.head`
             self.ddt.head.load_state_dict(self.model.head.state_dict())
+            self.model.head = None  # replace the original head by the DDT head
 
         self.scheduler = FlowMatchScheduler(
             num_train_timesteps=num_train_timesteps,
