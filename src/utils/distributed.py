@@ -385,6 +385,7 @@ class _AllSplit(torch.autograd.Function):
             return grad_output, None, None
 
         # Backward: all_gather to collect gradients from all ranks
+        grad_output = grad_output.contiguous()
         tensor_list = [torch.empty_like(grad_output) for _ in range(ctx.world_size)]
         dist.all_gather(tensor_list, grad_output, group=ctx.group)
         grad_input = torch.cat(tensor_list, dim=ctx.dim).contiguous()
