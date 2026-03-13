@@ -27,7 +27,7 @@ train:
   eval_freq_epoch: 5
   save_freq_epoch: 10
   use_ema: true
-  ema_weight: 0.9999
+  ema_weight: 0.999
   ema_start_step: 0
 
 val:
