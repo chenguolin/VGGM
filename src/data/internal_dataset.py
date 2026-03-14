@@ -14,12 +14,25 @@ class InternalDataset(BaseDataset):
     def __init__(self, opt: Options, training: bool = True):
         super().__init__(opt, "internal", training)
 
-        uids = os.listdir(f"{self.root}/valid_captions")
-        indices = np.random.RandomState(seed=42).permutation(len(uids))
-        if training:
-            self.uids = [uids[i].strip(".json") for i in indices[:int(0.95 * len(uids))]]
+        if self.opt.version_2s35w:
+            with open(f"{self.root}/valid_captions_2s35w.jsonl", "r", encoding="utf-8") as f:
+                data = [json.loads(line) for line in f]
+            self.caption_data = {item["raw_id"]: item["long_caption"] for item in data}
+            uids = list(self.caption_data.keys())
         else:
-            self.uids = [uids[i].strip(".json") for i in indices[int(0.95 * len(uids)):]]
+            uids = os.listdir(f"{self.root}/valid_captions")
+
+        indices = np.random.RandomState(seed=42).permutation(len(uids))
+        if self.opt.version_2s35w:
+            if training:
+                self.uids = [uids[i] for i in indices[:int(0.95 * len(uids))]]
+            else:
+                self.uids = [uids[i] for i in indices[int(0.95 * len(uids)):]]
+        else:
+            if training:
+                self.uids = [uids[i].strip(".json") for i in indices[:int(0.95 * len(uids))]]
+            else:
+                self.uids = [uids[i].strip(".json") for i in indices[int(0.95 * len(uids)):]]
 
         self.valid_idxs = list(range(len(self.uids)))
 
@@ -28,11 +41,17 @@ class InternalDataset(BaseDataset):
 
     def __getitem__(self, idx: int) -> Dict[str, Any]:
         uid = self.uids[idx]
-        with open(f"{self.root}/valid_captions/{uid}.json", "r", encoding="utf-8") as f:
-            all_captions = json.load(f)  # Dict[str, str]: clip_idx -> long caption
+        if self.opt.version_2s35w:
+            all_captions = self.caption_data[uid]  # List[str]: 0-based clip captions
+            all_clip_idxs = list(range(len(all_captions)))  # 0-based
+            clip_duration, clip_base = 2, 0
+        else:
+            with open(f"{self.root}/valid_captions/{uid}.json", "r", encoding="utf-8") as f:
+                all_captions = json.load(f)  # Dict[str, str]: clip_idx -> long caption
+            all_clip_idxs = sorted([int(k) for k in all_captions.keys()])  # 1-based
+            clip_duration, clip_base = 5, 1
         dataset_source = "Internal"
 
-        all_clip_idxs = sorted([int(k) for k in all_captions.keys()])  # start from 1
         all_clip_idx_set = set(all_clip_idxs)
 
         # Randomly sample num_clips from [1, `opt.num_clips`], but ensure all selected clips have captions
@@ -56,15 +75,20 @@ class InternalDataset(BaseDataset):
 
         start_clip_idx = int(np.random.choice(valid_start_clip_idxs))
         clip_idxs = [start_clip_idx + i for i in range(num_clips)]  # consecutive clip indices
-        prompt = [all_captions[str(clip_idx)] for clip_idx in clip_idxs]
+        if self.opt.version_2s35w:
+            prompt = [all_captions[clip_idx] for clip_idx in clip_idxs]
+        else:
+            prompt = [all_captions[str(clip_idx)] for clip_idx in clip_idxs]
 
         # Sample frames
         video_path = os.path.join(self.root, "video", f"{uid}.mp4")
         vr = VideoReader(str(video_path), ctx=cpu(0))
         num_frames, fps, (H, W) = len(vr), vr.get_avg_fps(), vr[0].shape[:2]
-        # `5`: hard-coded for 5s-clip; `12`: hard-coded for clip-overlap
-        start_frame_idx = int(round((clip_idxs[0] - 1) * 5 * fps)) - 12 * (clip_idxs[0] - 1)
-        end_frame_idx = int(round((clip_idxs[-1] - 1) * 5 * fps)) - 12 * (clip_idxs[-1] - 1) + int(round(5 * fps))  # may exceed video length
+        # `clip_duration`: seconds per clip; `12`: hard-coded for clip-overlap; `clip_base`: index offset (1 for old, 0 for new)
+        ci_first = clip_idxs[0] - clip_base
+        ci_last = clip_idxs[-1] - clip_base
+        start_frame_idx = int(round(ci_first * clip_duration * fps)) - 12 * ci_first
+        end_frame_idx = int(round(ci_last * clip_duration * fps)) - 12 * ci_last + int(round(clip_duration * fps))  # may exceed video length
 
         # Calculate total frames based on `num_clips`
         total_frames = (self.opt.num_input_frames - 1) * num_clips + 1
@@ -113,11 +137,12 @@ class InternalDataset(BaseDataset):
         # Split into clips
         num_frames_per_clip = []
         for ii, clip_idx in enumerate(clip_idxs):
+            ci = clip_idx - clip_base
             if ii == 0:
-                clip_start_frame_idx = int(round((clip_idx - 1) * 5 * fps)) - 12 * (clip_idx - 1)
+                clip_start_frame_idx = int(round(ci * clip_duration * fps)) - 12 * ci
             else:  # to avoid overlapping frames between consecutive clips, we start the next clip from the end of the previous clip
                 clip_start_frame_idx = clip_end_frame_idx
-            clip_end_frame_idx = clip_start_frame_idx + int(round(5 * fps))  # may exceed video length
+            clip_end_frame_idx = clip_start_frame_idx + int(round(clip_duration * fps))  # may exceed video length
             num_frames_per_clip.append(len([idx for idx in input_frame_idxs if clip_start_frame_idx <= idx < clip_end_frame_idx]))
         assert sum(num_frames_per_clip) == len(input_frame_idxs) and len(num_frames_per_clip) == len(prompt)
         C2W = torch.split(C2W, num_frames_per_clip, dim=0)  # List of (F_i, 4, 4)

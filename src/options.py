@@ -42,6 +42,7 @@ class Options:
     load_image: bool = True
         ## Interal
     use_internal_dataset: bool = False
+    version_2s35w: bool = False
     num_clips: int = 1
     random_num_clips: bool = False
         ## RealCamVid
