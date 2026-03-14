@@ -34,6 +34,7 @@ class InternalDataset(BaseDataset):
             else:
                 self.uids = [uids[i].strip(".json") for i in indices[int(0.95 * len(uids)):]]
 
+        self.uids = [uid for uid in self.uids if os.path.exists(os.path.join(self.root, "video", f"{uid}.mp4"))]
         self.valid_idxs = list(range(len(self.uids)))
 
     def __len__(self) -> int:
