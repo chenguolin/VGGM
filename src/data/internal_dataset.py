@@ -111,7 +111,12 @@ class InternalDataset(BaseDataset):
         vipe_path = video_path.replace("video", "vipe").replace(".mp4", ".npz")
         vipe_data = np.load(vipe_path, allow_pickle=True)
         C2W, fxfycxcy = vipe_data["pose"], vipe_data["intrinsics"]
-        assert C2W.shape[0] == fxfycxcy.shape[0] == num_frames
+        if (not C2W.shape[0] == fxfycxcy.shape[0]) or (not C2W.shape[0] == num_frames):
+            if idx in self.valid_idxs:
+                self.valid_idxs.remove(idx)
+                if len(self.valid_idxs) == 0:
+                    raise ValueError("No valid data in InternalDataset!")
+            return self.__getitem__(int(np.random.choice(self.valid_idxs)))
         C2W = torch.from_numpy(C2W).float()[input_frame_idxs, ...]  # (F, 4, 4)
         fxfycxcy = torch.from_numpy(fxfycxcy).float()[input_frame_idxs, ...]  # (F, 3, 3)
         fxfycxcy[:, 0] /= W
