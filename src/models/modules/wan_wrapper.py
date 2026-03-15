@@ -152,7 +152,7 @@ class WanDiffusionWrapper(nn.Module):
         rope_outside: bool = False,
         #
         feat_proj: bool = False,
-        use_ddt: bool = False,
+        num_ddts: int = 0,
         ddt_num_layers: int | float = 0.1,
         ddt_fusion: bool = True,
         #
@@ -196,9 +196,9 @@ class WanDiffusionWrapper(nn.Module):
             )
 
         # (Optional) DDT
-        self.use_ddt = use_ddt
-        if use_ddt:
-            self.ddt = DDT(
+        self.use_ddt = num_ddts > 0
+        if num_ddts > 0:
+            self.ddts = nn.ModuleList([DDT(
                 model_type=self.model.model_type,
                 patch_size=self.model.patch_size,
                 dim=self.model.dim,
@@ -213,7 +213,7 @@ class WanDiffusionWrapper(nn.Module):
                 eps=self.model.eps,
                 #
                 ddt_fusion=ddt_fusion,  # specifically for DDT
-            )
+            ) for _ in range(num_ddts)])
 
         self.scheduler = FlowMatchScheduler(
             num_train_timesteps=num_train_timesteps,
@@ -250,7 +250,8 @@ class WanDiffusionWrapper(nn.Module):
         #
         clip_latent_lens: Optional[Tensor] = None,  # (B=1, num_clips); for multi-clip generation
         #
-        return_feat_layer_idx: Optional[int] = None,
+        return_feat_layer_idx: Optional[int | float] = None,
+        ddt_index: Optional[int | List[int]] = 0,  # the first DDT head by default
     ):
         f, h, w = noisy_latents.shape[2:]
 
@@ -384,17 +385,29 @@ class WanDiffusionWrapper(nn.Module):
         model_outputs = torch.stack(model_outputs, dim=0)  # (B, D, f, h, w) or (B, N, D) if `not_head_and_unpatchify`
 
         if self.use_ddt:
+            if ddt_index is not None:  # run only the specified DDT head(s)
+                assert isinstance(ddt_index, int | list | tuple)
+                ddt_index = [ddt_index] if isinstance(ddt_index, int) else list(ddt_index)
+            else:  # run all DDT heads
+                ddt_index = list(range(len(self.ddts)))
+
             assert ddt_inputs is not None
-            model_outputs = torch.stack(self.ddt(
+            ddt_kwargs = dict(
                 x=ddt_inputs["x"],
-                v=model_outputs.to(noisy_latents.dtype),  # (B, N, D)
+                v=model_outputs.to(noisy_latents.dtype),
                 e=ddt_inputs["e"],
                 context=ddt_inputs["context"],
                 grid_sizes=ddt_inputs["grid_sizes"],
                 seq_lens=ddt_inputs["seq_lens"],
                 clip_query_lens=clip_query_lens,
                 clip_context_lens=clip_context_lens,
-            ), dim=0)  # (B, D, f, h, w)
+            )
+            model_outputs = [
+                torch.stack(self.ddts[idx](**ddt_kwargs), dim=0)  # (B, D, f, h, w)
+                for idx in ddt_index
+            ]
+            if len(model_outputs) == 1:
+                model_outputs = model_outputs[0]  # (B, D, f, h, w)
 
         if return_feat_layer_idx is None:
             return model_outputs

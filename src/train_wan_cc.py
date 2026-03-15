@@ -315,13 +315,14 @@ def main():
             transformer_module=transformer_blocks,
             mixed_precision=args.mixed_precision,
         )
-        model.fake_score = fsdp_wrap(
-            model.fake_score,
-            sharding_strategy=args.sharding_strategy,
-            wrap_strategy=args.wrap_strategy,
-            transformer_module=transformer_blocks,
-            mixed_precision=args.mixed_precision,
-        )
+        if not opt.ddt_fake_score:
+            model.fake_score = fsdp_wrap(
+                model.fake_score,
+                sharding_strategy=args.sharding_strategy,
+                wrap_strategy=args.wrap_strategy,
+                transformer_module=transformer_blocks,
+                mixed_precision=args.mixed_precision,
+            )
 
     # Prepare VAE and optionally other modules
     vae = WanVAEWrapper(opt.vae_path)
@@ -486,8 +487,11 @@ def main():
             generator_loss = outputs["generator_loss"] if "generator_loss" in outputs else None
             dmd_grad_norm = outputs["dmd_grad_norm"] if "dmd_grad_norm" in outputs else None
             depth_loss = outputs["depth_loss"] if "depth_loss" in outputs else None
+            depth_loss_diffusion = outputs["depth_loss_diffusion"] if "depth_loss_diffusion" in outputs else None
             ray_loss = outputs["ray_loss"] if "ray_loss" in outputs else None
+            ray_loss_diffusion = outputs["ray_loss_diffusion"] if "ray_loss_diffusion" in outputs else None
             camera_loss = outputs["camera_loss"] if "camera_loss" in outputs else None
+            camera_loss_diffusion = outputs["camera_loss_diffusion"] if "camera_loss_diffusion" in outputs else None
             render_loss = outputs["render_loss"] if "render_loss" in outputs else None
             ss_loss = outputs["ss_loss"] if "ss_loss" in outputs else None
 
@@ -542,10 +546,16 @@ def main():
                 logs.update({"generator": generator_loss.item()})
             if depth_loss is not None:
                 logs.update({"depth": depth_loss.item()})
+            if depth_loss_diffusion is not None:
+                logs.update({"depth_diffusion": depth_loss_diffusion.item()})
             if ray_loss is not None:
                 logs.update({"ray": ray_loss.item()})
+            if ray_loss_diffusion is not None:
+                logs.update({"ray_diffusion": ray_loss_diffusion.item()})
             if camera_loss is not None:
                 logs.update({"camera": camera_loss.item()})
+            if camera_loss_diffusion is not None:
+                logs.update({"camera_diffusion": camera_loss_diffusion.item()})
             if render_loss is not None:
                 logs.update({"render": render_loss.item()})
             if ss_loss is not None:
@@ -589,13 +599,25 @@ def main():
                         wandb.log({
                             "training/depth_loss": depth_loss.item()
                         }, step=global_update_step)
+                    if depth_loss_diffusion is not None:
+                        wandb.log({
+                            "training/depth_loss_diffusion": depth_loss_diffusion.item()
+                        }, step=global_update_step)
                     if ray_loss is not None:
                         wandb.log({
                             "training/ray_loss": ray_loss.item()
                         }, step=global_update_step)
+                    if ray_loss_diffusion is not None:
+                        wandb.log({
+                            "training/ray_loss_diffusion": ray_loss_diffusion.item()
+                        }, step=global_update_step)
                     if camera_loss is not None:
                         wandb.log({
                             "training/camera_loss": camera_loss.item()
+                        }, step=global_update_step)
+                    if camera_loss_diffusion is not None:
+                        wandb.log({
+                            "training/camera_loss_diffusion": camera_loss_diffusion.item()
                         }, step=global_update_step)
                     if render_loss is not None:
                         wandb.log({

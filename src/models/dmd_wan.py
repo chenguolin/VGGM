@@ -55,40 +55,43 @@ class DMD_Wan(Wan):
         self.real_score.requires_grad_(False)
         self.real_score.eval()
 
-        # Fake score model for DMD
-        self.fake_score = WanDiffusionWrapper(
-            opt.fake_wan_dir,
-            opt.num_train_timesteps,
-            opt.num_inference_steps,
-            opt.shift,
-            0.,    # hard-coded `sigma_min`
-            True,  # hard-coded `extra_one_step`
-            #
-            opt.teacher_input_plucker,
-            opt.teacher_extra_condition_dim,
-            #
-            opt.use_gradient_checkpointing,
-            opt.use_gradient_checkpointing_offload,
-            #
-            is_causal=opt.is_teacher_causal,
-            sink_size=opt.sink_size,
-            chunk_size=opt.chunk_size,
-            max_attention_size=opt.max_attention_size,
-        )
-        if opt.fake_path is not None:
-            state_dict = torch.load(opt.fake_path, map_location="cpu", weights_only=True)
-            if "generator_ema" in state_dict:
-                self.fake_score.load_state_dict(state_dict["generator_ema"])
-            elif "generator" in state_dict:
-                self.fake_score.load_state_dict(state_dict["generator"])
-            else:
-                self.fake_score.load_state_dict(state_dict)
+        # Fake score model for DMD (skipped when DDT[-1] replaces it)
+        if not opt.ddt_fake_score:
+            self.fake_score = WanDiffusionWrapper(
+                opt.fake_wan_dir,
+                opt.num_train_timesteps,
+                opt.num_inference_steps,
+                opt.shift,
+                0.,    # hard-coded `sigma_min`
+                True,  # hard-coded `extra_one_step`
+                #
+                opt.teacher_input_plucker,
+                opt.teacher_extra_condition_dim,
+                #
+                opt.use_gradient_checkpointing,
+                opt.use_gradient_checkpointing_offload,
+                #
+                is_causal=opt.is_teacher_causal,
+                sink_size=opt.sink_size,
+                chunk_size=opt.chunk_size,
+                max_attention_size=opt.max_attention_size,
+            )
+            if opt.fake_path is not None:
+                state_dict = torch.load(opt.fake_path, map_location="cpu", weights_only=True)
+                if "generator_ema" in state_dict:
+                    self.fake_score.load_state_dict(state_dict["generator_ema"])
+                elif "generator" in state_dict:
+                    self.fake_score.load_state_dict(state_dict["generator"])
+                else:
+                    self.fake_score.load_state_dict(state_dict)
+        else:
+            self.fake_score = None
 
         # This will be init later with fsdp-wrapped modules
         self.inference_pipeline: SelfForcingTrainingPipeline = None
 
         # Add LoRA in the diffusion model, will freeze all parameters except LoRA layers
-        if opt.use_lora_in_fake_score:
+        if opt.use_lora_in_fake_score and not opt.ddt_fake_score:
             self._add_lora_to_fake_score(
                 target_modules=opt.lora_target_modules_in_fake_score.split(","),
                 lora_rank=opt.lora_rank_in_fake_score,
@@ -99,7 +102,7 @@ class DMD_Wan(Wan):
                 self.load_fake_score_lora_weights(lora_state_dict, strict=True)
 
         # Set other trainable parameters except LoRA layers in the diffusion model
-        if opt.more_trainable_fake_score_params is not None:
+        if opt.more_trainable_fake_score_params is not None and not opt.ddt_fake_score:
             trainble_names = opt.more_trainable_fake_score_params.split(",")
             if opt.use_lora_in_fake_score:
                 trainble_names.append("lora")
@@ -201,85 +204,14 @@ class DMD_Wan(Wan):
 
         self.diffusion.scheduler.set_timesteps(self.opt.num_train_timesteps, training=True)
 
-        # Diffusion
-        if use_diffusion_loss and train_generator:
-            ## Diffusion loss (+ DA3 loss)
-            diffusion_loss, pred_x0, da3_outputs_diffusion = self.diffusion_loss(
-                latents,
-                prompt_embeds,
-                cond_latents,
-                plucker,
-                #
-                C2W=C2W,
-                fxfycxcy=fxfycxcy,
-                depths=depths,
-                confs=confs,
-                images_f=images_f,
-                #
-                clip_latent_lens=clip_latent_lens,
-            )
-            outputs["diffusion_loss"] = diffusion_loss
-
-            if da3_outputs_diffusion is not None:
-                if "depth_loss" in da3_outputs_diffusion:
-                    outputs["depth_loss"] = da3_outputs_diffusion["depth_loss"]
-                    diffusion_loss = diffusion_loss + da3_outputs_diffusion["depth_loss"]
-                if "ray_loss" in da3_outputs_diffusion:
-                    outputs["ray_loss"] = da3_outputs_diffusion["ray_loss"]
-                    diffusion_loss = diffusion_loss + da3_outputs_diffusion["ray_loss"]
-                if "camera_loss" in da3_outputs_diffusion:
-                    outputs["camera_loss"] = da3_outputs_diffusion["camera_loss"]
-                    diffusion_loss = diffusion_loss + da3_outputs_diffusion["camera_loss"]
-
-            outputs["loss"] = diffusion_loss
-
-        # DMD
-        else:
-            ## Generator loss
-            if train_generator:
-                generator_loss, dmd_grad_norm, pred_x0, da3_outputs = \
-                    self.generator_loss(
-                        torch.randn_like(latents),
-                        prompt_embeds,
-                        negative_prompt_embeds,
-                        cond_latents,
-                        plucker,
-                        #
-                        clean_latents=latents if not use_self_forcing else None,
-                        #
-                        C2W=C2W,
-                        fxfycxcy=fxfycxcy,
-                        depths=depths,
-                        confs=confs,
-                        images_f=images_f,
-                        #
-                        clip_latent_lens=clip_latent_lens,
-                    )
-                outputs["generator_loss"] = generator_loss
-                outputs["dmd_grad_norm"] = dmd_grad_norm
-
-                if da3_outputs is not None:
-                    if "depth_loss" in da3_outputs:
-                        outputs["depth_loss"] = da3_outputs["depth_loss"]
-                        generator_loss = generator_loss + da3_outputs["depth_loss"]
-                    if "ray_loss" in da3_outputs:
-                        outputs["ray_loss"] = da3_outputs["ray_loss"]
-                        generator_loss = generator_loss + da3_outputs["ray_loss"]
-                    if "camera_loss" in da3_outputs:
-                        outputs["camera_loss"] = da3_outputs["camera_loss"]
-                        generator_loss = generator_loss + da3_outputs["camera_loss"]
-                    if "render_loss" in da3_outputs:
-                        outputs["render_loss"] = da3_outputs["render_loss"]
-                        generator_loss = generator_loss + 0.1 * da3_outputs["render_loss"]  # TODO: make it configurable
-            else:
-                pred_x0, da3_outputs = None, None
-                generator_loss = 0.
-
-            ## Critic loss
-            outputs["critic_loss"] = critic_loss = \
-                self.critic_loss(
+        # DMD + (Optional) Diffusion
+        if train_generator:
+            ## 1. Generator loss
+            generator_loss, dmd_grad_norm, pred_x0, da3_outputs = \
+                self.generator_loss(
                     torch.randn_like(latents),
                     prompt_embeds,
+                    negative_prompt_embeds,
                     cond_latents,
                     plucker,
                     #
@@ -293,33 +225,107 @@ class DMD_Wan(Wan):
                     #
                     clip_latent_lens=clip_latent_lens,
                 )
+            outputs["generator_loss"] = generator_loss
+            outputs["dmd_grad_norm"] = dmd_grad_norm
 
-            outputs["loss"] = critic_loss + self.opt.dmd_loss_weight * generator_loss
+            if da3_outputs is not None:
+                if "depth_loss" in da3_outputs:
+                    outputs["depth_loss"] = da3_outputs["depth_loss"]
+                    generator_loss = generator_loss + da3_outputs["depth_loss"]
+                if "ray_loss" in da3_outputs:
+                    outputs["ray_loss"] = da3_outputs["ray_loss"]
+                    generator_loss = generator_loss + da3_outputs["ray_loss"]
+                if "camera_loss" in da3_outputs:
+                    outputs["camera_loss"] = da3_outputs["camera_loss"]
+                    generator_loss = generator_loss + da3_outputs["camera_loss"]
+                if "render_loss" in da3_outputs:
+                    outputs["render_loss"] = da3_outputs["render_loss"]
+                    generator_loss = generator_loss + da3_outputs["render_loss"]
+
+            ## 2. (Optional) Diffusion loss
+            if use_diffusion_loss:
+                diffusion_loss, pred_x0_diffusion, da3_outputs_diffusion = \
+                    self.diffusion_loss(
+                        latents,
+                        prompt_embeds,
+                        cond_latents,
+                        plucker,
+                        #
+                        C2W=C2W,
+                        fxfycxcy=fxfycxcy,
+                        depths=depths,
+                        confs=confs,
+                        images_f=images_f,
+                        #
+                        clip_latent_lens=clip_latent_lens,
+                    )
+                outputs["diffusion_loss"] = diffusion_loss
+
+                if da3_outputs_diffusion is not None:
+                    if "depth_loss" in da3_outputs_diffusion:
+                        outputs["depth_loss_diffusion"] = da3_outputs_diffusion["depth_loss"]
+                        diffusion_loss = diffusion_loss + da3_outputs_diffusion["depth_loss"]
+                    if "ray_loss" in da3_outputs_diffusion:
+                        outputs["ray_loss_diffusion"] = da3_outputs_diffusion["ray_loss"]
+                        diffusion_loss = diffusion_loss + da3_outputs_diffusion["ray_loss"]
+                    if "camera_loss" in da3_outputs_diffusion:
+                        outputs["camera_loss_diffusion"] = da3_outputs_diffusion["camera_loss"]
+                        diffusion_loss = diffusion_loss + da3_outputs_diffusion["camera_loss"]
+            else:
+                pred_x0_diffusion = None
+                da3_outputs_diffusion = None
+                diffusion_loss = 0.
+        else:
+            pred_x0, pred_x0_diffusion = None, None
+            da3_outputs, da3_outputs_diffusion = None, None
+            generator_loss, diffusion_loss = 0., 0.
+
+        ## 3. Critic loss
+        outputs["critic_loss"] = critic_loss = \
+            self.critic_loss(
+                torch.randn_like(latents),
+                prompt_embeds,
+                cond_latents,
+                plucker,
+                #
+                clean_latents=latents if not use_self_forcing else None,
+                #
+                C2W=C2W,
+                fxfycxcy=fxfycxcy,
+                depths=depths,
+                confs=confs,
+                images_f=images_f,
+                #
+                clip_latent_lens=clip_latent_lens,
+            )
+
+        outputs["loss"] = critic_loss + self.opt.dmd_loss_weight * generator_loss \
+            + self.opt.diffusion_loss_weight * diffusion_loss
 
         # # For visualizaiton
         # if is_eval:
         #     if pred_x0 is not None:
         #         outputs["images_predx0"] = (self.decode_latent(pred_x0, vae).clamp(-1., 1.) + 1.) / 2.
+        #     if pred_x0_diffusion is not None:
+        #         outputs["images_predx0_diffusion"] = (self.decode_latent(pred_x0_diffusion, vae).clamp(-1., 1.) + 1.) / 2.
         #     if "image" in data:
         #         outputs["images_input"] = data["image"].to(device)
-        #     ## Diffusion
-        #     if use_diffusion_loss:
-        #         if da3_outputs_diffusion is not None:
-        #             if "depth" in da3_outputs_diffusion:
-        #                 outputs["images_pred_depth"] = colorize_depth(1./da3_outputs_diffusion["depth"], batch_mode=True)
-        #             if "images_render" in da3_outputs_diffusion:
-        #                 outputs["images_render"] = da3_outputs_diffusion["images_render"]
-        #             if "images_render_depth" in da3_outputs_diffusion:
-        #                 outputs["images_render_depth"] = da3_outputs_diffusion["images_render_depth"]
         #     ## DMD
-        #     else:
-        #         if da3_outputs is not None:
-        #             if "depth" in da3_outputs:
-        #                 outputs["images_pred_depth"] = colorize_depth(1./da3_outputs["depth"], batch_mode=True)
-        #             if "images_render" in da3_outputs:
-        #                 outputs["images_render"] = da3_outputs["images_render"]
-        #             if "images_render_depth" in da3_outputs:
-        #                 outputs["images_render_depth"] = da3_outputs["images_render_depth"]
+        #     if da3_outputs is not None:
+        #         if "depth" in da3_outputs:
+        #             outputs["images_pred_depth"] = colorize_depth(1./da3_outputs["depth"], batch_mode=True)
+        #         if "images_render" in da3_outputs:
+        #             outputs["images_render"] = da3_outputs["images_render"]
+        #         if "images_render_depth" in da3_outputs:
+        #             outputs["images_render_depth"] = da3_outputs["images_render_depth"]
+        #     ## (Optional) Diffusion
+        #     if da3_outputs_diffusion is not None:
+        #         if "depth" in da3_outputs_diffusion:
+        #             outputs["images_pred_depth_diffusion"] = colorize_depth(1./da3_outputs_diffusion["depth"], batch_mode=True)
+        #         if "images_render" in da3_outputs_diffusion:
+        #             outputs["images_render_diffusion"] = da3_outputs_diffusion["images_render"]
+        #         if "images_render_depth" in da3_outputs_diffusion:
+        #             outputs["images_render_depth_diffusion"] = da3_outputs_diffusion["images_render_depth"]
 
         return outputs
 
@@ -485,6 +491,8 @@ class DMD_Wan(Wan):
             extra_condition=input_extra_condition,
             #
             clip_latent_lens=clip_latent_lens,  # for multi-clip generation
+            #
+            ddt_index=1 if self.opt.ddt_diffusion_loss else 0,  # first or second DDT head for diffusion loss
         )
         model_outputs, da3_outputs = \
             model_outputs if self.opt.load_da3 else (model_outputs, None)
@@ -602,14 +610,26 @@ class DMD_Wan(Wan):
         ).detach().unflatten(0, (B, f)).transpose(1, 2).to(dtype)  # (B, D, f, h, w)
         targets = self.diffusion.scheduler.training_target(pred_x0, critic_noises)
 
-        fake_model_outputs = self.fake_score(
-            noisy_latents,
-            timesteps,
-            prompt_embeds,
-            plucker=plucker,
-            #
-            clip_latent_lens=clip_latent_lens,  # for multi-clip generation
-        )
+        if self.opt.ddt_fake_score:
+            fake_model_outputs = self.diffusion(
+                noisy_latents,
+                timesteps,
+                prompt_embeds,
+                plucker=plucker,
+                #
+                clip_latent_lens=clip_latent_lens,  # for multi-clip generation
+                #
+                ddt_index=-1,  # last DDT head as fake score
+            )
+        else:
+            fake_model_outputs = self.fake_score(
+                noisy_latents,
+                timesteps,
+                prompt_embeds,
+                plucker=plucker,
+                #
+                clip_latent_lens=clip_latent_lens,  # for multi-clip generation
+            )
 
         # Step 3: Compute the denoising loss for the fake critic
         diffusion_loss = tF.mse_loss(fake_model_outputs.float(), targets.float(), reduction="none")  # (B, D, f, h, w)
@@ -791,25 +811,49 @@ class DMD_Wan(Wan):
         """
         Compute the KL grad (eq 7 in https://arxiv.org/abs/2311.18828).
         """
-        # Step 1: Compute the fake score
-        fake_model_outputs = self.fake_score(
-            noisy_latents,
-            timesteps,
-            prompt_embeds,
-            plucker=plucker,
-            #
-            clip_latent_lens=clip_latent_lens,  # for multi-clip generation
-        )
-
-        if self.opt.fake_guidance_scale != 1.:
-            fake_model_outputs_uncond = self.fake_score(
+        # Step 1: Compute the fake score (DDT[-1] or independent fake_score)
+        if self.opt.ddt_fake_score:
+            fake_model_outputs = self.diffusion(
                 noisy_latents,
                 timesteps,
-                negative_prompt_embeds,
+                prompt_embeds,
+                plucker=plucker,
+                #
+                clip_latent_lens=clip_latent_lens,  # for multi-clip generation
+                #
+                ddt_index=-1,  # last DDT head as fake score
+            )
+        else:
+            fake_model_outputs = self.fake_score(
+                noisy_latents,
+                timesteps,
+                prompt_embeds,
                 plucker=plucker,
                 #
                 clip_latent_lens=clip_latent_lens,  # for multi-clip generation
             )
+
+        if self.opt.fake_guidance_scale != 1.:
+            if self.opt.ddt_fake_score:
+                fake_model_outputs_uncond = self.diffusion(
+                    noisy_latents,
+                    timesteps,
+                    negative_prompt_embeds,
+                    plucker=plucker,
+                    #
+                    clip_latent_lens=clip_latent_lens,  # for multi-clip generation
+                    #
+                    ddt_index=-1,  # last DDT head as fake score
+                )
+            else:
+                fake_model_outputs_uncond = self.fake_score(
+                    noisy_latents,
+                    timesteps,
+                    negative_prompt_embeds,
+                    plucker=plucker,
+                    #
+                    clip_latent_lens=clip_latent_lens,  # for multi-clip generation
+                )
             fake_model_outputs = fake_model_outputs_uncond + self.opt.fake_guidance_scale * (
                 fake_model_outputs - fake_model_outputs_uncond)
         fake_pred_x0 = self.diffusion._convert_flow_pred_to_x0(fake_model_outputs, noisy_latents, timesteps)
@@ -1020,6 +1064,7 @@ class DMD_Wan(Wan):
                 extra_condition=input_extra_condition,
                 #
                 clip_latent_lens=clip_latent_lens,  # for multi-clip generation
+                ddt_index=0,  # the first DDT head
             )
             model_outputs, da3_outputs = \
                 model_outputs if self.opt.load_da3 else (model_outputs, None)
@@ -1075,6 +1120,7 @@ class DMD_Wan(Wan):
         self.inference_pipeline = SelfForcingTrainingPipeline(self.opt, self.diffusion, self.current_vae_decoder)
 
     def _add_lora_to_fake_score(self, target_modules: List[str], lora_rank: int, lora_alpha: Optional[int] = None):
+        assert not self.opt.ddt_fake_score  # LoRA is not supported for DDT fake score
         if lora_alpha is None:
             lora_alpha = lora_rank
 

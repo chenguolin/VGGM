@@ -86,6 +86,14 @@ class Wan(nn.Module):
         else:
             self.text_encoder = None
 
+        # Compute `num_ddts` dynamically based on DDT multi-head options
+        num_ddts = int(opt.use_ddt)
+        if opt.ddt_diffusion_loss:
+            num_ddts += 1
+        if opt.ddt_fake_score:
+            num_ddts += 1
+        self.num_ddts = num_ddts
+
         # Diffusion model
         if not opt.load_da3:
             self.diffusion = WanDiffusionWrapper(
@@ -109,7 +117,7 @@ class Wan(nn.Module):
                 rope_outside=opt.rope_outside,
                 #
                 feat_proj=opt.self_supervised_loss_weight > 0.,
-                use_ddt=opt.use_ddt,
+                num_ddts=num_ddts,
                 ddt_num_layers=opt.ddt_num_layers,
                 ddt_fusion=opt.ddt_fusion,
             )
@@ -181,10 +189,11 @@ class Wan(nn.Module):
             else:
                 self.diffusion.load_state_dict(state_dict, strict=False)
 
-        # Initialize `ddt.head` with weights from `model.head`
-        if opt.use_ddt:
-            self.diffusion.ddt.head.load_state_dict(self.diffusion.model.head.state_dict())
-            self.diffusion.model.head = None  # replace the original head by the DDT head
+        # Initialize DDT heads with weights from `model.head`
+        if num_ddts > 0:
+            for ddt in self.diffusion.ddts:
+                ddt.head.load_state_dict(self.diffusion.model.head.state_dict())
+            self.diffusion.model.head = None  # replaced by DDT heads
 
         # Add LoRA in the diffusion model, will freeze all parameters except LoRA layers
         if opt.use_lora_in_wan:

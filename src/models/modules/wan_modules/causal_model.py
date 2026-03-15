@@ -839,7 +839,7 @@ class CausalWanModel(ModelMixin, ConfigMixin):
         clip_query_lens: Optional[int] = None,
         clip_context_lens: Optional[int] = None,
         #
-        return_feat_layer_idx: Optional[int] = None,
+        return_feat_layer_idx: Optional[int | float] = None,
         not_head_and_unpatchify: bool = False,
         return_ddt_inputs: bool = False,
     ):
@@ -1035,7 +1035,7 @@ class CausalWanModel(ModelMixin, ConfigMixin):
         clip_query_lens: Optional[Tensor] = None,
         clip_context_lens: Optional[Tensor] = None,
         #
-        return_feat_layer_idx: Optional[int] = None,
+        return_feat_layer_idx: Optional[int | float] = None,
         not_head_and_unpatchify: bool = False,
         return_ddt_inputs: bool = False,
     ):

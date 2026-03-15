@@ -143,7 +143,7 @@ class Options:
     generator_train_every: int = 5
     fake_guidance_scale: float = 1.
     real_guidance_scale: float = 4.
-    dmd_loss_weight: float = 1.
+    ddt_fake_score: bool = False
         ## Self-forcing
     self_forcing_prob: float = 1.
     denoising_step_list: Tuple[int, ...] = (1000, 750, 500, 250)
@@ -185,15 +185,19 @@ class Options:
     # Training
         ## Sequence parallel
     sp_size: int = 1
-        ## Losses
+        ## Generator loss in DMD
+    dmd_loss_weight: float = 1.
+        ## Diffusion loss in DMD
     diffusion_loss_prob: float = 0.
-            ### DA3 losses
+    diffusion_loss_weight: float = 1.
+    ddt_diffusion_loss: bool = False
+        ## DA3 losses
     conf_alpha: float = 0.2
     gradient_loss_scale: int = 4
     xyz_loss_threshold: float = 10.
     depth_loss_threshold: float = 10.
     camera_loss_threshold: float = 10.
-            ### Self-supervised loss
+        ## Self-supervised loss
     self_supervised_loss_weight: float = 0.
     student_layer_idx: Optional[int | float] = None  # int: block index; float: ratio in [0,1]
     teacher_layer_idx: Optional[int | float] = None  # int: block index; float: ratio in [0,1]
@@ -212,6 +216,10 @@ class Options:
 
         if self.load_da3:
             self.load_depth = True
+
+        # DDT multi-head
+        if self.ddt_diffusion_loss or self.ddt_fake_score:
+            self.use_ddt = True
 
         # Dataset directories
         self.dataset_dir_train = {
@@ -322,7 +330,7 @@ opt_dict["wan2.1_t2v_1.3b_dmd"] = Options(
     sp_size=1,
     #
     only_static_data=False,
-    use_vidprom=True,
+    use_vidprom=False,  # True
     vidprom_prob=1.,  # 0.5
     use_short_caption=False,
     first_latent_cond=False,
@@ -337,8 +345,8 @@ opt_dict["wan2.1_t2v_1.3b_dmd"] = Options(
     da3_loss_in_sf=False,  # True
     render_loss_in_sf=False,
     #
-    diffusion_loss_prob=0.,
-    no_noise_for_da3=False,
+    # diffusion_loss_prob=0.,
+    # no_noise_for_da3=False,
     #
     is_causal=True,
     use_teacher_forcing=False,
@@ -378,6 +386,13 @@ opt_dict["wan2.1_t2v_1.3b_dmd"] = Options(
     # load_conf=True,
     # input_pcrender=True,
     # load_tae=True,
+    #
+    ddt_fake_score=False,
+    #
+    dmd_loss_weight=1.,
+    diffusion_loss_prob=0.,
+    diffusion_loss_weight=1.,
+    ddt_diffusion_loss=False,
 )
 
 # Self-Forcing reproduction
