@@ -299,7 +299,7 @@ class DMD_Wan(Wan):
                 clip_latent_lens=clip_latent_lens,
             )
 
-        outputs["loss"] = critic_loss + self.opt.dmd_loss_weight * generator_loss \
+        outputs["loss"] = self.opt.critic_loss_weight * critic_loss + generator_loss \
             + self.opt.diffusion_loss_weight * diffusion_loss
 
         # # For visualizaiton
