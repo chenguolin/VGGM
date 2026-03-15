@@ -388,6 +388,8 @@ opt_dict["wan2.1_t2v_1.3b_dmd"] = Options(
     # load_tae=True,
     #
     ddt_fake_score=False,
+    ddt_num_layers=0.1,
+    ddt_fusion=True,
     #
     dmd_loss_weight=1.,
     diffusion_loss_prob=0.,
