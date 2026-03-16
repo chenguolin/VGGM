@@ -207,7 +207,7 @@ class WanDiffusionWrapper(nn.Module):
                 num_heads=self.model.num_heads,
                 num_layers=ddt_num_layers if isinstance(ddt_num_layers, int) \
                     else int(ddt_num_layers * self.model.num_layers),  # the only difference from `self.model`
-                window_size=self.model.window_size,
+                window_size=getattr(self.model, 'window_size', (-1, -1)),
                 qk_norm=self.model.qk_norm,
                 cross_attn_norm=self.model.cross_attn_norm,
                 eps=self.model.eps,
