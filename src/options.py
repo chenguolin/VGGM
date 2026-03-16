@@ -128,6 +128,16 @@ class Options:
     max_kvcache_size: int = 21  # set to a limited number to save memory
     rope_outside: bool = False
     prefill_image: bool = True
+        ## TTT (Test-Time Training hybrid branch)
+    use_ttt: bool = False
+    ttt_layers: Optional[str] = None  # e.g. "0,2,4,6,8"; None means all layers when `use_ttt=True`
+    ttt_num_fw_heads: int = 4
+    ttt_fw_head_dim: Optional[int] = None  # None = same as attention `head_dim`
+    ttt_chunk_size: Optional[int] = None  # None = `frame_seqlen * chunk_size`
+    ttt_w0_w2_low_rank: int = 32
+    ttt_use_muon: bool = True
+    ttt_use_momentum: bool = True
+    ttt_prenorm: bool = True
         ## Load pre-trained models
     generator_path: Optional[str] = None
     lora_path: Optional[str] = None  # Path to LoRA weights file (lora_weights.pth)
@@ -256,6 +266,18 @@ class Options:
         self.da3_max_attention_size = (self.max_window_size + self.sink_size) * (self.frame_seqlen // (self.da3_down_ratio * self.da3_down_ratio) + 1)  # `+1` for camera token
         self.max_kvcache_attention_size = self.max_kvcache_size * self.frame_seqlen
         self.da3_max_kvcache_attention_size = self.max_kvcache_size * (self.frame_seqlen // (self.da3_down_ratio * self.da3_down_ratio) + 1)  # `+1` for camera token
+
+        # TTT
+        if self.use_ttt:
+            if self.ttt_chunk_size is None:
+                self.ttt_chunk_size = self.frame_seqlen * self.chunk_size
+            # Parse `ttt_layers` from comma-separated string to list of ints
+            if self.ttt_layers is not None:
+                self.ttt_layers_list = [int(x) for x in self.ttt_layers.split(",")]
+            else:
+                self.ttt_layers_list = None  # will be resolved after model is loaded
+        else:
+            self.ttt_layers_list = None
 
 
 # Set all options for different tasks and models

@@ -168,7 +168,10 @@ class CausalWanSelfAttention(nn.Module):
                  rope_outside=False,
                  #
                  qk_norm=True,
-                 eps=1e-6):
+                 eps=1e-6,
+                 #
+                 use_ttt=False,
+                 ttt_config=None):
         assert dim % num_heads == 0
         super().__init__()
         self.dim = dim
@@ -190,6 +193,14 @@ class CausalWanSelfAttention(nn.Module):
         self.norm_q = WanRMSNorm(dim, eps=eps) if qk_norm else nn.Identity()
         self.norm_k = WanRMSNorm(dim, eps=eps) if qk_norm else nn.Identity()
 
+        # (Optional) TTT branch
+        self.use_ttt = use_ttt
+        if use_ttt:
+            from .ttt import TTTBranch
+            ttt_config = ttt_config or {}
+            self.ttt_branch = TTTBranch(
+                dim=dim, num_heads=num_heads, **ttt_config)
+
     def forward(
         self,
         x,
@@ -200,6 +211,8 @@ class CausalWanSelfAttention(nn.Module):
         block_mask=None,
         kv_cache=None,
         current_start=0,  # use with `kv_cache`
+        #
+        ttt_state=None,
     ):
         r"""
         Args:
@@ -211,6 +224,9 @@ class CausalWanSelfAttention(nn.Module):
         b, s, n, d = *x.shape[:2], self.num_heads, self.head_dim
         sp_size = get_sp_world_size()
 
+        # Save input for TTT branch projections
+        hidden_states = x
+
         # query, key, value function
         def qkv_fn(x):
             q = self.norm_q(self.q(x)).view(b, s, n, d)
@@ -219,6 +235,11 @@ class CausalWanSelfAttention(nn.Module):
             return q, k, v
 
         q, k, v = qkv_fn(x)
+
+        # Save pre-RoPE Q/K/V for TTT before the KV-cache path may
+        # all-to-all them into head-parallel layout
+        if self.use_ttt:
+            ttt_q, ttt_k, ttt_v = q, k, v
 
         # No KV cache
         if kv_cache is None:
@@ -358,8 +379,18 @@ class CausalWanSelfAttention(nn.Module):
                 # Scatter sequence, gather heads
                 x = all_to_all(x, scatter_dim=1, gather_dim=2)
 
+        # (Optional) TTT branch (parallel with attention, uses pre-RoPE Q/K/V)
+        # Always uses the original seq-parallel Q/K/V saved above; TTT handles
+        # its own Ulysses-style all-to-all internally when `sp_size > 1`.
+        if self.use_ttt:
+            # `ttt_state` is mutated in-place (like KV-cache)
+            ttt_output = self.ttt_branch(
+                ttt_q, ttt_k, ttt_v, hidden_states, ttt_state=ttt_state)
+
         # output
         x = x.flatten(2)
+        if self.use_ttt:
+            x = x + ttt_output
         x = self.o(x)
         return x
 
@@ -378,7 +409,10 @@ class CausalWanAttentionBlock(nn.Module):
                  #
                  qk_norm=True,
                  cross_attn_norm=False,
-                 eps=1e-6):
+                 eps=1e-6,
+                 #
+                 use_ttt=False,
+                 ttt_config=None):
         super().__init__()
         self.dim = dim
         self.ffn_dim = ffn_dim
@@ -394,7 +428,9 @@ class CausalWanAttentionBlock(nn.Module):
 
         # layers
         self.norm1 = WanLayerNorm(dim, eps)
-        self.self_attn = CausalWanSelfAttention(dim, num_heads, sink_size, max_attention_size, rope_outside, qk_norm, eps)
+        self.self_attn = CausalWanSelfAttention(
+            dim, num_heads, sink_size, max_attention_size, rope_outside,
+            qk_norm, eps, use_ttt=use_ttt, ttt_config=ttt_config)
         self.norm3 = WanLayerNorm(
             dim, eps,
             elementwise_affine=True) if cross_attn_norm else nn.Identity()
@@ -423,6 +459,8 @@ class CausalWanAttentionBlock(nn.Module):
         crossattn_cache=None,
         current_start=0,
         #
+        ttt_state=None,
+        #
         clip_query_lens=None,
         clip_context_lens=None,
     ):
@@ -445,6 +483,7 @@ class CausalWanAttentionBlock(nn.Module):
             self.norm1(x) * (1 + e[1]) + e[0],
             seq_lens, grid_sizes, freqs,
             block_mask, kv_cache, current_start,
+            ttt_state=ttt_state,
         )
         # with torch.amp.autocast('cuda', dtype=torch.float32):
         x = x + y * e[2]
@@ -510,7 +549,10 @@ class CausalWanModel(ModelMixin, ConfigMixin):
                  #
                  qk_norm=True,
                  cross_attn_norm=True,
-                 eps=1e-6):
+                 eps=1e-6,
+                 #
+                 ttt_layers=None,
+                 ttt_config=None):
         r"""
         Initialize the diffusion model backbone.
 
@@ -581,6 +623,15 @@ class CausalWanModel(ModelMixin, ConfigMixin):
             nn.Linear(freq_dim, dim), nn.SiLU(), nn.Linear(dim, dim))
         self.time_projection = nn.Sequential(nn.SiLU(), nn.Linear(dim, dim * 6))
 
+        # (Optional) TTT configuration: if `ttt_config` is provided but `ttt_layers` is None, enable all layers
+        if ttt_layers is None and ttt_config is not None:
+            ttt_layer_set = set(range(num_layers))
+        elif ttt_layers is not None:
+            ttt_layer_set = set(ttt_layers)
+        else:
+            ttt_layer_set = set()
+        self.use_ttt = len(ttt_layer_set) > 0
+
         # blocks
         cross_attn_type = 't2v_cross_attn' if model_type == 't2v' else 'i2v_cross_attn'
         self.blocks = nn.ModuleList([
@@ -588,8 +639,11 @@ class CausalWanModel(ModelMixin, ConfigMixin):
                                     #
                                     sink_size, max_attention_size, rope_outside,
                                     #
-                                    qk_norm, cross_attn_norm, eps)
-            for _ in range(num_layers)
+                                    qk_norm, cross_attn_norm, eps,
+                                    #
+                                    use_ttt=(i in ttt_layer_set),
+                                    ttt_config=ttt_config)
+            for i in range(num_layers)
         ])
 
         # head
@@ -836,6 +890,8 @@ class CausalWanModel(ModelMixin, ConfigMixin):
         crossattn_cache: dict = None,
         current_start: int = 0,
         #
+        ttt_state: list = None,
+        #
         clip_query_lens: Optional[int] = None,
         clip_context_lens: Optional[int] = None,
         #
@@ -955,12 +1011,14 @@ class CausalWanModel(ModelMixin, ConfigMixin):
 
         inter_feats = None
         for block_index, block in enumerate(self.blocks):
+            block_ttt_state = ttt_state[block_index] if ttt_state is not None else None
 
             if torch.is_grad_enabled() and self.use_gradient_checkpointing_offload:
                 kwargs.update(
                     {
                         "kv_cache": kv_cache[block_index],
                         "current_start": current_start,
+                        "ttt_state": block_ttt_state,
                     }
                 )
                 with torch.autograd.graph.save_on_cpu():
@@ -974,6 +1032,7 @@ class CausalWanModel(ModelMixin, ConfigMixin):
                     {
                         "kv_cache": kv_cache[block_index],
                         "current_start": current_start,
+                        "ttt_state": block_ttt_state,
                     }
                 )
                 x = torch.utils.checkpoint.checkpoint(
@@ -987,6 +1046,7 @@ class CausalWanModel(ModelMixin, ConfigMixin):
                         "kv_cache": kv_cache[block_index],
                         "crossattn_cache": crossattn_cache[block_index],
                         "current_start": current_start,
+                        "ttt_state": block_ttt_state,
                     }
                 )
                 x = block(x, **kwargs)
@@ -1256,6 +1316,7 @@ class CausalWanModel(ModelMixin, ConfigMixin):
         if kwargs.get("kv_cache", None) is not None:
             return self._forward_inference(*args, **kwargs)
         else:
+            kwargs.pop("ttt_state", None)  # not used
             return self._forward_train(*args, **kwargs)
 
     def unpatchify(self, x, grid_sizes):

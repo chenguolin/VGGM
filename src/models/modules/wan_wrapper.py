@@ -156,6 +156,9 @@ class WanDiffusionWrapper(nn.Module):
         ddt_num_layers: int | float = 0.1,
         ddt_fusion: bool = True,
         #
+        ttt_layers: Optional[str] = None,
+        ttt_config: Optional[dict] = None,
+        #
         **kwargs,  # for compatibility
     ):
         super().__init__()
@@ -167,6 +170,8 @@ class WanDiffusionWrapper(nn.Module):
                 chunk_size=chunk_size,
                 max_attention_size=max_attention_size,
                 rope_outside=rope_outside,
+                ttt_layers=ttt_layers,
+                ttt_config=ttt_config,
             )
         else:
             self.model = WanModel.from_pretrained(pretrained_dir)
@@ -242,6 +247,8 @@ class WanDiffusionWrapper(nn.Module):
         crossattn_cache: Optional[List[Dict[str, Any]]] = None,
         current_start: Optional[int] = 0,
         #
+        ttt_state: Optional[list] = None,
+        #
         kv_cache_da3: Optional[List[Dict[str, Any]]] = None,  # not used; for compatibility
         current_start_da3: Optional[int] = 0,  # not used; for compatibility
         #
@@ -315,6 +322,8 @@ class WanDiffusionWrapper(nn.Module):
                 kv_cache=kv_cache,
                 crossattn_cache=crossattn_cache,
                 current_start=current_start,
+                #
+                ttt_state=ttt_state,
                 #
                 clip_query_lens=clip_query_lens,
                 clip_context_lens=clip_context_lens,
