@@ -2,6 +2,7 @@ from typing import *
 from torch import Tensor
 
 import os
+from contextlib import nullcontext
 from tqdm import tqdm
 import numpy as np
 import torch
@@ -1798,16 +1799,22 @@ class Wan(nn.Module):
 
         # TTT state initialization
         if self.opt.use_ttt and self.diffusion.model.use_ttt:
-            ttt_state_pos, ttt_state_neg = [], []
-            for block in self.diffusion.model.blocks:
-                if hasattr(block.self_attn, 'ttt_branch'):
-                    ttt_state_pos.append(
-                        block.self_attn.ttt_branch.init_state(batch_size, device, dtype))
-                    ttt_state_neg.append(
-                        block.self_attn.ttt_branch.init_state(batch_size, device, dtype))
-                else:
-                    ttt_state_pos.append(None)
-                    ttt_state_neg.append(None)
+            from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
+            # `init_state` reads TTT fast weight parameters which may be sharded
+            # by FSDP; summon full params so we get the correct shapes
+            ctx = FSDP.summon_full_params(self.diffusion) \
+                if isinstance(self.diffusion, FSDP) else nullcontext()
+            with ctx:
+                ttt_state_pos, ttt_state_neg = [], []
+                for block in self.diffusion.model.blocks:
+                    if hasattr(block.self_attn, "ttt_branch"):
+                        ttt_state_pos.append(
+                            block.self_attn.ttt_branch.init_state(batch_size, device, dtype))
+                        ttt_state_neg.append(
+                            block.self_attn.ttt_branch.init_state(batch_size, device, dtype))
+                    else:
+                        ttt_state_pos.append(None)
+                        ttt_state_neg.append(None)
             self.ttt_state_pos = ttt_state_pos
             self.ttt_state_neg = ttt_state_neg
         else:

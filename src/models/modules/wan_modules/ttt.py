@@ -2,6 +2,7 @@
 # Adapted from Spatial-TTT (https://github.com/KMnP/Spatial-TTT) with SP support.
 
 from typing import *
+from torch import Tensor
 
 import os
 import math
@@ -19,7 +20,7 @@ _ttt_compile = (lambda fn: fn) if os.environ.get("TTT_NO_COMPILE") else torch.co
 
 
 def inv_softplus(x: float) -> float:
-    return math.log(math.exp(x) - 1.0)
+    return math.log(math.exp(x) - 1.)
 
 
 # ============================================================================
@@ -27,14 +28,14 @@ def inv_softplus(x: float) -> float:
 # ============================================================================
 
 @_ttt_compile
-def silu_backprop(dy: torch.Tensor, x: torch.Tensor):
+def silu_backprop(dy: Tensor, x: Tensor):
     sigma = torch.sigmoid(x)
     dx = dy * sigma * (1 + x * (1 - sigma))
     return dx
 
 
 @_ttt_compile
-def l2_norm(x: torch.Tensor):
+def l2_norm(x: Tensor):
     """
     Args:
         x: [b, l, d]
@@ -75,18 +76,21 @@ def zeropower_via_newtonschulz5(G):
 @_ttt_compile
 @torch.autocast(device_type="cuda", enabled=True, dtype=torch.bfloat16)
 def prenorm_block_causal_lact_swiglu(
-    w0: torch.Tensor,
-    w1: torch.Tensor,
-    w2: torch.Tensor,
-    q: torch.Tensor,
-    k: torch.Tensor,
-    v: torch.Tensor,
-    lr0: torch.Tensor,
-    lr1: torch.Tensor,
-    lr2: torch.Tensor,
+    w0: Tensor,
+    w1: Tensor,
+    w2: Tensor,
+    #
+    q: Tensor,
+    k: Tensor,
+    v: Tensor,
+    #
+    lr0: Tensor,
+    lr1: Tensor,
+    lr2: Tensor,
+    #
     chunk_size: int = 2048,
     use_muon: bool = False,
-    momentum: torch.Tensor = None,
+    momentum: Tensor = None,
 ):
     """
     Block causal LaCT with SwiGLU fast weight function (prenorm variant).
@@ -98,13 +102,17 @@ def prenorm_block_causal_lact_swiglu(
         w0: [B*num_fw_heads, d_h, d_in] fast weight (fp32)
         w1: [B*num_fw_heads, d_out, d_h] fast weight (fp32)
         w2: [B*num_fw_heads, d_h, d_in] fast weight (fp32)
+
         q:  [B*num_fw_heads, L, d_in]
         k:  [B*num_fw_heads, L, d_in]
         v:  [B*num_fw_heads, L, d_out]
-        lr0, lr1, lr2: [B*num_fw_heads, L, d/1] per-token learning rates (fp32)
+
+        lr0, lr1, lr2: [B*num_fw_heads, L, 1] per-token learning rates (fp32)
+
         chunk_size: TTT update granularity
         use_muon: enable Newton-Schulz orthogonalization
         momentum: [B*num_fw_heads, L, 1] optional momentum
+
     Returns:
         output: [B*num_fw_heads, L, d_out]
     """
@@ -194,19 +202,157 @@ def prenorm_block_causal_lact_swiglu(
 
 @_ttt_compile
 @torch.autocast(device_type="cuda", enabled=True, dtype=torch.bfloat16)
-def block_causal_lact_swiglu(
-    w0: torch.Tensor,
-    w1: torch.Tensor,
-    w2: torch.Tensor,
-    q: torch.Tensor,
-    k: torch.Tensor,
-    v: torch.Tensor,
-    lr0: torch.Tensor,
-    lr1: torch.Tensor,
-    lr2: torch.Tensor,
+def teacher_forcing_prenorm_block_causal_lact_swiglu(
+    w0: Tensor,
+    w1: Tensor,
+    w2: Tensor,
+    #
+    q: Tensor,
+    k: Tensor,
+    v: Tensor,
+    #
+    lr0: Tensor,
+    lr1: Tensor,
+    lr2: Tensor,
+    #
     chunk_size: int = 2048,
     use_muon: bool = False,
-    momentum: torch.Tensor = None,
+    momentum: Tensor = None,
+    #
+    clean_seq_len: int = 0,
+):
+    """
+    Teacher forcing variant of prenorm block causal LaCT with SwiGLU.
+
+    Input sequence layout: [clean_tokens, noisy_tokens] (concatenated along L).
+    - Update uses ONLY clean tokens' k, v
+    - Apply covers BOTH clean and noisy chunks with the same weights
+
+    For chunk i (0-indexed):
+      1. Apply current weights to clean_chunk[i] AND noisy_chunk[i]
+      2. Update weights using clean_chunk[i]'s k, v  (skipped for last chunk)
+
+    This guarantees noisy_chunk[i] sees weights updated by clean_chunk[0..i-1] only.
+
+    Args:
+        w0, w1, w2: fast weights, same as prenorm_block_causal_lact_swiglu
+
+        q:  [B*num_fw_heads, L_total, d_in]; L_total = 2 * clean_seq_len
+        k:  [B*num_fw_heads, L_total, d_in]; only the first clean_seq_len tokens used for Update
+        v:  [B*num_fw_heads, L_total, d_out]; only the first clean_seq_len tokens used for Update
+
+        lr0, lr1, lr2: [B*num_fw_heads, L_total, 1]; only clean part used for Update
+
+        chunk_size: TTT update granularity
+        use_muon: enable Newton-Schulz orthogonalization
+        momentum: [B*num_fw_heads, L_total, 1]; only clean part used for Update
+
+        clean_seq_len: number of tokens in the clean prefix
+
+    Returns:
+        output: [B*num_fw_heads, L_total, d_out]
+    """
+    noisy_offset = clean_seq_len
+    num_chunks = clean_seq_len // chunk_size
+
+    w0_norm = w0.norm(dim=2, keepdim=True)
+    w1_norm = w1.norm(dim=2, keepdim=True)
+    w2_norm = w2.norm(dim=2, keepdim=True)
+
+    w0_main, w1_main, w2_main = w0, w1, w2
+
+    if momentum is not None:
+        dw1_momentum = torch.zeros_like(w1)
+        dw0_momentum = torch.zeros_like(w0)
+        dw2_momentum = torch.zeros_like(w2)
+
+    q = q.transpose(1, 2)   # [b, d, l]
+    v = v.transpose(1, 2)
+
+    output = torch.zeros_like(v)
+
+    for ci in range(num_chunks):
+        s = ci * chunk_size
+        e = s + chunk_size
+
+        # Apply: clean chunk
+        qi_c = q[:, :, s:e]
+        h_c = torch.bmm(w2, qi_c)
+        gate_c = tF.silu(torch.bmm(w0, qi_c), inplace=True)
+        output[:, :, s:e] = torch.bmm(w1, gate_c * h_c)
+
+        # Apply: corresponding noisy chunk (same weights)
+        qi_n = q[:, :, noisy_offset + s:noisy_offset + e]
+        h_n = torch.bmm(w2, qi_n)
+        gate_n = tF.silu(torch.bmm(w0, qi_n), inplace=True)
+        output[:, :, noisy_offset + s:noisy_offset + e] = torch.bmm(w1, gate_n * h_n)
+
+        # Update: only from clean k/v (skip last chunk)
+        if ci < num_chunks - 1:
+            ki = k[:, s:e, :]
+            vi = v[:, :, s:e]
+            lr0i = lr0[:, s:e, :]
+            lr1i = lr1[:, s:e, :]
+            lr2i = lr2[:, s:e, :]
+
+            gate_before_act = torch.bmm(w0, ki.transpose(1, 2))
+            hidden_before_mul = torch.bmm(w2, ki.transpose(1, 2))
+            hidden = tF.silu(gate_before_act, inplace=False) * hidden_before_mul
+
+            dhidden = torch.bmm(w1.transpose(1, 2), vi)
+            dhidden_before_mul = dhidden * tF.silu(gate_before_act, inplace=False)
+            dgate = dhidden * hidden_before_mul
+            dgate_before_act = silu_backprop(dgate, gate_before_act)
+
+            dw1 = torch.bmm(vi, (hidden.transpose(1, 2) * lr1i).type_as(vi))
+            dw0 = torch.bmm(dgate_before_act, (ki * lr0i).type_as(dgate_before_act))
+            dw2 = torch.bmm(dhidden_before_mul, (ki * lr2i).type_as(dhidden_before_mul))
+
+            if momentum is not None:
+                m_i = momentum[:, s:e, :]
+                m_i = m_i.mean(dim=1, keepdim=True)
+                dw0 = dw0 + dw0_momentum * m_i
+                dw1 = dw1 + dw1_momentum * m_i
+                dw2 = dw2 + dw2_momentum * m_i
+                dw0_momentum = dw0
+                dw1_momentum = dw1
+                dw2_momentum = dw2
+
+            if use_muon:
+                dw1 = zeropower_via_newtonschulz5(dw1)
+                dw0 = zeropower_via_newtonschulz5(dw0)
+                dw2 = zeropower_via_newtonschulz5(dw2)
+
+            # Update fast weights (prenorm: accumulate on unnormalized, apply norm for next iteration)
+            w1_main = w1_main + dw1
+            w0_main = w0_main + dw0
+            w2_main = w2_main + dw2
+
+            w0 = w0_main / (w0_main.norm(dim=2, keepdim=True) + 1e-5) * w0_norm
+            w1 = w1_main / (w1_main.norm(dim=2, keepdim=True) + 1e-5) * w1_norm
+            w2 = w2_main / (w2_main.norm(dim=2, keepdim=True) + 1e-5) * w2_norm
+
+    return output.transpose(1, 2)
+
+
+@_ttt_compile
+@torch.autocast(device_type="cuda", enabled=True, dtype=torch.bfloat16)
+def block_causal_lact_swiglu(
+    w0: Tensor,
+    w1: Tensor,
+    w2: Tensor,
+    #
+    q: Tensor,
+    k: Tensor,
+    v: Tensor,
+    #
+    lr0: Tensor,
+    lr1: Tensor,
+    lr2: Tensor,
+    #
+    chunk_size: int = 2048,
+    use_muon: bool = False,
+    momentum: Tensor = None,
 ):
     """
     Block causal LaCT with SwiGLU fast weight function (postnorm variant).
@@ -239,13 +385,17 @@ def block_causal_lact_swiglu(
         lr2i = lr2[:, s_index:e_index, :]
         lr0i = lr0[:, s_index:e_index, :]
 
+        # Apply: use current fast weights to compute output for current chunk
         h = torch.bmm(w2, qi)
         gate = tF.silu(torch.bmm(w0, qi), inplace=True)
         output[:, :, s_index:e_index] = torch.bmm(w1, gate * h)
 
+        # Forward pass with key (for gradient computation)
         gate_before_act = torch.bmm(w0, ki.transpose(1, 2))
         hidden_before_mul = torch.bmm(w2, ki.transpose(1, 2))
         hidden = tF.silu(gate_before_act, inplace=False) * hidden_before_mul
+
+        # Backward pass: compute gradients w.r.t. fast weights
         dhidden = torch.bmm(w1.transpose(1, 2), vi)
         dhidden_before_mul = dhidden * tF.silu(gate_before_act, inplace=False)
         dgate = dhidden * hidden_before_mul
@@ -270,6 +420,7 @@ def block_causal_lact_swiglu(
             dw0 = zeropower_via_newtonschulz5(dw0)
             dw2 = zeropower_via_newtonschulz5(dw2)
 
+        # Update fast weights (postnorm: accumulated on normalized)
         w1 = w1 + dw1
         w0 = w0 + dw0
         w2 = w2 + dw2
@@ -278,6 +429,7 @@ def block_causal_lact_swiglu(
         w1 = w1 / (w1.norm(dim=2, keepdim=True) + 1e-5) * w1_norm
         w2 = w2 / (w2.norm(dim=2, keepdim=True) + 1e-5) * w2_norm
 
+    # Last chunk: apply only, no update
     s_index = e_index
     e_index = seq_len
     qi = q[:, :, s_index:e_index]
@@ -288,12 +440,120 @@ def block_causal_lact_swiglu(
     return output.transpose(1, 2)
 
 
+@_ttt_compile
+@torch.autocast(device_type="cuda", enabled=True, dtype=torch.bfloat16)
+def teacher_forcing_block_causal_lact_swiglu(
+    w0: Tensor,
+    w1: Tensor,
+    w2: Tensor,
+    #
+    q: Tensor,
+    k: Tensor,
+    v: Tensor,
+    #
+    lr0: Tensor,
+    lr1: Tensor,
+    lr2: Tensor,
+    #
+    chunk_size: int = 2048,
+    use_muon: bool = False,
+    momentum: Tensor = None,
+    #
+    clean_seq_len: int = 0,
+):
+    """
+    Teacher forcing variant of block causal LaCT with SwiGLU (postnorm variant).
+    Same sequence layout and semantics as `teacher_forcing_prenorm_block_causal_lact_swiglu`,
+    but accumulates updates on normalized weights (postnorm).
+    """
+    noisy_offset = clean_seq_len
+    num_chunks = clean_seq_len // chunk_size
+
+    w0_norm = w0.norm(dim=2, keepdim=True)
+    w1_norm = w1.norm(dim=2, keepdim=True)
+    w2_norm = w2.norm(dim=2, keepdim=True)
+
+    if momentum is not None:
+        dw1_momentum = torch.zeros_like(w1)
+        dw0_momentum = torch.zeros_like(w0)
+        dw2_momentum = torch.zeros_like(w2)
+
+    q = q.transpose(1, 2)   # [b, d, l]
+    v = v.transpose(1, 2)
+
+    output = torch.zeros_like(v)
+
+    for ci in range(num_chunks):
+        s = ci * chunk_size
+        e = s + chunk_size
+
+        # Apply: clean chunk
+        qi_c = q[:, :, s:e]
+        h_c = torch.bmm(w2, qi_c)
+        gate_c = tF.silu(torch.bmm(w0, qi_c), inplace=True)
+        output[:, :, s:e] = torch.bmm(w1, gate_c * h_c)
+
+        # Apply: corresponding noisy chunk (same weights)
+        qi_n = q[:, :, noisy_offset + s:noisy_offset + e]
+        h_n = torch.bmm(w2, qi_n)
+        gate_n = tF.silu(torch.bmm(w0, qi_n), inplace=True)
+        output[:, :, noisy_offset + s:noisy_offset + e] = torch.bmm(w1, gate_n * h_n)
+
+        # Update: only from clean k/v (skip last chunk)
+        if ci < num_chunks - 1:
+            ki = k[:, s:e, :]
+            vi = v[:, :, s:e]
+            lr0i = lr0[:, s:e, :]
+            lr1i = lr1[:, s:e, :]
+            lr2i = lr2[:, s:e, :]
+
+            gate_before_act = torch.bmm(w0, ki.transpose(1, 2))
+            hidden_before_mul = torch.bmm(w2, ki.transpose(1, 2))
+            hidden = tF.silu(gate_before_act, inplace=False) * hidden_before_mul
+
+            dhidden = torch.bmm(w1.transpose(1, 2), vi)
+            dhidden_before_mul = dhidden * tF.silu(gate_before_act, inplace=False)
+            dgate = dhidden * hidden_before_mul
+            dgate_before_act = silu_backprop(dgate, gate_before_act)
+
+            dw1 = torch.bmm(vi, (hidden.transpose(1, 2) * lr1i).type_as(vi))
+            dw0 = torch.bmm(dgate_before_act, (ki * lr0i).type_as(dgate_before_act))
+            dw2 = torch.bmm(dhidden_before_mul, (ki * lr2i).type_as(dhidden_before_mul))
+
+            if momentum is not None:
+                m_i = momentum[:, s:e, :]
+                m_i = m_i.mean(dim=1, keepdim=True)
+                dw0 = dw0 + dw0_momentum * m_i
+                dw1 = dw1 + dw1_momentum * m_i
+                dw2 = dw2 + dw2_momentum * m_i
+                dw0_momentum = dw0
+                dw1_momentum = dw1
+                dw2_momentum = dw2
+
+            if use_muon:
+                dw1 = zeropower_via_newtonschulz5(dw1)
+                dw0 = zeropower_via_newtonschulz5(dw0)
+                dw2 = zeropower_via_newtonschulz5(dw2)
+
+            # Update fast weights (postnorm: accumulate on normalized)
+            w1 = w1 + dw1
+            w0 = w0 + dw0
+            w2 = w2 + dw2
+
+            w0 = w0 / (w0.norm(dim=2, keepdim=True) + 1e-5) * w0_norm
+            w1 = w1 / (w1.norm(dim=2, keepdim=True) + 1e-5) * w1_norm
+            w2 = w2 / (w2.norm(dim=2, keepdim=True) + 1e-5) * w2_norm
+
+    return output.transpose(1, 2)
+
+
 @torch.autocast(device_type="cuda", enabled=True, dtype=torch.bfloat16)
 def ttt_apply_only(
-    w0: torch.Tensor,
-    w1: torch.Tensor,
-    w2: torch.Tensor,
-    q: torch.Tensor,
+    w0: Tensor,
+    w1: Tensor,
+    w2: Tensor,
+    #
+    q: Tensor,
 ):
     """
     Apply fast weights to query without updating (for inference single-chunk).
@@ -306,7 +566,7 @@ def ttt_apply_only(
     Returns:
         output: [B*num_fw_heads, L, d_out]
     """
-    q_t = q.transpose(1, 2)  # [b, d_in, l]
+    q_t = q.transpose(1, 2)  # [b, d, l]
     h = torch.bmm(w2, q_t)
     gate = tF.silu(torch.bmm(w0, q_t), inplace=True)
     output = torch.bmm(w1, gate * h)
@@ -315,26 +575,32 @@ def ttt_apply_only(
 
 @torch.autocast(device_type="cuda", enabled=True, dtype=torch.bfloat16)
 def ttt_update_state(
-    w0: torch.Tensor,
-    w1: torch.Tensor,
-    w2: torch.Tensor,
-    k: torch.Tensor,
-    v: torch.Tensor,
-    lr0: torch.Tensor,
-    lr1: torch.Tensor,
-    lr2: torch.Tensor,
+    w0: Tensor,
+    w1: Tensor,
+    w2: Tensor,
+    #
+    k: Tensor,
+    v: Tensor,
+    #
+    lr0: Tensor,
+    lr1: Tensor,
+    lr2: Tensor,
+    #
     use_muon: bool = False,
-    momentum: torch.Tensor = None,
-    dw0_momentum: torch.Tensor = None,
-    dw1_momentum: torch.Tensor = None,
-    dw2_momentum: torch.Tensor = None,
+    momentum: Tensor = None,
+    #
+    dw0_momentum: Tensor = None,
+    dw1_momentum: Tensor = None,
+    dw2_momentum: Tensor = None,
+    #
     prenorm: bool = True,
-    w0_main: torch.Tensor = None,
-    w1_main: torch.Tensor = None,
-    w2_main: torch.Tensor = None,
-    w0_norm: torch.Tensor = None,
-    w1_norm: torch.Tensor = None,
-    w2_norm: torch.Tensor = None,
+    #
+    w0_main: Tensor = None,
+    w1_main: Tensor = None,
+    w2_main: Tensor = None,
+    w0_norm: Tensor = None,
+    w1_norm: Tensor = None,
+    w2_norm: Tensor = None,
 ):
     """
     Update TTT fast weight state given a new chunk's K/V (for inference).
@@ -398,9 +664,17 @@ def ttt_update_state(
 # ============================================================================
 
 class LowRankFastWeight(nn.Module):
-    def __init__(self, num_heads, out_features, in_features, rank,
-                 init_gain=0.5, add_identity=True):
+    def __init__(self,
+        num_heads: int,
+        out_features: int,
+        in_features: int,
+        rank: int,
+        #
+        init_gain: float = 0.5,
+        add_identity: bool = True,
+    ):
         super().__init__()
+
         self.num_heads = num_heads
         self.out_features = out_features
         self.in_features = in_features
@@ -409,8 +683,13 @@ class LowRankFastWeight(nn.Module):
 
         self.w_left = nn.Parameter(torch.empty(num_heads, out_features, rank))
         self.w_right = nn.Parameter(torch.empty(num_heads, rank, in_features))
-        nn.init.normal_(self.w_left, std=1.0 / math.sqrt(rank) * init_gain)
-        nn.init.normal_(self.w_right, std=1.0 / math.sqrt(in_features) * init_gain)
+        nn.init.normal_(self.w_left, std=1. / math.sqrt(rank) * init_gain)
+        nn.init.normal_(self.w_right, std=1. / math.sqrt(in_features) * init_gain)
+
+    def reset_parameters(self):
+        # Required by FSDP to materialize meta-device parameters
+        # Actual weights are synced from rank 0 via `sync_module_states`
+        pass
 
     def forward(self):
         W = self.w_left @ self.w_right
@@ -442,8 +721,10 @@ class TTTBranch(nn.Module):
         num_heads: int,
         num_fw_heads: int = 4,
         fw_head_dim: Optional[int] = None,
+        #
         ttt_chunk_size: int = 4680,  # default: frame_seqlen * chunk_size
         w0_w2_low_rank: int = 32,
+        #
         use_muon: bool = True,
         use_momentum: bool = True,
         prenorm: bool = True,
@@ -468,24 +749,21 @@ class TTTBranch(nn.Module):
 
         d_in = self.fw_head_dim
         d_out = self.fw_head_dim
-        d_h = d_in  # `inter_multi` = 1.0
+        d_h = d_in  # `inter_multi` = 1.
 
         # Fast weights: f(x) = w1 @ (silu(w0 @ x) * (w2 @ x))
         if w0_w2_low_rank > 0:
             self.w0 = LowRankFastWeight(num_fw_heads, d_h, d_in, w0_w2_low_rank)
             self.w2 = LowRankFastWeight(num_fw_heads, d_h, d_in, w0_w2_low_rank)
         else:
-            self.w0 = nn.Parameter(
-                torch.randn(num_fw_heads, d_h, d_in) / math.sqrt(d_in))
-            self.w2 = nn.Parameter(
-                torch.randn(num_fw_heads, d_h, d_in) / math.sqrt(d_in))
-        self.w1 = nn.Parameter(
-            torch.randn(num_fw_heads, d_out, d_h) / math.sqrt(d_h))
+            self.w0 = nn.Parameter(torch.randn(num_fw_heads, d_h, d_in) / math.sqrt(d_in))
+            self.w2 = nn.Parameter(torch.randn(num_fw_heads, d_h, d_in) / math.sqrt(d_in))
+        self.w1 = nn.Parameter(torch.randn(num_fw_heads, d_out, d_h) / math.sqrt(d_h))
 
         # Per-token learning rate projection
         lr_dim = 3 * num_fw_heads  # `lr_dim_per_head` = 1
         self.lr_proj = nn.Linear(dim, lr_dim)
-        self.base_lr_inv = inv_softplus(0.001)
+        self.base_lr_inv = inv_softplus(0.001)  # TODO: make it configurable
 
         # Learnable TTT output scale (zero-initialized gate)
         self.ttt_scale_proj = nn.Linear(dim, num_fw_heads)
@@ -513,12 +791,13 @@ class TTTBranch(nn.Module):
         w1 = self.w1
         return w0, w1, w2
 
-    def _prepare_qkv(self, q, k, v):
+    def _prepare_qkv(self, q: Tensor, k: Tensor, v: Tensor):
         """
         Slice and reshape Q/K/V for TTT heads.
 
         Args:
-            q, k, v: [B, L, num_heads, head_dim] from CausalWanSelfAttention
+            q, k, v: [B, L, num_heads, head_dim] from `CausalWanSelfAttention`
+
         Returns:
             fast_q, fast_k, fast_v: [B*num_fw_heads, L, fw_head_dim]
         """
@@ -543,12 +822,13 @@ class TTTBranch(nn.Module):
 
         return fast_q, fast_k, fast_v
 
-    def _compute_lr_and_momentum(self, hidden_states):
+    def _compute_lr_and_momentum(self, hidden_states: Tensor):
         """
         Compute per-token learning rates and optional momentum.
 
         Args:
             hidden_states: [B, L, dim]
+
         Returns:
             lr0, lr1, lr2: [B*num_fw_heads, L, 1]
             momentum: [B*num_fw_heads, L, 1] or None
@@ -570,13 +850,14 @@ class TTTBranch(nn.Module):
 
         return lr0, lr1, lr2, momentum
 
-    def _apply_scale_and_norm(self, fw_x, hidden_states):
+    def _apply_scale_and_norm(self, fw_x: Tensor, hidden_states: Tensor):
         """
         Apply RMSNorm and learnable scale to TTT output.
 
         Args:
             fw_x: [B*num_fw_heads, L, fw_head_dim]
             hidden_states: [B, L, dim]
+
         Returns:
             ttt_output: [B, L, ttt_dim]
         """
@@ -597,21 +878,41 @@ class TTTBranch(nn.Module):
 
         return ttt_output
 
-    def forward(self, q, k, v, hidden_states, ttt_state=None):
+    def reset_parameters(self):
+        # Required by FSDP to materialize meta-device parameters
+        # Actual weights are synced from rank 0 via `sync_module_states`
+        pass
+
+    def forward(self,
+        q: Tensor,
+        k: Tensor,
+        v: Tensor,
+        hidden_states: Tensor,
+        #
+        ttt_state: Optional[dict] = None,
+        #
+        teacher_forcing_clean_len: Optional[int] = None,
+    ):
         """
         Forward pass of the TTT branch.
 
         Args:
-            q: [B, L, num_heads, head_dim] — shared with attention (pre-RoPE).
-               With SP, L is the local shard length (L_full // sp_size).
+            q: [B, L, num_heads, head_dim]; shared with attention (pre-RoPE)
+               With SP, L is the local shard length (L_full // sp_size)
             k: [B, L, num_heads, head_dim]
             v: [B, L, num_heads, head_dim]
-            hidden_states: [B, L, dim] — input to self-attention (for lr/scale projections)
-            ttt_state: dict or None — for inference, carries fast weights across chunks.
-                       Mutated **in-place** (like KV-cache).
+            hidden_states: [B, L, dim]; input to self-attention (for lr/scale projections)
+
+            ttt_state: dict or None; for inference, carries fast weights across chunks
+                       Mutated in-place (like KV-cache)
+
+            teacher_forcing_clean_len: int or None; total number of clean tokens
+                when the sequence layout is [clean, noisy]. If provided, uses
+                the teacher-forcing kernel that only Updates from clean tokens
+                and Applies to both clean and noisy chunks with the same weights
 
         Returns:
-            ttt_output: [B, L, dim] — zero-padded to full `dim`
+            ttt_output: [B, L, dim]; zero-padded to full `dim`
         """
         B, L_local = q.shape[0], q.shape[1]
         sp_size = get_sp_world_size()
@@ -632,12 +933,9 @@ class TTTBranch(nn.Module):
 
             # Extract TTT heads from Q/K/V
             # [B, L_local, num_heads, head_dim] -> [B, L_local, num_fw_heads, fw_head_dim]
-            q_ttt = q.flatten(2)[:, :, :self.ttt_dim].view(
-                B, L_local, self.num_fw_heads, self.fw_head_dim)
-            k_ttt = k.flatten(2)[:, :, :self.ttt_dim].view(
-                B, L_local, self.num_fw_heads, self.fw_head_dim)
-            v_ttt = v.flatten(2)[:, :, :self.ttt_dim].view(
-                B, L_local, self.num_fw_heads, self.fw_head_dim)
+            q_ttt = q.flatten(2)[:, :, :self.ttt_dim].view(B, L_local, self.num_fw_heads, self.fw_head_dim)
+            k_ttt = k.flatten(2)[:, :, :self.ttt_dim].view(B, L_local, self.num_fw_heads, self.fw_head_dim)
+            v_ttt = v.flatten(2)[:, :, :self.ttt_dim].view(B, L_local, self.num_fw_heads, self.fw_head_dim)
 
             # all-to-all: [B, L_local, num_fw_heads, d] -> [B, L_full, local_fw_heads, d]
             q_ttt = all_to_all(q_ttt, scatter_dim=2, gather_dim=1)
@@ -646,12 +944,9 @@ class TTTBranch(nn.Module):
             L = q_ttt.shape[1]
 
             # [B, L, local_fw_heads, d] -> [B*local_fw_heads, L, d]
-            fast_q = q_ttt.permute(0, 2, 1, 3).reshape(
-                B * local_fw_heads, L, self.fw_head_dim)
-            fast_k = k_ttt.permute(0, 2, 1, 3).reshape(
-                B * local_fw_heads, L, self.fw_head_dim)
-            fast_v = v_ttt.permute(0, 2, 1, 3).reshape(
-                B * local_fw_heads, L, self.fw_head_dim)
+            fast_q = q_ttt.permute(0, 2, 1, 3).reshape(B * local_fw_heads, L, self.fw_head_dim)
+            fast_k = k_ttt.permute(0, 2, 1, 3).reshape(B * local_fw_heads, L, self.fw_head_dim)
+            fast_v = v_ttt.permute(0, 2, 1, 3).reshape(B * local_fw_heads, L, self.fw_head_dim)
             fast_q = l2_norm(fast_q)
             fast_k = l2_norm(fast_k)
 
@@ -670,8 +965,7 @@ class TTTBranch(nn.Module):
                 momentum = self.momentum_proj(hidden_states)  # [B, L_local, num_fw_heads]
                 momentum = momentum.view(B, L_local, self.num_fw_heads, 1)
                 momentum = all_to_all(momentum, scatter_dim=2, gather_dim=1)
-                momentum = momentum.float().permute(0, 2, 1, 3).reshape(
-                    B * local_fw_heads, L, 1)
+                momentum = momentum.float().permute(0, 2, 1, 3).reshape(B * local_fw_heads, L, 1)
             else:
                 momentum = None
 
@@ -696,16 +990,32 @@ class TTTBranch(nn.Module):
             if self.fp32_states:
                 fw_w0, fw_w1, fw_w2 = fw_w0.float(), fw_w1.float(), fw_w2.float()
 
-            ttt_kernel = prenorm_block_causal_lact_swiglu if self.prenorm \
-                else block_causal_lact_swiglu
-            fw_x = ttt_kernel(
-                fw_w0, fw_w1, fw_w2,
-                fast_q, fast_k, fast_v,
-                lr0, lr1, lr2,
-                chunk_size=self.ttt_chunk_size,
-                use_muon=self.use_muon,
-                momentum=momentum,
-            )
+            if teacher_forcing_clean_len is not None:
+                tf_kernel = teacher_forcing_prenorm_block_causal_lact_swiglu \
+                    if self.prenorm else teacher_forcing_block_causal_lact_swiglu
+                fw_x = tf_kernel(
+                    fw_w0, fw_w1, fw_w2,
+                    fast_q, fast_k, fast_v,
+                    lr0, lr1, lr2,
+                    #
+                    chunk_size=self.ttt_chunk_size,
+                    use_muon=self.use_muon,
+                    momentum=momentum,
+                    #
+                    clean_seq_len=teacher_forcing_clean_len,
+                )
+            else:
+                ttt_kernel = prenorm_block_causal_lact_swiglu \
+                    if self.prenorm else block_causal_lact_swiglu
+                fw_x = ttt_kernel(
+                    fw_w0, fw_w1, fw_w2,
+                    fast_q, fast_k, fast_v,
+                    lr0, lr1, lr2,
+                    #
+                    chunk_size=self.ttt_chunk_size,
+                    use_muon=self.use_muon,
+                    momentum=momentum,
+                )
         else:
             # Inference: use carried state (already sliced for SP in `init_state`)
             fw_w0 = ttt_state["w0"]
@@ -716,25 +1026,30 @@ class TTTBranch(nn.Module):
             fw_x = ttt_apply_only(fw_w0, fw_w1, fw_w2, fast_q)
 
             # Update state in-place
-            (new_w0, new_w1, new_w2,
-             new_dw0, new_dw1, new_dw2,
-             new_w0_main, new_w1_main, new_w2_main) = ttt_update_state(
-                fw_w0, fw_w1, fw_w2,
-                fast_k, fast_v,
-                lr0, lr1, lr2,
-                use_muon=self.use_muon,
-                momentum=momentum,
-                dw0_momentum=ttt_state.get("dw0_momentum"),
-                dw1_momentum=ttt_state.get("dw1_momentum"),
-                dw2_momentum=ttt_state.get("dw2_momentum"),
-                prenorm=self.prenorm,
-                w0_main=ttt_state.get("w0_main", fw_w0),
-                w1_main=ttt_state.get("w1_main", fw_w1),
-                w2_main=ttt_state.get("w2_main", fw_w2),
-                w0_norm=ttt_state["w0_norm"],
-                w1_norm=ttt_state["w1_norm"],
-                w2_norm=ttt_state["w2_norm"],
-            )
+            new_w0, new_w1, new_w2, \
+            new_dw0, new_dw1, new_dw2, \
+            new_w0_main, new_w1_main, new_w2_main = \
+                ttt_update_state(
+                    fw_w0, fw_w1, fw_w2,
+                    fast_k, fast_v,
+                    lr0, lr1, lr2,
+                    #
+                    use_muon=self.use_muon,
+                    momentum=momentum,
+                    #
+                    dw0_momentum=ttt_state.get("dw0_momentum"),
+                    dw1_momentum=ttt_state.get("dw1_momentum"),
+                    dw2_momentum=ttt_state.get("dw2_momentum"),
+                    #
+                    prenorm=self.prenorm,
+                    #
+                    w0_main=ttt_state.get("w0_main", fw_w0),
+                    w1_main=ttt_state.get("w1_main", fw_w1),
+                    w2_main=ttt_state.get("w2_main", fw_w2),
+                    w0_norm=ttt_state["w0_norm"],
+                    w1_norm=ttt_state["w1_norm"],
+                    w2_norm=ttt_state["w2_norm"],
+                )
             ttt_state["w0"] = new_w0
             ttt_state["w1"] = new_w1
             ttt_state["w2"] = new_w2
@@ -772,7 +1087,7 @@ class TTTBranch(nn.Module):
         L_out = ttt_output.shape[1]
         if self.ttt_dim < self.dim:
             pad = torch.zeros(B, L_out, self.dim - self.ttt_dim,
-                              device=ttt_output.device, dtype=ttt_output.dtype)
+                device=ttt_output.device, dtype=ttt_output.dtype)
             ttt_output = torch.cat([ttt_output, pad], dim=-1)
 
         return ttt_output

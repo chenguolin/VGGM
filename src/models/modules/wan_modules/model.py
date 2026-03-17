@@ -9,6 +9,7 @@
     ## 8. Support sequence parallelism
     ## 9. Support `return_feat_layer_idx`
     ## 10. Support `not_head_and_unpatchify` and `return_ddt_inputs` for DDT
+    ## 11. Support `reset_parameters` in all modules for FSDP
 
 from typing import *
 from numpy import ndarray
@@ -241,6 +242,11 @@ class WanRMSNorm(nn.Module):
         self.eps = eps
         self.weight = nn.Parameter(torch.ones(dim))
 
+    def reset_parameters(self):
+        # Required by FSDP to materialize meta-device parameters
+        # Actual weights are synced from rank 0 via `sync_module_states`
+        pass
+
     def forward(self, x):
         r"""
         Args:
@@ -256,6 +262,11 @@ class WanLayerNorm(nn.LayerNorm):
 
     def __init__(self, dim, eps=1e-6, elementwise_affine=False):
         super().__init__(dim, elementwise_affine=elementwise_affine, eps=eps)
+
+    def reset_parameters(self):
+        # Required by FSDP to materialize meta-device parameters
+        # Actual weights are synced from rank 0 via `sync_module_states`
+        pass
 
     def forward(self, x):
         r"""
@@ -289,6 +300,11 @@ class WanSelfAttention(nn.Module):
         self.o = nn.Linear(dim, dim)
         self.norm_q = WanRMSNorm(dim, eps=eps) if qk_norm else nn.Identity()
         self.norm_k = WanRMSNorm(dim, eps=eps) if qk_norm else nn.Identity()
+
+    def reset_parameters(self):
+        # Required by FSDP to materialize meta-device parameters
+        # Actual weights are synced from rank 0 via `sync_module_states`
+        pass
 
     def forward(self, x, seq_lens, grid_sizes, freqs):
         r"""
@@ -398,6 +414,11 @@ class WanT2VCrossAttention(WanSelfAttention):
                 k_start = k_end
         return out
 
+    def reset_parameters(self):
+        # Required by FSDP to materialize meta-device parameters
+        # Actual weights are synced from rank 0 via `sync_module_states`
+        pass
+
     def forward(
         self,
         x,
@@ -466,6 +487,11 @@ class WanI2VCrossAttention(WanSelfAttention):
         self.v_img = nn.Linear(dim, dim)
         # self.alpha = nn.Parameter(torch.zeros((1, )))
         self.norm_k_img = WanRMSNorm(dim, eps=eps) if qk_norm else nn.Identity()
+
+    def reset_parameters(self):
+        # Required by FSDP to materialize meta-device parameters
+        # Actual weights are synced from rank 0 via `sync_module_states`
+        pass
 
     def forward(self, x, context, context_lens, crossattn_cache=None):
         r"""
@@ -562,6 +588,11 @@ class WanAttentionBlock(nn.Module):
         # modulation
         self.modulation = nn.Parameter(torch.randn(1, 6, dim) / dim**0.5)
 
+    def reset_parameters(self):
+        # Required by FSDP to materialize meta-device parameters
+        # Actual weights are synced from rank 0 via `sync_module_states`
+        pass
+
     def forward(
         self,
         x,
@@ -627,6 +658,11 @@ class Head(nn.Module):
         # modulation
         self.modulation = nn.Parameter(torch.randn(1, 2, dim) / dim**0.5)
 
+    def reset_parameters(self):
+        # Required by FSDP to materialize meta-device parameters
+        # Actual weights are synced from rank 0 via `sync_module_states`
+        pass
+
     def forward(self, x, e):
         r"""
         Args:
@@ -653,6 +689,11 @@ class MLPProj(torch.nn.Module):
         if flf_pos_emb:  # NOTE: we only use this for `flf2v`
             self.emb_pos = nn.Parameter(
                 torch.zeros(1, FIRST_LAST_FRAME_CONTEXT_TOKEN_NUMBER, 1280))
+
+    def reset_parameters(self):
+        # Required by FSDP to materialize meta-device parameters
+        # Actual weights are synced from rank 0 via `sync_module_states`
+        pass
 
     def forward(self, image_embeds):
         if hasattr(self, 'emb_pos'):
@@ -816,6 +857,11 @@ class WanModel(ModelMixin, ConfigMixin):
             ],
             dim=1
         ).to(device)
+
+    def reset_parameters(self):
+        # Required by FSDP to materialize meta-device parameters
+        # Actual weights are synced from rank 0 via `sync_module_states`
+        pass
 
     def forward(
         self,

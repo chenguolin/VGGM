@@ -170,9 +170,10 @@ class WanDiffusionWrapper(nn.Module):
                 chunk_size=chunk_size,
                 max_attention_size=max_attention_size,
                 rope_outside=rope_outside,
-                ttt_layers=ttt_layers,
-                ttt_config=ttt_config,
             )
+            # Inject TTT branches after pretrained weights are loaded, so that
+            # TTT parameters don't interfere with `from_pretrained`
+            self.model.inject_ttt(ttt_layers=ttt_layers, ttt_config=ttt_config)
         else:
             self.model = WanModel.from_pretrained(pretrained_dir)
 

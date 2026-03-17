@@ -34,7 +34,7 @@ class InternalDataset(BaseDataset):
             else:
                 self.uids = [uids[i].strip(".json") for i in indices[int(0.95 * len(uids)):]]
 
-        self.uids = [uid for uid in self.uids if os.path.exists(os.path.join(self.root, "video", f"{uid}.mp4"))]
+        # self.uids = [uid for uid in self.uids if os.path.exists(os.path.join(self.root, "video", f"{uid}.mp4"))]
         self.valid_idxs = list(range(len(self.uids)))
 
     def __len__(self) -> int:
@@ -83,6 +83,14 @@ class InternalDataset(BaseDataset):
 
         # Sample frames
         video_path = os.path.join(self.root, "video", f"{uid}.mp4")
+        if not os.path.exists(video_path):
+            video_path = os.path.join(self.root, "video_new", f"{uid}.mp4")
+        if not os.path.exists(video_path):
+            if idx in self.valid_idxs:
+                self.valid_idxs.remove(idx)
+                if len(self.valid_idxs) == 0:
+                    raise ValueError("No valid data in InternalDataset!")
+            return self.__getitem__(int(np.random.choice(self.valid_idxs)))
         vr = VideoReader(str(video_path), ctx=cpu(0))
         num_frames, fps, (H, W) = len(vr), vr.get_avg_fps(), vr[0].shape[:2]
         # `clip_duration`: seconds per clip; `12`: hard-coded for clip-overlap; `clip_base`: index offset (1 for old, 0 for new)

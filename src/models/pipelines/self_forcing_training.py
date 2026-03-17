@@ -4,6 +4,7 @@ from src.models.wan import WanDiffusionWrapper, WanDiffusionDA3Wrapper
 from src.models.modules import VAEDecoderWrapper, TAEHV
 
 import torch
+from contextlib import nullcontext
 import torch.distributed as dist
 import torch.nn.functional as tF
 
@@ -420,13 +421,19 @@ class SelfForcingTrainingPipeline:
 
         # TTT state initialization
         if self.opt.use_ttt and self.diffusion.model.use_ttt:
-            ttt_state_pos = []
-            for block in self.diffusion.model.blocks:
-                if hasattr(block.self_attn, "ttt_branch"):
-                    ttt_state_pos.append(
-                        block.self_attn.ttt_branch.init_state(batch_size, device, dtype))
-                else:
-                    ttt_state_pos.append(None)
+            from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
+            # `init_state` reads TTT fast weight parameters which may be sharded
+            # by FSDP; summon full params so we get the correct shapes
+            ctx = FSDP.summon_full_params(self.diffusion) \
+                if isinstance(self.diffusion, FSDP) else nullcontext()
+            with ctx:
+                ttt_state_pos = []
+                for block in self.diffusion.model.blocks:
+                    if hasattr(block.self_attn, "ttt_branch"):
+                        ttt_state_pos.append(
+                            block.self_attn.ttt_branch.init_state(batch_size, device, dtype))
+                    else:
+                        ttt_state_pos.append(None)
             self.ttt_state_pos = ttt_state_pos
         else:
             self.ttt_state_pos = None

@@ -201,6 +201,11 @@ class CausalWanSelfAttention(nn.Module):
             self.ttt_branch = TTTBranch(
                 dim=dim, num_heads=num_heads, **ttt_config)
 
+    def reset_parameters(self):
+        # Required by FSDP to materialize meta-device parameters
+        # Actual weights are synced from rank 0 via `sync_module_states`
+        pass
+
     def forward(
         self,
         x,
@@ -383,9 +388,15 @@ class CausalWanSelfAttention(nn.Module):
         # Always uses the original seq-parallel Q/K/V saved above; TTT handles
         # its own Ulysses-style all-to-all internally when `sp_size > 1`.
         if self.use_ttt:
+            # Detect teacher forcing: sequence has [clean, noisy] layout
+            tf_clean_len = None
+            if kv_cache is None and (s == seq_lens[0].item() * 2 // sp_size):
+                tf_clean_len = seq_lens[0].item()  # total clean tokens (pre-SP)
+
             # `ttt_state` is mutated in-place (like KV-cache)
             ttt_output = self.ttt_branch(
-                ttt_q, ttt_k, ttt_v, hidden_states, ttt_state=ttt_state)
+                ttt_q, ttt_k, ttt_v, hidden_states, ttt_state=ttt_state,
+                teacher_forcing_clean_len=tf_clean_len)
 
         # output
         x = x.flatten(2)
@@ -443,6 +454,11 @@ class CausalWanAttentionBlock(nn.Module):
 
         # modulation
         self.modulation = nn.Parameter(torch.randn(1, 6, dim) / dim**0.5)
+
+    def reset_parameters(self):
+        # Required by FSDP to materialize meta-device parameters
+        # Actual weights are synced from rank 0 via `sync_module_states`
+        pass
 
     def forward(
         self,
@@ -549,10 +565,7 @@ class CausalWanModel(ModelMixin, ConfigMixin):
                  #
                  qk_norm=True,
                  cross_attn_norm=True,
-                 eps=1e-6,
-                 #
-                 ttt_layers=None,
-                 ttt_config=None):
+                 eps=1e-6):
         r"""
         Initialize the diffusion model backbone.
 
@@ -623,14 +636,7 @@ class CausalWanModel(ModelMixin, ConfigMixin):
             nn.Linear(freq_dim, dim), nn.SiLU(), nn.Linear(dim, dim))
         self.time_projection = nn.Sequential(nn.SiLU(), nn.Linear(dim, dim * 6))
 
-        # (Optional) TTT configuration: if `ttt_config` is provided but `ttt_layers` is None, enable all layers
-        if ttt_layers is None and ttt_config is not None:
-            ttt_layer_set = set(range(num_layers))
-        elif ttt_layers is not None:
-            ttt_layer_set = set(ttt_layers)
-        else:
-            ttt_layer_set = set()
-        self.use_ttt = len(ttt_layer_set) > 0
+        self.use_ttt = False
 
         # blocks
         cross_attn_type = 't2v_cross_attn' if model_type == 't2v' else 'i2v_cross_attn'
@@ -639,10 +645,7 @@ class CausalWanModel(ModelMixin, ConfigMixin):
                                     #
                                     sink_size, max_attention_size, rope_outside,
                                     #
-                                    qk_norm, cross_attn_norm, eps,
-                                    #
-                                    use_ttt=(i in ttt_layer_set),
-                                    ttt_config=ttt_config)
+                                    qk_norm, cross_attn_norm, eps)
             for i in range(num_layers)
         ])
 
@@ -1308,6 +1311,11 @@ class CausalWanModel(ModelMixin, ConfigMixin):
             else:
                 return [u.float() for u in x], [v.float() for v in inter_feats]
 
+    def reset_parameters(self):
+        # Required by FSDP to materialize meta-device parameters
+        # Actual weights are synced from rank 0 via `sync_module_states`
+        pass
+
     def forward(
         self,
         *args,
@@ -1367,3 +1375,39 @@ class CausalWanModel(ModelMixin, ConfigMixin):
 
         # init output layer
         nn.init.zeros_(self.head.head.weight)
+
+    def inject_ttt(self, ttt_layers=None, ttt_config=None):
+        """
+        Inject TTTBranch into specified attention blocks AFTER pretrained weights
+        have been loaded. This avoids TTT parameters interfering with
+        `from_pretrained` / `load_state_dict`.
+
+        Args:
+            ttt_layers: List of layer indices to inject TTT into. If None and
+                `ttt_config` is provided, inject into all layers.
+            ttt_config: Dict of TTTBranch kwargs. If None, no injection is done.
+        """
+        if ttt_config is None and ttt_layers is None:
+            return
+
+        # Determine which layers get TTT
+        if ttt_layers is None and ttt_config is not None:
+            ttt_layer_set = set(range(self.num_layers))
+        elif ttt_layers is not None:
+            ttt_layer_set = set(ttt_layers)
+        else:
+            ttt_layer_set = set()
+
+        if len(ttt_layer_set) == 0:
+            return
+
+        self.use_ttt = True
+        ttt_config = ttt_config or {}
+
+        from .ttt import TTTBranch
+        for i in ttt_layer_set:
+            block = self.blocks[i]
+            sa = block.self_attn
+            sa.use_ttt = True
+            sa.ttt_branch = TTTBranch(
+                dim=sa.dim, num_heads=sa.num_heads, **ttt_config)
