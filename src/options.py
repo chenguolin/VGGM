@@ -128,7 +128,7 @@ class Options:
     max_kvcache_size: int = 21  # set to a limited number to save memory
     rope_outside: bool = False
     prefill_image: bool = True
-        ## TTT (Test-Time Training hybrid branch)
+        ## TTT
     use_ttt: bool = False
     ttt_layers: Optional[str] = None  # e.g. "0,2,4,6,8"; None means all layers when `use_ttt=True`
     ttt_num_fw_heads: int = 4
