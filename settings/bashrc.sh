@@ -51,8 +51,11 @@ PROMPT_COMMAND='_set_ps1'
 
 # ── History search with arrow keys ────────────────────────────────────────────
 # Type a few characters then press ↑/↓ to search history matching the prefix
-bind '"\e[A": history-search-backward'
-bind '"\e[B": history-search-forward'
+# Guard: `bind` requires an interactive shell with line editing enabled
+if [[ $- == *i* ]]; then
+    bind '"\e[A": history-search-backward'
+    bind '"\e[B": history-search-forward'
+fi
 # Larger history & no duplicates
 export HISTSIZE=10000
 export HISTFILESIZE=20000
