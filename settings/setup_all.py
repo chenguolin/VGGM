@@ -18,3 +18,6 @@ if __name__ == "__main__":
 
     with Pool(len(ips)) as pool:
         r = list(tqdm(pool.imap(_foo, ips), total=len(ips)))
+
+    os.system("bash settings/install_claude.sh")
+    os.system("bash settings/install_bashrc.sh && source ~/.bashrc")
