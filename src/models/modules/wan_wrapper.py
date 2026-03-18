@@ -150,6 +150,7 @@ class WanDiffusionWrapper(nn.Module):
         chunk_size=1,
         max_attention_size: int = 32760,  # 81 x 480 x 832 -> 21 x 30 x 52
         rope_outside: bool = False,
+        use_flexattn: bool = True,
         #
         feat_proj: bool = False,
         num_ddts: int = 0,
@@ -170,6 +171,7 @@ class WanDiffusionWrapper(nn.Module):
                 chunk_size=chunk_size,
                 max_attention_size=max_attention_size,
                 rope_outside=rope_outside,
+                use_flexattn=use_flexattn,
             )
             # Inject TTT branches after pretrained weights are loaded, so that
             # TTT parameters don't interfere with `from_pretrained`
@@ -484,6 +486,7 @@ class WanDiffusionDA3Wrapper(nn.Module):
         chunk_size=1,
         max_attention_size: int = 32760,  # 81 x 480 x 832 -> 21 x 30 x 52
         rope_outside: bool = False,
+        use_flexattn: bool = True,
         #
         da3_model_name: str = "da3-large-1.1",
         da3_chunk_size: int = 8,
@@ -502,6 +505,7 @@ class WanDiffusionDA3Wrapper(nn.Module):
                 chunk_size=chunk_size,
                 max_attention_size=max_attention_size,
                 rope_outside=rope_outside,
+                use_flexattn=use_flexattn,
             )
         else:
             self.model = WanModel.from_pretrained(pretrained_dir)

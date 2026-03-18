@@ -26,12 +26,21 @@ from .model import (
 )
 from src.utils.distributed import get_sp_rank, get_sp_world_size, all_gather, all_to_all, all_split, sync_across_sp_group
 
-# wan 1.3B model has a weird channel / head configurations and require max-autotune to work with flexattention
-# see https://github.com/pytorch/pytorch/issues/133254
-# change to default for other models
-flex_attention = torch.compile(
-    flex_attention, dynamic=False, mode="max-autotune-no-cudagraphs")
-# flex_attention = torch.compile(flex_attention)
+# Lazy-compile `flex_attention` on first use so that `use_flexattn=False`
+# sessions never pay the compilation cost.
+_flex_attention_raw = flex_attention
+_flex_attention_compiled = None
+
+def _get_compiled_flex_attention():
+    global _flex_attention_compiled
+    if _flex_attention_compiled is None:
+        # wan 1.3B model has a weird channel / head configurations and require max-autotune to work with flexattention
+        # see https://github.com/pytorch/pytorch/issues/133254
+        # change to default for other models
+        _flex_attention_compiled = torch.compile(
+            _flex_attention_raw, dynamic=False, mode="max-autotune-no-cudagraphs")
+        # _flex_attention_compiled = torch.compile(_flex_attention_raw)
+    return _flex_attention_compiled
 
 
 @torch.amp.autocast('cuda', enabled=False)
@@ -143,7 +152,7 @@ def distributed_flex_attention(
         v = torch.cat([v, torch.zeros([v.shape[0], padded_length, v.shape[2], v.shape[3]], device=v.device, dtype=v.dtype)], dim=1)
 
     # Apply flex attention on full sequence with split heads
-    x = flex_attention(
+    x = _get_compiled_flex_attention()(
         query=q.transpose(2, 1),
         key=k.transpose(2, 1),
         value=v.transpose(2, 1),
@@ -166,6 +175,7 @@ class CausalWanSelfAttention(nn.Module):
                  sink_size=0,
                  max_attention_size=32760,  # 21 x 480 x 832 -> 21 x 30 x 52
                  rope_outside=False,
+                 use_flexattn=True,
                  #
                  qk_norm=True,
                  eps=1e-6,
@@ -181,6 +191,7 @@ class CausalWanSelfAttention(nn.Module):
         self.sink_size = sink_size
         self.max_attention_size = max_attention_size
         self.rope_outside = rope_outside
+        self.use_flexattn = use_flexattn
         #
         self.qk_norm = qk_norm
         self.eps = eps
@@ -201,6 +212,158 @@ class CausalWanSelfAttention(nn.Module):
             self.ttt_branch = TTTBranch(
                 dim=dim, num_heads=num_heads, **ttt_config)
 
+    def _loop_attention(self, q, k, v, loop_attn_params):
+        """Dispatch to diffusion forcing or teacher forcing loop attention."""
+        if loop_attn_params["is_teacher_forcing"]:
+            return self._loop_attention_teacher_forcing(q, k, v, loop_attn_params)
+        else:
+            return self._loop_attention_diffusion_forcing(q, k, v, loop_attn_params)
+
+    def _loop_attention_diffusion_forcing(self, q, k, v, params):
+        """
+        Loop-based windowed attention for diffusion forcing (no teacher forcing).
+        Each chunk `i` attends to KV in `[0, (i+1)*block)`, with sink + window limits.
+        """
+        frame_seqlen = params["frame_seqlen"]
+        num_frames = params["num_frames"]
+        chunk_size = params["chunk_size"]
+        sink_size = params["sink_size"]
+        max_attention_size = params["max_attention_size"]
+
+        block = frame_seqlen * chunk_size
+        total_len = num_frames * frame_seqlen
+        sink_end = sink_size * frame_seqlen
+        num_chunks = math.ceil(total_len / block)
+
+        outputs = []
+        for i in range(num_chunks):
+            q_start = i * block
+            q_end = min((i + 1) * block, total_len)
+            q_i = q[:, q_start:q_end]
+
+            chunk_end = q_end
+
+            if max_attention_size == -1 or sink_end == 0:
+                # No window limit or no sink: take all KV up to `chunk_end`
+                if max_attention_size == -1:
+                    k_i = k[:, :chunk_end]
+                    v_i = v[:, :chunk_end]
+                else:
+                    # Window limit, no sink
+                    window_start = max(0, chunk_end - max_attention_size)
+                    k_i = k[:, window_start:chunk_end]
+                    v_i = v[:, window_start:chunk_end]
+            else:
+                # Sink + window
+                window = max_attention_size - sink_end
+                window_start = max(sink_end, chunk_end - window)
+                k_i = torch.cat([k[:, :sink_end], k[:, window_start:chunk_end]], dim=1)
+                v_i = torch.cat([v[:, :sink_end], v[:, window_start:chunk_end]], dim=1)
+
+            out_i = attention(q_i, k_i, v_i)
+            outputs.append(out_i)
+
+        return torch.cat(outputs, dim=1)
+
+    def _loop_attention_teacher_forcing(self, q, k, v, params):
+        """
+        Loop-based windowed attention for teacher forcing.
+        Sequence layout: `[clean_tokens | noisy_tokens]`, each half has
+        `num_frames * frame_seqlen` tokens.
+
+        Clean chunk `i`: same as diffusion forcing, operating within clean half.
+        Noisy chunk `i`: attends to context from clean half (sink + window) and
+        itself from noisy half.
+        """
+        frame_seqlen = params["frame_seqlen"]
+        num_frames = params["num_frames"]
+        chunk_size = params["chunk_size"]
+        sink_size = params["sink_size"]
+        max_attention_size = params["max_attention_size"]
+
+        block = frame_seqlen * chunk_size
+        half_len = num_frames * frame_seqlen
+        sink_end = sink_size * frame_seqlen
+        num_chunks = math.ceil(half_len / block)
+
+        # Split into clean and noisy halves
+        q_clean, q_noisy = q[:, :half_len], q[:, half_len:]
+        k_clean, k_noisy = k[:, :half_len], k[:, half_len:]
+        v_clean, v_noisy = v[:, :half_len], v[:, half_len:]
+
+        outputs = []
+
+        # --- Clean half: same as diffusion forcing ---
+        for i in range(num_chunks):
+            q_start = i * block
+            q_end = min((i + 1) * block, half_len)
+            q_i = q_clean[:, q_start:q_end]
+
+            chunk_end = q_end
+
+            if max_attention_size == -1 or sink_end == 0:
+                if max_attention_size == -1:
+                    k_i = k_clean[:, :chunk_end]
+                    v_i = v_clean[:, :chunk_end]
+                else:
+                    window_start = max(0, chunk_end - max_attention_size)
+                    k_i = k_clean[:, window_start:chunk_end]
+                    v_i = v_clean[:, window_start:chunk_end]
+            else:
+                window = max_attention_size - sink_end
+                window_start = max(sink_end, chunk_end - window)
+                k_i = torch.cat([k_clean[:, :sink_end], k_clean[:, window_start:chunk_end]], dim=1)
+                v_i = torch.cat([v_clean[:, :sink_end], v_clean[:, window_start:chunk_end]], dim=1)
+
+            out_i = attention(q_i, k_i, v_i)
+            outputs.append(out_i)
+
+        # --- Noisy half: attend to clean context + noisy self ---
+        for i in range(num_chunks):
+            q_start = i * block
+            q_end = min((i + 1) * block, half_len)
+            q_i = q_noisy[:, q_start:q_end]
+
+            # Context from clean half: blocks `[0, i*block)`
+            context_end = i * block
+
+            # Self from noisy half
+            noisy_k_self = k_noisy[:, q_start:q_end]
+            noisy_v_self = v_noisy[:, q_start:q_end]
+
+            if context_end == 0:
+                # First noisy chunk: no clean context, only self (no sink per original mask)
+                k_i = noisy_k_self
+                v_i = noisy_v_self
+            else:
+                # Gather clean context with sink + window
+                if max_attention_size == -1 or sink_end == 0:
+                    if max_attention_size == -1:
+                        ctx_k = k_clean[:, :context_end]
+                        ctx_v = v_clean[:, :context_end]
+                    else:
+                        # Window budget for clean context = `max_attention_size` - self block size
+                        ctx_window = max_attention_size - (sink_size + chunk_size) * frame_seqlen
+                        ctx_window_start = max(0, context_end - ctx_window)
+                        ctx_k = k_clean[:, ctx_window_start:context_end]
+                        ctx_v = v_clean[:, ctx_window_start:context_end]
+                else:
+                    ctx_window = max_attention_size - (sink_size + chunk_size) * frame_seqlen
+                    ctx_window_start = max(sink_end, context_end - ctx_window)
+                    # Sink exception: first noisy chunk (`i=0`) doesn't get sink
+                    # For `i>0`, include sink tokens
+                    ctx_k = torch.cat([k_clean[:, :sink_end], k_clean[:, ctx_window_start:context_end]], dim=1)
+                    ctx_v = torch.cat([v_clean[:, :sink_end], v_clean[:, ctx_window_start:context_end]], dim=1)
+
+                # Concatenate clean context + noisy self
+                k_i = torch.cat([ctx_k, noisy_k_self], dim=1)
+                v_i = torch.cat([ctx_v, noisy_v_self], dim=1)
+
+            out_i = attention(q_i, k_i, v_i)
+            outputs.append(out_i)
+
+        return torch.cat(outputs, dim=1)
+
     def reset_parameters(self):
         # Required by FSDP to materialize meta-device parameters
         # Actual weights are synced from rank 0 via `sync_module_states`
@@ -216,6 +379,8 @@ class CausalWanSelfAttention(nn.Module):
         block_mask=None,
         kv_cache=None,
         current_start=0,  # use with `kv_cache`
+        #
+        loop_attn_params=None,
         #
         ttt_state=None,
     ):
@@ -277,7 +442,18 @@ class CausalWanSelfAttention(nn.Module):
                     roped_query = rope_apply(q, grid_sizes, freqs).type_as(v)
                     roped_key = rope_apply(k, grid_sizes, freqs).type_as(v)
 
-            if sp_size > 1:
+            if not self.use_flexattn:
+                if sp_size > 1:
+                    # Ulysses-style: scatter heads, gather sequence
+                    roped_query = all_to_all(roped_query, scatter_dim=2, gather_dim=1)
+                    roped_key = all_to_all(roped_key, scatter_dim=2, gather_dim=1)
+                    v = all_to_all(v, scatter_dim=2, gather_dim=1)
+                x = self._loop_attention(
+                    roped_query, roped_key, v, loop_attn_params)
+                if sp_size > 1:
+                    # Scatter sequence, gather heads
+                    x = all_to_all(x, scatter_dim=1, gather_dim=2)
+            elif sp_size > 1:
                 x = distributed_flex_attention(
                     roped_query,
                     roped_key,
@@ -292,7 +468,7 @@ class CausalWanSelfAttention(nn.Module):
                     roped_key = torch.cat([roped_key, torch.zeros([k.shape[0], padded_length, k.shape[2], k.shape[3]], device=k.device, dtype=v.dtype)], dim=1)
                     v = torch.cat([v, torch.zeros([v.shape[0], padded_length, v.shape[2], v.shape[3]], device=v.device, dtype=v.dtype)], dim=1)
 
-                x = flex_attention(
+                x = _get_compiled_flex_attention()(
                     query=roped_query.transpose(2, 1),
                     key=roped_key.transpose(2, 1),
                     value=v.transpose(2, 1),
@@ -417,6 +593,7 @@ class CausalWanAttentionBlock(nn.Module):
                  sink_size=0,
                  max_attention_size=32760,  # 21 x 480 x 832 -> 21 x 30 x 52
                  rope_outside=False,
+                 use_flexattn=True,
                  #
                  qk_norm=True,
                  cross_attn_norm=False,
@@ -440,7 +617,7 @@ class CausalWanAttentionBlock(nn.Module):
         # layers
         self.norm1 = WanLayerNorm(dim, eps)
         self.self_attn = CausalWanSelfAttention(
-            dim, num_heads, sink_size, max_attention_size, rope_outside,
+            dim, num_heads, sink_size, max_attention_size, rope_outside, use_flexattn,
             qk_norm, eps, use_ttt=use_ttt, ttt_config=ttt_config)
         self.norm3 = WanLayerNorm(
             dim, eps,
@@ -475,6 +652,8 @@ class CausalWanAttentionBlock(nn.Module):
         crossattn_cache=None,
         current_start=0,
         #
+        loop_attn_params=None,
+        #
         ttt_state=None,
         #
         clip_query_lens=None,
@@ -499,6 +678,7 @@ class CausalWanAttentionBlock(nn.Module):
             self.norm1(x) * (1 + e[1]) + e[0],
             seq_lens, grid_sizes, freqs,
             block_mask, kv_cache, current_start,
+            loop_attn_params=loop_attn_params,
             ttt_state=ttt_state,
         )
         # with torch.amp.autocast('cuda', dtype=torch.float32):
@@ -562,6 +742,7 @@ class CausalWanModel(ModelMixin, ConfigMixin):
                  chunk_size=1,
                  max_attention_size=32760,  # 21 x 480 x 832 -> 21 x 30 x 52
                  rope_outside=False,
+                 use_flexattn=True,
                  #
                  qk_norm=True,
                  cross_attn_norm=True,
@@ -620,6 +801,7 @@ class CausalWanModel(ModelMixin, ConfigMixin):
         self.chunk_size = chunk_size
         self.max_attention_size = max_attention_size
         self.rope_outside = rope_outside
+        self.use_flexattn = use_flexattn
         #
         self.qk_norm = qk_norm
         self.cross_attn_norm = cross_attn_norm
@@ -643,7 +825,7 @@ class CausalWanModel(ModelMixin, ConfigMixin):
         self.blocks = nn.ModuleList([
             CausalWanAttentionBlock(cross_attn_type, dim, ffn_dim, num_heads,
                                     #
-                                    sink_size, max_attention_size, rope_outside,
+                                    sink_size, max_attention_size, rope_outside, use_flexattn,
                                     #
                                     qk_norm, cross_attn_norm, eps)
             for i in range(num_layers)
@@ -1202,25 +1384,30 @@ class CausalWanModel(ModelMixin, ConfigMixin):
                 clip_query_lens = torch.cat([clip_query_lens, clip_query_lens], dim=1)
 
         # Construct blockwise causal attn mask
-        if self.block_mask is None:
-            if clean_x is not None:
-                self.block_mask = self._prepare_teacher_forcing_mask(
-                    device,
-                    num_frames=f,
-                    frame_seqlen=h * w // (self.patch_size[1] * self.patch_size[2]),
-                    sink_size=self.sink_size,
-                    chunk_size=self.chunk_size,
-                    max_attention_size=self.max_attention_size,
-                )
-            else:
-                self.block_mask = self._prepare_blockwise_causal_attn_mask(
-                    device,
-                    num_frames=f,
-                    frame_seqlen=h * w // (self.patch_size[1] * self.patch_size[2]),
-                    sink_size=self.sink_size,
-                    chunk_size=self.chunk_size,
-                    max_attention_size=self.max_attention_size,
-                )
+        frame_seqlen = h * w // (self.patch_size[1] * self.patch_size[2])
+        if self.use_flexattn:
+            if self.block_mask is None:
+                if clean_x is not None:
+                    self.block_mask = self._prepare_teacher_forcing_mask(
+                        device,
+                        num_frames=f,
+                        frame_seqlen=frame_seqlen,
+                        sink_size=self.sink_size,
+                        chunk_size=self.chunk_size,
+                        max_attention_size=self.max_attention_size,
+                    )
+                else:
+                    self.block_mask = self._prepare_blockwise_causal_attn_mask(
+                        device,
+                        num_frames=f,
+                        frame_seqlen=frame_seqlen,
+                        sink_size=self.sink_size,
+                        chunk_size=self.chunk_size,
+                        max_attention_size=self.max_attention_size,
+                    )
+        else:
+            # Loop-based attention: pass parameters instead of block mask
+            self.block_mask = None
 
         ddt_inputs = dict(
             x=x.clone(),
@@ -1240,6 +1427,16 @@ class CausalWanModel(ModelMixin, ConfigMixin):
             e0 = all_split(sync_across_sp_group(e0), dim=1)
 
         # arguments
+        loop_attn_params = None
+        if not self.use_flexattn:
+            loop_attn_params = dict(
+                frame_seqlen=frame_seqlen,
+                num_frames=f,
+                chunk_size=self.chunk_size,
+                sink_size=self.sink_size,
+                max_attention_size=self.max_attention_size,
+                is_teacher_forcing=clean_x is not None,
+            )
         kwargs = dict(
             e=e0,
             seq_lens=seq_lens,
@@ -1249,6 +1446,7 @@ class CausalWanModel(ModelMixin, ConfigMixin):
             context_lens=context_lens,
             #
             block_mask=self.block_mask,
+            loop_attn_params=loop_attn_params,
             #
             clip_query_lens=clip_query_lens,
             clip_context_lens=clip_context_lens,

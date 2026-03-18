@@ -137,6 +137,7 @@ class Wan(nn.Module):
                 chunk_size=opt.chunk_size,
                 max_attention_size=opt.max_attention_size,
                 rope_outside=opt.rope_outside,
+                use_flexattn=opt.use_flexattn,
                 #
                 feat_proj=opt.self_supervised_loss_weight > 0.,
                 num_ddts=num_ddts,
@@ -166,6 +167,7 @@ class Wan(nn.Module):
                 chunk_size=opt.chunk_size,
                 max_attention_size=opt.max_attention_size,
                 rope_outside=opt.rope_outside,
+                use_flexattn=opt.use_flexattn,
                 #
                 da3_model_name=opt.da3_model_name,
                 da3_chunk_size=opt.da3_chunk_size,

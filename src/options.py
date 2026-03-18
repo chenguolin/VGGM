@@ -127,7 +127,8 @@ class Options:
     max_window_size: int = None  # if None, then `(num_input_frames - 1) // 4 + 1`
     max_kvcache_size: int = 21  # set to a limited number to save memory
     rope_outside: bool = False
-    prefill_image: bool = True
+    use_flexattn: bool = True
+    prefill_image: bool = True  # set to False to save memory
         ## TTT
     use_ttt: bool = False
     ttt_layers: Optional[str] = None  # e.g. "0,2,4,6,8"; None means all layers when `use_ttt=True`
@@ -304,6 +305,7 @@ opt_dict["wan2.1_t2v_1.3b"] = Options(
     chunk_size=3,
     max_window_size=9,
     rope_outside=True,
+    use_flexattn=True,  # False
     #
     use_ttt=False,  # True
     #
