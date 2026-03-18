@@ -36,9 +36,11 @@ CONFIG_FILE=$2
 TAG=$3
 shift 3  # remove $1~$3 for $@
 
-# 使用 Socket 网络
-export NCCL_NET=Socket # 数据传输协议，如果使用IB网卡协议，则不需要配置
-export NCCL_SOCKET_IFNAME=bond1  # 指定的socket协议网口，默认是eth0
+# NCCL: use RoCE (mlx5) instead of TCP socket
+# export NCCL_NET=Socket
+# export NCCL_SOCKET_IFNAME=bond1
+export NCCL_IB_HCA=mlx5_bond_1,mlx5_bond_2,mlx5_bond_3,mlx5_bond_4,mlx5_bond_5,mlx5_bond_6,mlx5_bond_7,mlx5_bond_8
+export NCCL_SOCKET_IFNAME=bond1  # fallback for bootstrap connection only
 
 # export HF_ENDPOINT=https://hf-mirror.com
 # export WANDB_BASE_URL=https://api.bandw.top
@@ -56,5 +58,4 @@ torchrun \
         --config_file ${CONFIG_FILE} \
         --tag ${TAG} \
         --allow_tf32 \
-        --pin_memory \
 $@

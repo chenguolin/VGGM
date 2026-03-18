@@ -88,7 +88,7 @@ def main():
     parser.add_argument(
         "--num_workers",
         type=int,
-        default=8,
+        default=4,
         help="The number of processed spawned by the batch provider"
     )
     parser.add_argument(
@@ -238,8 +238,8 @@ def main():
         sampler=train_sampler,
         num_workers=args.num_workers,
         pin_memory=args.pin_memory,
-        prefetch_factor=2 if args.num_workers > 0 else None,
-        multiprocessing_context="forkserver",
+        prefetch_factor=1 if args.num_workers > 0 else None,  # to save CPU memory
+        multiprocessing_context="forkserver",  # to save CPU memory
         persistent_workers=args.num_workers > 0,
         collate_fn=BaseDataset.collate_fn,
     )
@@ -257,8 +257,8 @@ def main():
         sampler=val_sampler,
         num_workers=args.num_workers,
         pin_memory=args.pin_memory,
-        prefetch_factor=2 if args.num_workers > 0 else None,
-        multiprocessing_context="forkserver",
+        prefetch_factor=1 if args.num_workers > 0 else None,  # to save CPU memory
+        multiprocessing_context="forkserver",  # to save CPU memory
         persistent_workers=args.num_workers > 0,
         collate_fn=BaseDataset.collate_fn,
     )
