@@ -49,7 +49,8 @@ def fsdp_wrap(
     else:
         mixed_precision_policy = MixedPrecision(
             param_dtype=torch.bfloat16 if mixed_precision == "bf16" else torch.float16,
-            reduce_dtype=torch.float32,
+            # reduce_dtype=torch.float32,
+            reduce_dtype=torch.bfloat16 if mixed_precision == "bf16" else torch.float16,
             buffer_dtype=torch.float32,
             cast_forward_inputs=False,
         )
@@ -67,7 +68,7 @@ def fsdp_wrap(
     else:
         raise ValueError(f"Invalid wrap strategy: {wrap_strategy}")
 
-    os.environ["NCCL_CROSS_NIC"] = "1"
+    # os.environ["NCCL_CROSS_NIC"] = "1"
 
     sharding_strategy = {
         "full": ShardingStrategy.FULL_SHARD,

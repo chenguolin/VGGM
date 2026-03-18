@@ -575,58 +575,27 @@ def main():
             if (global_update_step % configs["train"]["log_freq"] == 0  # 1. every `log_freq` steps
                 or global_update_step % updated_steps_per_epoch == 0):  # 2. every epoch
                 if is_main_process:
-                    wandb.log({
+                    wandb_log = {
                         "training/loss": loss.item(),
                         "training/lr": lr_scheduler.get_last_lr()[0],
-                    }, step=global_update_step)
-                    if diffusion_loss is not None:
-                        wandb.log({
-                            "training/diffusion_loss": diffusion_loss.item()
-                        }, step=global_update_step)
-                    if critic_loss is not None:
-                        wandb.log({
-                            "training/critic_loss": critic_loss.item()
-                        }, step=global_update_step)
-                    if generator_loss is not None:
-                        wandb.log({
-                            "training/generator_loss": generator_loss.item()
-                        }, step=global_update_step)
-                    if dmd_grad_norm is not None:
-                        wandb.log({
-                            "training/dmd_grad_norm": dmd_grad_norm.item()
-                        }, step=global_update_step)
-                    if depth_loss is not None:
-                        wandb.log({
-                            "training/depth_loss": depth_loss.item()
-                        }, step=global_update_step)
-                    if depth_loss_diffusion is not None:
-                        wandb.log({
-                            "training/depth_loss_diffusion": depth_loss_diffusion.item()
-                        }, step=global_update_step)
-                    if ray_loss is not None:
-                        wandb.log({
-                            "training/ray_loss": ray_loss.item()
-                        }, step=global_update_step)
-                    if ray_loss_diffusion is not None:
-                        wandb.log({
-                            "training/ray_loss_diffusion": ray_loss_diffusion.item()
-                        }, step=global_update_step)
-                    if camera_loss is not None:
-                        wandb.log({
-                            "training/camera_loss": camera_loss.item()
-                        }, step=global_update_step)
-                    if camera_loss_diffusion is not None:
-                        wandb.log({
-                            "training/camera_loss_diffusion": camera_loss_diffusion.item()
-                        }, step=global_update_step)
-                    if render_loss is not None:
-                        wandb.log({
-                            "training/render_loss": render_loss.item()
-                        }, step=global_update_step)
-                    if ss_loss is not None:
-                        wandb.log({
-                            "training/ss_loss": ss_loss.item()
-                        }, step=global_update_step)
+                    }
+                    for key, val in [
+                        ("training/diffusion_loss", diffusion_loss),
+                        ("training/critic_loss", critic_loss),
+                        ("training/generator_loss", generator_loss),
+                        ("training/dmd_grad_norm", dmd_grad_norm),
+                        ("training/depth_loss", depth_loss),
+                        ("training/depth_loss_diffusion", depth_loss_diffusion),
+                        ("training/ray_loss", ray_loss),
+                        ("training/ray_loss_diffusion", ray_loss_diffusion),
+                        ("training/camera_loss", camera_loss),
+                        ("training/camera_loss_diffusion", camera_loss_diffusion),
+                        ("training/render_loss", render_loss),
+                        ("training/ss_loss", ss_loss),
+                    ]:
+                        if val is not None:
+                            wandb_log[key] = val.item()
+                    wandb.log(wandb_log, step=global_update_step)
 
             # Save checkpoint
             if global_update_step != 0 and (global_update_step % configs["train"]["save_freq"] == 0  # 1. every `save_freq` steps
@@ -666,6 +635,8 @@ def main():
                             torch.save(lora_state_dict, os.path.join(ckpt_dir, f"{global_update_step:06d}", "lora_weights.pth"))
                             print(f"Saved LoRA weights to {os.path.join(ckpt_dir, f'{global_update_step:06d}', 'lora_weights.pth')}")
                     del save_state_dict
+                    gc.collect()
+                    torch.cuda.empty_cache()
 
                 if ema_params is not None:
                     # Switch back to the original model parameters

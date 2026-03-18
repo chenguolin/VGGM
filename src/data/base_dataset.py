@@ -95,12 +95,6 @@ class BaseDataset(EasyDataset):
         return clip_frame_idxs[np.linspace(0, gap-1, F, dtype=int)].tolist()
 
     def _data_augment(self, images: Tensor, depths: Optional[Tensor], confs: Optional[Tensor], fxfycxcy: Tensor):
-        images, fxfycxcy = images.clone(), fxfycxcy.clone()  # not inplace
-        if depths is not None:
-            depths = depths.clone()
-        if confs is not None:
-            confs = confs.clone()
-
         assert images.ndim == 4  # (F, C, H, W)
         H, W = images.shape[-2:]
 
@@ -135,8 +129,6 @@ class BaseDataset(EasyDataset):
         return images.clamp(0., 1.), depths, confs, fxfycxcy
 
     def _camera_normalize(self, C2W: Tensor) -> Tensor:
-        C2W = C2W.clone()  # not inplace
-
         if self.opt.camera_norm_type == "none":
             pass
         elif self.opt.camera_norm_type == "canonical":
