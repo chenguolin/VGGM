@@ -127,8 +127,8 @@ class Options:
     max_window_size: int = None  # if None, then `(num_input_frames - 1) // 4 + 1`
     max_kvcache_size: int = 21  # set to a limited number to save memory
     rope_outside: bool = False
-    use_flexattn: bool = True
-    prefill_image: bool = True  # set to False to save memory
+    use_flexattn: bool = True  # set to False to save memory; `block_mask` in flex_attn takes so much memory!
+    prefill_image: bool = True
         ## TTT
     use_ttt: bool = False
     ttt_layers: Optional[str] = None  # e.g. "0,2,4,6,8"; None means all layers when `use_ttt=True`
