@@ -286,7 +286,8 @@ opt_dict: Dict[str, Options] = {}
 
 # Wan2.1-T2V-1.3B
 opt_dict["wan2.1_t2v_1.3b"] = Options(
-    # use_internal_dataset=True,
+    use_internal_dataset=True,
+    # version_2s35w=True,
     #
     # input_res=(480, 832),
     #
@@ -296,8 +297,18 @@ opt_dict["wan2.1_t2v_1.3b"] = Options(
     # wan_dir=f"{ROOT}/.cache/huggingface/hub/Wan-AI/Wan2.1-T2V-14B",
     # generator_path=f"{ROOT}/projects/VGGM/.pth",
     #
+    is_causal=False,  # True
+    use_teacher_forcing=True,
+    #
+    sink_size=3,
+    chunk_size=3,
+    max_window_size=9,
+    rope_outside=True,
+    #
+    use_ttt=False,  # True
+    #
     input_plucker=True,
-    exclude_name_lr_mult="plucker_embed,extra_condition_embed",
+    exclude_name_lr_mult="ttt_branch,plucker_embed,extra_condition_embed",
     #
     # load_conf=True,
     # input_pcrender=True,
@@ -331,7 +342,7 @@ opt_dict["wan2.1_t2v_1.3b_causal"] = Options(
     generator_path=f"{ROOT}/projects/VGGM/.pth",
     #
     input_plucker=True,
-    exclude_name_lr_mult="plucker_embed,extra_condition_embed,da3_adapter",
+    exclude_name_lr_mult="ttt_branch,plucker_embed,extra_condition_embed,da3_adapter",
     #
     # num_input_frames=201,
     # num_input_frames_test=201,
