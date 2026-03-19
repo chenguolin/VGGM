@@ -14,7 +14,12 @@ class InternalDataset(BaseDataset):
     def __init__(self, opt: Options, training: bool = True):
         super().__init__(opt, "internal", training)
 
-        if self.opt.version_2s35w:
+        if self.opt.version_2sdiff:
+            with open(f"{self.root}/valid_captions_2sdiff.jsonl", "r", encoding="utf-8") as f:
+                data = [json.loads(line) for line in f]
+            self.caption_data = {item["raw_id"]: [clip["caption"] for clip in item["long_caption_lst"]] for item in data}
+            uids = list(self.caption_data.keys())
+        elif self.opt.version_2s35w:
             with open(f"{self.root}/valid_captions_2s35w.jsonl", "r", encoding="utf-8") as f:
                 data = [json.loads(line) for line in f]
             self.caption_data = {item["raw_id"]: item["long_caption"] for item in data}
@@ -23,7 +28,7 @@ class InternalDataset(BaseDataset):
             uids = os.listdir(f"{self.root}/valid_captions")
 
         indices = np.random.RandomState(seed=42).permutation(len(uids))
-        if self.opt.version_2s35w:
+        if self.opt.version_2s35w or self.opt.version_2sdiff:
             if training:
                 self.uids = [uids[i] for i in indices[:int(0.95 * len(uids))]]
             else:
@@ -44,15 +49,15 @@ class InternalDataset(BaseDataset):
 
     def __getitem__(self, idx: int) -> Dict[str, Any]:
         uid = self.uids[idx]
-        if self.opt.version_2s35w:
+        if self.opt.version_2s35w or self.opt.version_2sdiff:
             all_captions = self.caption_data[uid]  # List[str]: 0-based clip captions
             all_clip_idxs = list(range(len(all_captions)))  # 0-based
-            clip_duration, clip_base = 2, 0
+            clip_duration, clip_base, clip_overlap = 2, 0, 0
         else:
             with open(f"{self.root}/valid_captions/{uid}.json", "r", encoding="utf-8") as f:
                 all_captions = json.load(f)  # Dict[str, str]: clip_idx -> long caption
             all_clip_idxs = sorted([int(k) for k in all_captions.keys()])  # 1-based
-            clip_duration, clip_base = 5, 1
+            clip_duration, clip_base, clip_overlap = 5, 1, 12
         dataset_source = "Internal"
 
         all_clip_idx_set = set(all_clip_idxs)
@@ -78,7 +83,7 @@ class InternalDataset(BaseDataset):
 
         start_clip_idx = int(np.random.choice(valid_start_clip_idxs))
         clip_idxs = [start_clip_idx + i for i in range(num_clips)]  # consecutive clip indices
-        if self.opt.version_2s35w:
+        if self.opt.version_2s35w or self.opt.version_2sdiff:
             prompt = [all_captions[clip_idx] for clip_idx in clip_idxs]
         else:
             prompt = [all_captions[str(clip_idx)] for clip_idx in clip_idxs]
@@ -87,11 +92,11 @@ class InternalDataset(BaseDataset):
         video_path = os.path.join(self.root, "video", f"{uid}.mp4")
         vr = VideoReader(str(video_path), ctx=cpu(0))
         num_frames, fps, (H, W) = len(vr), vr.get_avg_fps(), vr[0].shape[:2]
-        # `clip_duration`: seconds per clip; `12`: hard-coded for clip-overlap; `clip_base`: index offset (1 for old, 0 for new)
+        # `clip_duration`: seconds per clip; `clip_overlap`: inter-clip overlap in frames; `clip_base`: index offset
         ci_first = clip_idxs[0] - clip_base
         ci_last = clip_idxs[-1] - clip_base
-        start_frame_idx = int(round(ci_first * clip_duration * fps)) - 12 * ci_first
-        end_frame_idx = int(round(ci_last * clip_duration * fps)) - 12 * ci_last + int(round(clip_duration * fps))  # may exceed video length
+        start_frame_idx = int(round(ci_first * clip_duration * fps)) - clip_overlap * ci_first
+        end_frame_idx = int(round(ci_last * clip_duration * fps)) - clip_overlap * ci_last + int(round(clip_duration * fps))  # may exceed video length
 
         # Calculate total frames based on `num_clips`
         total_frames = (self.opt.num_input_frames - 1) * num_clips + 1
@@ -113,7 +118,7 @@ class InternalDataset(BaseDataset):
         vipe_path = video_path.replace("video", "vipe").replace(".mp4", ".npz")
         vipe_data = np.load(vipe_path, allow_pickle=True)
         C2W, fxfycxcy = vipe_data["pose"], vipe_data["intrinsics"]
-        if (not C2W.shape[0] == fxfycxcy.shape[0]) or (not C2W.shape[0] == num_frames):
+        if (C2W.shape[0] != fxfycxcy.shape[0]) or (C2W.shape[0] != num_frames):
             if idx in self.valid_idxs:
                 self.valid_idxs.remove(idx)
                 if len(self.valid_idxs) == 0:
@@ -147,7 +152,7 @@ class InternalDataset(BaseDataset):
         for ii, clip_idx in enumerate(clip_idxs):
             ci = clip_idx - clip_base
             if ii == 0:
-                clip_start_frame_idx = int(round(ci * clip_duration * fps)) - 12 * ci
+                clip_start_frame_idx = int(round(ci * clip_duration * fps)) - clip_overlap * ci
             else:  # to avoid overlapping frames between consecutive clips, we start the next clip from the end of the previous clip
                 clip_start_frame_idx = clip_end_frame_idx
             clip_end_frame_idx = clip_start_frame_idx + int(round(clip_duration * fps))  # may exceed video length

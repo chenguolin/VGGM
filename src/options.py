@@ -43,6 +43,7 @@ class Options:
         ## Interal
     use_internal_dataset: bool = False
     version_2s35w: bool = False
+    version_2sdiff: bool = False
     num_clips: int = 1
     random_num_clips: bool = False
         ## RealCamVid
