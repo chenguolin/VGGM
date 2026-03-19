@@ -544,22 +544,6 @@ def main():
                 logs.update({"critic": critic_loss.item()})
             if generator_loss is not None:
                 logs.update({"generator": generator_loss.item()})
-            if depth_loss is not None:
-                logs.update({"depth": depth_loss.item()})
-            if depth_loss_diffusion is not None:
-                logs.update({"depth_diffusion": depth_loss_diffusion.item()})
-            if ray_loss is not None:
-                logs.update({"ray": ray_loss.item()})
-            if ray_loss_diffusion is not None:
-                logs.update({"ray_diffusion": ray_loss_diffusion.item()})
-            if camera_loss is not None:
-                logs.update({"camera": camera_loss.item()})
-            if camera_loss_diffusion is not None:
-                logs.update({"camera_diffusion": camera_loss_diffusion.item()})
-            if render_loss is not None:
-                logs.update({"render": render_loss.item()})
-            if ss_loss is not None:
-                logs.update({"ss": ss_loss.item()})
 
             progress_bar.set_postfix(**logs)
             progress_bar.update(1)
@@ -646,7 +630,8 @@ def main():
                 gc.collect()
 
             # Evaluate on the validation set
-            if ((global_update_step % configs["train"]["early_eval_freq"] == 0 and
+            if not opt.eval_offline and \
+                ((global_update_step % configs["train"]["early_eval_freq"] == 0 and
                 global_update_step < configs["train"]["early_eval"])  # 1. more frequently at the beginning
                 or global_update_step % configs["train"]["eval_freq"] == 0  # 2. every `eval_freq` steps
                 or global_update_step % (configs["train"]["eval_freq_epoch"] * updated_steps_per_epoch) == 0  # 3. every `eval_freq_epoch` epochs
@@ -665,7 +650,7 @@ def main():
                 with torch.inference_mode():
                     model.eval()
 
-                    all_val_outputs, all_val_matrics, val_steps = [], {}, 0
+                    all_val_outputs, all_val_metrics, val_steps = [], {}, 0
                     val_progress_bar = tqdm(
                         range(len(val_loader)) if args.max_val_steps is None \
                             else range(args.max_val_steps),
@@ -676,34 +661,19 @@ def main():
                     val_sampler.set_epoch(global_update_step)  # for shuffling the validation dataset
                     for val_batch in val_loader:
                         val_outputs_gpu = model(val_batch, func_name="evaluate", vae=vae)
-                        # Move validation outputs to CPU to save GPU memory
                         val_outputs = {}
                         for k, v in val_outputs_gpu.items():
                             if torch.is_tensor(v):
-                                val_outputs[k] = v.detach().cpu()
+                                val_outputs[k] = v.detach().cpu()  # to save GPU memory
                             else:
                                 val_outputs[k] = v
                         all_val_outputs.append(val_outputs)
 
-                        val_logs = {}
                         for cfg_scale in opt.cfg_scale:
-                            if f"psnr_{cfg_scale}" in val_outputs:
-                                val_psnr = val_outputs[f"psnr_{cfg_scale}"]
-                                all_val_matrics.setdefault(f"psnr_{cfg_scale}", []).append(val_psnr)
-                            if f"ssim_{cfg_scale}" in val_outputs:
-                                val_ssim = val_outputs[f"ssim_{cfg_scale}"]
-                                all_val_matrics.setdefault(f"ssim_{cfg_scale}", []).append(val_ssim)
-                            if f"depth_{cfg_scale}" in val_outputs:
-                                val_depth = val_outputs[f"depth_{cfg_scale}"]
-                                all_val_matrics.setdefault(f"depth_{cfg_scale}", []).append(val_depth)
-                            if f"ray_{cfg_scale}" in val_outputs:
-                                val_ray = val_outputs[f"ray_{cfg_scale}"]
-                                all_val_matrics.setdefault(f"ray_{cfg_scale}", []).append(val_ray)
-                            if f"pose_{cfg_scale}" in val_outputs:
-                                val_pose = val_outputs[f"pose_{cfg_scale}"]
-                                all_val_matrics.setdefault(f"pose_{cfg_scale}", []).append(val_pose)
-
-                        val_progress_bar.set_postfix(**val_logs)
+                            for metric_name in ["psnr", "ssim", "depth", "ray", "pose"]:
+                                key = f"{metric_name}_{cfg_scale}"
+                                if key in val_outputs:
+                                    all_val_metrics.setdefault(key, []).append(val_outputs[key])
                         val_progress_bar.update(1)
                         val_steps += 1
                         del val_outputs_gpu  # to save GPU memory
@@ -718,15 +688,15 @@ def main():
                     ema_params.restore_model_from_cache()
                 barrier()  # make sure all processes have finished restoring the model parameters before the next training step
 
-                for k, v in all_val_matrics.items():
-                    all_val_matrics[k] = torch.tensor(v).mean()
+                for k, v in all_val_metrics.items():
+                    all_val_metrics[k] = torch.tensor(v).mean()
 
                 for cfg_scale in opt.cfg_scale:
-                    if f"psnr_{cfg_scale}" in val_outputs and f"ssim_{cfg_scale}" in val_outputs:
+                    if f"psnr_{cfg_scale}" in all_val_metrics and f"ssim_{cfg_scale}" in all_val_metrics:
                         logger.info(
                             f"Eval [{global_update_step:06d} / {total_updated_steps:06d}] " +
-                            f"psnr_{cfg_scale}: {all_val_matrics[f'psnr_{cfg_scale}'].item():.4f}, " +
-                            f"ssim_{cfg_scale}: {all_val_matrics[f'ssim_{cfg_scale}'].item():.4f}\n"
+                            f"psnr_{cfg_scale}: {all_val_metrics[f'psnr_{cfg_scale}'].item():.4f}, " +
+                            f"ssim_{cfg_scale}: {all_val_metrics[f'ssim_{cfg_scale}'].item():.4f}\n"
                         )
 
                 # outputs = accelerator.gather(outputs)
@@ -736,29 +706,9 @@ def main():
                         val_outputs[k] = torch.cat([out[k] for out in all_val_outputs], dim=0)
 
                 if is_main_process:
-                    for cfg_scale in opt.cfg_scale:
-                        if f"psnr_{cfg_scale}" in val_outputs:
-                            wandb.log({
-                                f"validation/psnr_{cfg_scale}": all_val_matrics[f"psnr_{cfg_scale}"].item(),
-                            }, step=global_update_step)
-                        if f"ssim_{cfg_scale}" in val_outputs:
-                            wandb.log({
-                                f"validation/ssim_{cfg_scale}": all_val_matrics[f"ssim_{cfg_scale}"].item(),
-                            }, step=global_update_step)
-                        if f"depth_{cfg_scale}" in val_outputs:
-                            wandb.log({
-                                f"validation/depth_{cfg_scale}": all_val_matrics[f"depth_{cfg_scale}"].item()
-                            }, step=global_update_step)
-                        if f"ray_{cfg_scale}" in val_outputs:
-                            wandb.log({
-                                f"validation/ray_{cfg_scale}": all_val_matrics[f"ray_{cfg_scale}"].item()
-                            }, step=global_update_step)
-                        if f"pose_{cfg_scale}" in val_outputs:
-                            wandb.log({
-                                f"validation/pose_{cfg_scale}": all_val_matrics[f"pose_{cfg_scale}"].item()
-                            }, step=global_update_step)
-
-                    # Visualization
+                    wandb.log({
+                        f"validation/{k}": v for k, v in all_val_metrics.items()
+                    }, step=global_update_step)
                     wandb.log({
                         "videos/training": vis_util.wandb_video_log(
                             outputs, max_res=512, fps=16)  # resize videos to `512` for logging

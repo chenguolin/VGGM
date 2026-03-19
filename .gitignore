@@ -2,6 +2,7 @@ __pycache__/
 .vscode/
 .claude/
 .cursor/
+.ipynb_checkpoints/
 build/
 *.egg-info/
 dump/

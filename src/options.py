@@ -174,6 +174,7 @@ class Options:
     use_gradient_checkpointing: bool = True
     use_gradient_checkpointing_offload: bool = False
         ## Training and inference
+    eval_offline: bool = False
     cfg_dropout: float = 0.1
     cfg_scale: Tuple[float, ...] = (5.,)
     negative_prompt: str = "色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走"
@@ -287,6 +288,8 @@ opt_dict: Dict[str, Options] = {}
 
 # Wan2.1-T2V-1.3B
 opt_dict["wan2.1_t2v_1.3b"] = Options(
+    eval_offline=False,  # True
+    #
     use_internal_dataset=True,
     # version_2s35w=True,
     #
