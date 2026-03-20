@@ -94,9 +94,8 @@ class InternalDataset(BaseDataset):
         num_frames, fps, (H, W) = len(vr), vr.get_avg_fps(), vr[0].shape[:2]
         # `clip_duration`: seconds per clip; `clip_overlap`: inter-clip overlap in frames; `clip_base`: index offset
         ci_first = clip_idxs[0] - clip_base
-        ci_last = clip_idxs[-1] - clip_base
         start_frame_idx = int(round(ci_first * clip_duration * fps)) - clip_overlap * ci_first
-        end_frame_idx = int(round(ci_last * clip_duration * fps)) - clip_overlap * ci_last + int(round(clip_duration * fps))  # may exceed video length
+        end_frame_idx = start_frame_idx + num_clips * int(round(clip_duration * fps))  # may exceed video length
 
         # Calculate total frames based on `num_clips`
         total_frames = (self.opt.num_input_frames - 1) * num_clips + 1

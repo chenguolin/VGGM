@@ -51,14 +51,17 @@ PROMPT_COMMAND='_set_ps1'
 
 # ── History search with arrow keys ────────────────────────────────────────────
 # Type a few characters then press ↑/↓ to search history matching the prefix
-# Guard: `bind` requires an interactive shell with line editing enabled
-if [[ $- == *i* ]]; then
-    bind '"\e[A": history-search-backward'
-    bind '"\e[B": history-search-forward'
+# Guard: `bind` and `shopt` are bash-only builtins; skip silently in zsh/sh
+if [ -n "$BASH_VERSION" ]; then
+    # Arrow-key history search (interactive shells only)
+    if [[ $- == *i* ]]; then
+        bind '"\e[A": history-search-backward'
+        bind '"\e[B": history-search-forward'
+    fi
+    shopt -s histappend
 fi
 # Larger history & no duplicates
 export HISTSIZE=10000
 export HISTFILESIZE=20000
 export HISTCONTROL=ignoreboth:erasedups
-shopt -s histappend
 # ── End history config ────────────────────────────────────────────────────────
