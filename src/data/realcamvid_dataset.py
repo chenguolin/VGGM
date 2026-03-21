@@ -47,6 +47,13 @@ class RealcamvidDataset(BaseDataset):
         video_path = os.path.join(self.root, metadata["video_path"])
         vr = VideoReader(str(video_path), ctx=cpu(0))
         num_frames = len(vr)
+        # Re-create `vr` with lower decode resolution to save CPU memory
+        H, W = vr[0].shape[:2]
+        new_H, new_W = self.opt.input_res
+        scale = max(new_H / H, new_W / W)
+        if scale < 1.:
+            del vr
+            vr = VideoReader(str(video_path), ctx=cpu(0), width=round(W * scale), height=round(H * scale))
         input_frame_idxs = self._frame_sample(num_frames,
             pingpong_threshold=self.opt.pingpong_threshold if "Mira" not in uid else -1)  # not reverse videos for dynamic MiraData
 

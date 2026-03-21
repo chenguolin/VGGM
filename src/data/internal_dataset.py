@@ -92,6 +92,12 @@ class InternalDataset(BaseDataset):
         video_path = os.path.join(self.root, "video", f"{uid}.mp4")
         vr = VideoReader(str(video_path), ctx=cpu(0))
         num_frames, fps, (H, W) = len(vr), vr.get_avg_fps(), vr[0].shape[:2]
+        # Re-create `vr` with lower decode resolution to save CPU memory
+        new_H, new_W = self.opt.input_res
+        scale = max(new_H / H, new_W / W)
+        if scale < 1.:
+            del vr
+            vr = VideoReader(str(video_path), ctx=cpu(0), width=round(W * scale), height=round(H * scale))
         # `clip_duration`: seconds per clip; `clip_overlap`: inter-clip overlap in frames; `clip_base`: index offset
         ci_first = clip_idxs[0] - clip_base
         start_frame_idx = int(round(ci_first * clip_duration * fps)) - clip_overlap * ci_first
