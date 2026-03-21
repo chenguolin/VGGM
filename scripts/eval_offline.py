@@ -85,16 +85,26 @@ def main():
     PROJECT_NAME = "WanCameraControl"
 
     parser = argparse.ArgumentParser(description="Offline evaluation with WandB sync.")
-    parser.add_argument("--tag", type=str, required=True, help="Experiment tag (e.g., my_experiment)")
-    parser.add_argument("--step", type=int, required=True, help="Training step for this checkpoint (used as wandb x-axis and sampler seed)")
-    parser.add_argument("--wandb_run_id", type=str, default=None, help="WandB run ID (auto-detected from exp_dir if not provided)")
-    parser.add_argument("--max_val_steps", type=int, default=2, help="Maximum number of validation steps")
-    parser.add_argument("--wandb_token_path", type=str, default=f"{ROOT}/.cache/wandb/token", help="Path to WandB login token")
-    parser.add_argument("--no_wandb", action="store_true", help="Skip WandB logging, only run evaluation")
-    parser.add_argument("--sp_size", type=int, default=1, help="Sequence parallel size (1=single GPU, >1 requires torchrun)")
-    parser.add_argument("--seed", type=int, default=0, help="Random seed")
-    parser.add_argument("--num_workers", type=int, default=2, help="Number of dataloader workers")
-    # parser.add_argument("--allow_tf32", action="store_true", help="Enable TF32 for faster inference")
+    parser.add_argument("--tag", type=str, required=True,
+                        help="Experiment tag (e.g., my_experiment)")
+    parser.add_argument("--step", type=int, required=True,
+                        help="Training step for this checkpoint (used as wandb x-axis and sampler seed)")
+    parser.add_argument("--wandb_run_id", type=str, default=None,
+                        help="WandB run ID (auto-detected from exp_dir if not provided)")
+    parser.add_argument("--max_val_steps", type=int, default=2,
+                        help="Maximum number of validation steps")
+    parser.add_argument("--wandb_token_path", type=str, default=f"{ROOT}/.cache/wandb/token",
+                        help="Path to WandB login token")
+    parser.add_argument("--no_wandb", action="store_true",
+                        help="Skip WandB logging, only run evaluation")
+    parser.add_argument("--sp_size", type=int, default=1,
+                        help="Sequence parallel size (1=single GPU, >1 requires torchrun)")
+    parser.add_argument("--seed", type=int, default=0,
+                        help="Random seed")
+    parser.add_argument("--num_workers", type=int, default=2,
+                        help="Number of dataloader workers")
+    # parser.add_argument("--allow_tf32", action="store_true",
+    #                     help="Enable TF32 for faster inference")
     args = parser.parse_args()
 
     # Derive paths from tag and step

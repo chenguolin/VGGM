@@ -20,3 +20,4 @@ easydict
 omegaconf
 decord
 deepspeed
+qwen-vl-utils[decord]
