@@ -19,16 +19,22 @@ class InternalDataset(BaseDataset):
                 data = [json.loads(line) for line in f]
             # `caption_data`: uid -> {whole_caption, segments: [{segment_id, start_time, end_time, action_label, caption}, ...]}
             self.caption_data = {item["filename"]: item["caption_result"] for item in data}
+            if self.opt.load_global_caption:
+                self.global_caption_data = {item["filename"]: item["caption_result"]["whole_caption"] for item in data}
             uids = list(self.caption_data.keys())
         elif self.opt.version_2sdiff:
             with open(f"{self.root}/valid_captions_2sdiff.jsonl", "r", encoding="utf-8") as f:
                 data = [json.loads(line) for line in f]
             self.caption_data = {item["raw_id"]: [clip["caption"] for clip in item["long_caption_lst"]] for item in data}
+            if self.opt.load_global_caption:
+                self.global_caption_data = {item["raw_id"]: item["org_long_caption"] for item in data}
             uids = list(self.caption_data.keys())
         elif self.opt.version_2s35w:
             with open(f"{self.root}/valid_captions_2s35w.jsonl", "r", encoding="utf-8") as f:
                 data = [json.loads(line) for line in f]
             self.caption_data = {item["raw_id"]: item["long_caption"] for item in data}
+            if self.opt.load_global_caption:
+                self.global_caption_data = {item["raw_id"]: item["org_long_caption"] for item in data}
             uids = list(self.caption_data.keys())
         else:
             uids = os.listdir(f"{self.root}/valid_captions")
@@ -205,6 +211,8 @@ class InternalDataset(BaseDataset):
             "C2W": C2W,            # List[(F, 4, 4)]
             "fxfycxcy": fxfycxcy,  # List[(F, 4)]
         }
+        if self.opt.load_global_caption:
+            return_dict["global_caption"] = self.global_caption_data[uid]  # str
         if self.opt.load_image:
             return_dict["image"] = images  # List[(F, 3, H, W)] in [0, 1]
 
