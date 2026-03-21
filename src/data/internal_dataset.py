@@ -14,7 +14,13 @@ class InternalDataset(BaseDataset):
     def __init__(self, opt: Options, training: bool = True):
         super().__init__(opt, "internal", training)
 
-        if self.opt.version_2sdiff:
+        if self.opt.version_action:
+            with open(f"{self.root}/videos_action_caption.jsonl", "r", encoding="utf-8") as f:
+                data = [json.loads(line) for line in f]
+            # `caption_data`: uid -> {whole_caption, segments: [{segment_id, start_time, end_time, action_label, caption}, ...]}
+            self.caption_data = {item["filename"]: item["caption_result"] for item in data}
+            uids = list(self.caption_data.keys())
+        elif self.opt.version_2sdiff:
             with open(f"{self.root}/valid_captions_2sdiff.jsonl", "r", encoding="utf-8") as f:
                 data = [json.loads(line) for line in f]
             self.caption_data = {item["raw_id"]: [clip["caption"] for clip in item["long_caption_lst"]] for item in data}
@@ -28,7 +34,7 @@ class InternalDataset(BaseDataset):
             uids = os.listdir(f"{self.root}/valid_captions")
 
         indices = np.random.RandomState(seed=42).permutation(len(uids))
-        if self.opt.version_2s35w or self.opt.version_2sdiff:
+        if self.opt.version_action or self.opt.version_2s35w or self.opt.version_2sdiff:
             if training:
                 self.uids = [uids[i] for i in indices[:int(0.95 * len(uids))]]
             else:
@@ -49,7 +55,13 @@ class InternalDataset(BaseDataset):
 
     def __getitem__(self, idx: int) -> Dict[str, Any]:
         uid = self.uids[idx]
-        if self.opt.version_2s35w or self.opt.version_2sdiff:
+        if self.opt.version_action:
+            caption_result = self.caption_data[uid]
+            segments = caption_result["segments"]
+            all_captions = [seg["caption"] for seg in segments]
+            all_clip_idxs = list(range(len(segments)))  # 0-based
+            clip_duration, clip_base, clip_overlap = None, 0, 0  # variable-length segments
+        elif self.opt.version_2s35w or self.opt.version_2sdiff:
             all_captions = self.caption_data[uid]  # List[str]: 0-based clip captions
             all_clip_idxs = list(range(len(all_captions)))  # 0-based
             clip_duration, clip_base, clip_overlap = 2, 0, 0
@@ -83,7 +95,9 @@ class InternalDataset(BaseDataset):
 
         start_clip_idx = int(np.random.choice(valid_start_clip_idxs))
         clip_idxs = [start_clip_idx + i for i in range(num_clips)]  # consecutive clip indices
-        if self.opt.version_2s35w or self.opt.version_2sdiff:
+        if self.opt.version_action:
+            prompt = [all_captions[clip_idx] for clip_idx in clip_idxs]
+        elif self.opt.version_2s35w or self.opt.version_2sdiff:
             prompt = [all_captions[clip_idx] for clip_idx in clip_idxs]
         else:
             prompt = [all_captions[str(clip_idx)] for clip_idx in clip_idxs]
@@ -98,10 +112,16 @@ class InternalDataset(BaseDataset):
         if scale < 1.:
             del vr
             vr = VideoReader(str(video_path), ctx=cpu(0), width=round(W * scale), height=round(H * scale))
-        # `clip_duration`: seconds per clip; `clip_overlap`: inter-clip overlap in frames; `clip_base`: index offset
-        ci_first = clip_idxs[0] - clip_base
-        start_frame_idx = int(round(ci_first * clip_duration * fps)) - clip_overlap * ci_first
-        end_frame_idx = start_frame_idx + num_clips * int(round(clip_duration * fps))  # may exceed video length
+        # Compute `start_frame_idx` and `end_frame_idx` from selected clips
+        if self.opt.version_action:
+            selected_segments = [segments[ci] for ci in clip_idxs]
+            start_frame_idx = int(round(selected_segments[0]["start_time"] * fps))
+            end_frame_idx = int(round(selected_segments[-1]["end_time"] * fps))
+        else:
+            # `clip_duration`: seconds per clip; `clip_overlap`: inter-clip overlap in frames; `clip_base`: index offset
+            ci_first = clip_idxs[0] - clip_base
+            start_frame_idx = int(round(ci_first * clip_duration * fps)) - clip_overlap * ci_first
+            end_frame_idx = start_frame_idx + num_clips * int(round(clip_duration * fps))  # may exceed video length
 
         # Calculate total frames based on `num_clips`
         total_frames = (self.opt.num_input_frames - 1) * num_clips + 1
@@ -154,14 +174,25 @@ class InternalDataset(BaseDataset):
 
         # Split into clips
         num_frames_per_clip = []
-        for ii, clip_idx in enumerate(clip_idxs):
-            ci = clip_idx - clip_base
-            if ii == 0:
-                clip_start_frame_idx = int(round(ci * clip_duration * fps)) - clip_overlap * ci
-            else:  # to avoid overlapping frames between consecutive clips, we start the next clip from the end of the previous clip
-                clip_start_frame_idx = clip_end_frame_idx
-            clip_end_frame_idx = clip_start_frame_idx + int(round(clip_duration * fps))  # may exceed video length
-            num_frames_per_clip.append(len([idx for idx in input_frame_idxs if clip_start_frame_idx <= idx < clip_end_frame_idx]))
+        if self.opt.version_action:
+            for ii, clip_idx in enumerate(clip_idxs):
+                seg = segments[clip_idx]
+                seg_start = int(round(seg["start_time"] * fps))
+                seg_end = int(round(seg["end_time"] * fps))
+                num_frames_per_clip.append(len([idx for idx in input_frame_idxs if seg_start <= idx < seg_end]))
+            # Assign any remaining frames (due to rounding) to the last clip
+            assigned = sum(num_frames_per_clip)
+            if assigned < len(input_frame_idxs):
+                num_frames_per_clip[-1] += len(input_frame_idxs) - assigned
+        else:
+            for ii, clip_idx in enumerate(clip_idxs):
+                ci = clip_idx - clip_base
+                if ii == 0:
+                    clip_start_frame_idx = int(round(ci * clip_duration * fps)) - clip_overlap * ci
+                else:  # to avoid overlapping frames between consecutive clips, we start the next clip from the end of the previous clip
+                    clip_start_frame_idx = clip_end_frame_idx
+                clip_end_frame_idx = clip_start_frame_idx + int(round(clip_duration * fps))  # may exceed video length
+                num_frames_per_clip.append(len([idx for idx in input_frame_idxs if clip_start_frame_idx <= idx < clip_end_frame_idx]))
         assert sum(num_frames_per_clip) == len(input_frame_idxs) and len(num_frames_per_clip) == len(prompt)
         C2W = torch.split(C2W, num_frames_per_clip, dim=0)  # List of (F_i, 4, 4)
         fxfycxcy = torch.split(fxfycxcy, num_frames_per_clip, dim=0)  # List of (F_i, 4)
