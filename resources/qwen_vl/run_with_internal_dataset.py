@@ -67,7 +67,7 @@ def save_frames_as_video(frames: torch.Tensor, tmp_dir: str, name: str = "clip.m
 VALID_VERSIONS = ("2s35w", "2sdiff", "action")
 
 
-def build_opt(version: str, num_clips: int) -> Options:
+def build_opt(version: str, num_clips: int, use_global_caption: bool = False) -> Options:
     """Build Options for loading InternalDataset with the specified version."""
     if version not in VALID_VERSIONS:
         raise ValueError(f"Invalid version '{version}', must be one of {VALID_VERSIONS}")
@@ -80,6 +80,7 @@ def build_opt(version: str, num_clips: int) -> Options:
         version_action=(version == "action"),
         num_clips=num_clips,
         num_input_frames=num_input_frames,
+        load_global_caption=use_global_caption,
     )
     return opt
 
@@ -233,11 +234,11 @@ def main():
     parser = argparse.ArgumentParser(
         description="Run Qwen3-VL next-caption prediction on InternalDataset."
     )
-    parser.add_argument("--version", type=str, default="2sdiff", choices=["2s35w", "2sdiff", "action"],
+    parser.add_argument("--version", type=str, default="action", choices=["2s35w", "2sdiff", "action"],
                         help="Dataset version. Default: 2sdiff.")
     parser.add_argument("--num_clips", type=int, default=2,
                         help="Number of clips per sample (2-6). Default: 2.")
-    parser.add_argument("--model_size", type=str, default="8B", choices=["2B", "4B", "8B"],
+    parser.add_argument("--model_size", type=str, default="2B", choices=["2B", "4B", "8B"],
                         help="Model size of Qwen3-VL.")
     parser.add_argument("--device", type=str, default="cuda",
                         help="Device to use for prediction.")
@@ -247,6 +248,8 @@ def main():
                         help="Frames to sample per clip for VLM.")
     parser.add_argument("--use_video", action="store_true",
                         help="Pass clips as video files instead of frames.")
+    parser.add_argument("--use_global_caption", action="store_true",
+                        help="Include the global video caption as additional context for prediction.")
     parser.add_argument("--max_new_tokens", type=int, default=256,
                         help="Maximum number of tokens to generate.")
     parser.add_argument("--temperature", type=float, default=0.7,
@@ -266,7 +269,7 @@ def main():
 
     # Build dataset
     print(f"Loading InternalDataset (version_{args.version}, num_clips={args.num_clips}) ...")
-    opt = build_opt(args.version, args.num_clips)
+    opt = build_opt(args.version, args.num_clips, args.use_global_caption)
     dataset = InternalDataset(opt, training=args.training_split)
     print(f"Dataset size: {len(dataset)}")
 
@@ -326,6 +329,11 @@ def main():
                 videos_per_clip = [os.path.join(sample_dir, f"clip_{ci}.mp4") for ci in range(len(prompts))]
                 images_per_clip = [None] * len(prompts)
 
+            # Get global caption if available
+            global_caption = sample.get("global_caption", None)
+            if global_caption:
+                print(f"  Global caption: {global_caption[:80]}...")
+
             print(f"  uid={uid}, {len(prompts)} clips")
             print(f"  Clip 0: {prompts[0][:80]}...")
 
@@ -339,6 +347,7 @@ def main():
                     max_new_tokens=args.max_new_tokens,
                     temperature=args.temperature,
                     enable_thinking=args.enable_thinking,
+                    global_caption=global_caption,
                 )
                 step_predictions = [predicted]
             else:
@@ -358,6 +367,7 @@ def main():
                     temperature=args.temperature,
                     enable_thinking=args.enable_thinking,
                     step_callback=step_cb,
+                    global_caption=global_caption,
                 )
 
             # Compute per-step metrics

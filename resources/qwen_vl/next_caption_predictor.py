@@ -51,8 +51,8 @@ MODEL_PATHS = {
 SYSTEM_PROMPT = (
     "You are a video understanding and prediction assistant. "
     "Given a description (caption) of the current video clip -- and optionally "
-    "some visual frames or the video itself -- your task is to predict what will "
-    "most likely happen in the NEXT video clip. "
+    "some visual frames, the video itself, or an overall video summary -- "
+    "your task is to predict what will most likely happen in the NEXT video clip. "
     "Output ONLY the predicted caption for the next clip. "
     "The caption should be a single, concise paragraph (1-3 sentences) "
     "describing the visual content, actions, and scene of the next clip. "
@@ -105,6 +105,7 @@ class NextCaptionPredictor:
         video: Optional[str] = None,
         sample_fps: int = 2,
         max_frames: int = 64,
+        global_caption: Optional[str] = None,
     ) -> list[dict]:
         content = []
         has_visual = False
@@ -128,22 +129,34 @@ class NextCaptionPredictor:
                 })
             has_visual = True
 
+        # Build text prompt
+        parts = []
+        if global_caption is not None:
+            parts.append(f"Overall video summary:\n\"{global_caption}\"")
         if has_visual:
-            text = (
-                f"The caption of this current video clip is:\n\"{caption}\"\n\n"
+            parts.append(f"The caption of this current video clip is:\n\"{caption}\"")
+            parts.append(
+                "Based on the visual content shown above, the overall summary, and the clip caption, "
+                "predict and write the caption for the NEXT video clip "
+                "(what will happen next). Output ONLY the predicted caption."
+                if global_caption is not None else
                 "Based on the visual content shown above and the caption, "
                 "predict and write the caption for the NEXT video clip "
                 "(what will happen next). Output ONLY the predicted caption."
             )
         else:
-            text = (
-                f"The caption of the current video clip is:\n\"{caption}\"\n\n"
+            parts.append(f"The caption of the current video clip is:\n\"{caption}\"")
+            parts.append(
+                "Based on the overall summary and this clip caption, "
+                "predict and write the caption for the NEXT video clip "
+                "(what will most likely happen next). Output ONLY the predicted caption."
+                if global_caption is not None else
                 "Based on this caption, predict and write the caption for the "
                 "NEXT video clip (what will most likely happen next). "
                 "Output ONLY the predicted caption."
             )
 
-        content.append({"type": "text", "text": text})
+        content.append({"type": "text", "text": "\n\n".join(parts)})
         return content
 
     @torch.no_grad()
@@ -209,6 +222,7 @@ class NextCaptionPredictor:
         temperature: float = 0.7,
         top_p: float = 0.9,
         enable_thinking: bool = False,
+        global_caption: Optional[str] = None,
     ) -> str:
         """
         Predict the next clip's caption (single step).
@@ -223,12 +237,13 @@ class NextCaptionPredictor:
             temperature: Sampling temperature (0 = greedy).
             top_p: Nucleus sampling threshold.
             enable_thinking: Enable Qwen3 reasoning mode.
+            global_caption: Optional overall video summary for additional context.
 
         Returns:
             Predicted caption for the next clip.
         """
         user_content = self._build_user_content(
-            caption, images, video, sample_fps, max_frames,
+            caption, images, video, sample_fps, max_frames, global_caption,
         )
 
         messages = [
@@ -250,6 +265,7 @@ class NextCaptionPredictor:
         top_p: float = 0.9,
         enable_thinking: bool = False,
         step_callback=None,
+        global_caption: Optional[str] = None,
     ) -> list[str]:
         """
         Autoregressive multi-step prediction.
@@ -257,6 +273,7 @@ class NextCaptionPredictor:
         At each step, calls `predict()` with:
           - caption: the *predicted* caption from the previous step (or GT for step 0)
           - images/video: GT frames of the current clip (clip `step`)
+          - global_caption: overall video summary (same for every step)
 
         No conversation history is accumulated -- each step is an independent call.
 
@@ -272,6 +289,7 @@ class NextCaptionPredictor:
             top_p: Nucleus sampling p.
             enable_thinking: Enable Qwen3 reasoning mode.
             step_callback: Optional callable(step, predicted_caption) called after each step.
+            global_caption: Optional overall video summary for additional context.
 
         Returns:
             List of predicted captions for clips 1..num_steps.
@@ -301,6 +319,7 @@ class NextCaptionPredictor:
                 temperature=temperature,
                 top_p=top_p,
                 enable_thinking=enable_thinking,
+                global_caption=global_caption,
             )
             predictions.append(predicted)
 
