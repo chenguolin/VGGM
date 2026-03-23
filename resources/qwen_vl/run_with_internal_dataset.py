@@ -262,6 +262,8 @@ def main():
                         help="Random seed for reproducibility.")
     parser.add_argument("--training_split", action="store_true",
                         help="Use training split of InternalDataset.")
+    parser.add_argument("--lora_path", type=str, default=None,
+                        help="Path to LoRA adapter for fine-tuned model.")
     args = parser.parse_args()
 
     np.random.seed(args.seed)
@@ -274,7 +276,7 @@ def main():
     print(f"Dataset size: {len(dataset)}")
 
     # Load VLM
-    predictor = NextCaptionPredictor(model_size=args.model_size, device=args.device)
+    predictor = NextCaptionPredictor(model_size=args.model_size, device=args.device, lora_path=args.lora_path)
 
     # Process samples
     num_samples = min(args.num_samples, len(dataset))

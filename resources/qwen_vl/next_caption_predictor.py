@@ -68,6 +68,7 @@ class NextCaptionPredictor:
         model_size: str = "8B",
         device: str = "cuda",
         system_prompt: Optional[str] = None,
+        lora_path: Optional[str] = None,
     ):
         self.model_size = model_size
         self.device = device
@@ -85,6 +86,15 @@ class NextCaptionPredictor:
             device_map=device,
             trust_remote_code=True,
         )
+
+        # Load LoRA adapter if provided
+        if lora_path is not None:
+            from peft import PeftModel
+            print(f"Loading LoRA adapter from {lora_path} ...")
+            self.model = PeftModel.from_pretrained(self.model, lora_path)
+            self.model = self.model.merge_and_unload()
+            print("LoRA adapter merged.")
+
         self.model.eval()
         print("Model loaded.")
 
