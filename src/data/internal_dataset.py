@@ -99,7 +99,12 @@ class InternalDataset(BaseDataset):
                     raise ValueError("No valid data in InternalDataset!")
             return self.__getitem__(int(np.random.choice(self.valid_idxs)))
 
-        start_clip_idx = int(np.random.choice(valid_start_clip_idxs))
+        # For `version_2sdiff`, always start from clip 0 because clip 0 captions have a
+        # distinct introductory style vs. continuation style in later clips
+        if self.opt.version_2sdiff and 0 in valid_start_clip_idxs:
+            start_clip_idx = 0
+        else:
+            start_clip_idx = int(np.random.choice(valid_start_clip_idxs))
         clip_idxs = [start_clip_idx + i for i in range(num_clips)]  # consecutive clip indices
         if self.opt.version_action:
             prompt = [all_captions[clip_idx] for clip_idx in clip_idxs]
