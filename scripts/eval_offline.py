@@ -298,10 +298,19 @@ def main():
 
     # Concatenate image outputs for visualization
     val_outputs = {}
+    all_val_prompts = []
     if all_val_outputs:
         for k in all_val_outputs[0].keys():
             if "images" in k and all_val_outputs[0][k] is not None:
                 val_outputs[k] = torch.cat([out[k] for out in all_val_outputs], dim=0)
+        # Collect prompts from all validation batches
+        for out in all_val_outputs:
+            if "prompts" in out:
+                prompts = out["prompts"]
+                if isinstance(prompts[0], list):  # multi-clip: list of lists
+                    all_val_prompts.extend(["; ".join(p) for p in prompts])
+                else:
+                    all_val_prompts.extend(prompts)
 
     # WandB logging
     if is_main_process and not args.no_wandb:
@@ -343,6 +352,15 @@ def main():
             "videos/validation": vis_util.wandb_video_log(
                 val_outputs, max_res=512, fps=16),
         }, step=args.step)
+
+        # Log evaluation captions
+        if all_val_prompts:
+            caption_table = wandb.Table(columns=["index", "caption"])
+            for i, caption in enumerate(all_val_prompts):
+                caption_table.add_data(i, caption)
+            wandb.log({
+                "validation/captions": caption_table,
+            }, step=args.step)
 
         wandb.finish()
         print("WandB sync complete.")

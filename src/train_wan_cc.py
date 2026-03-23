@@ -701,9 +701,17 @@ def main():
 
                 # outputs = accelerator.gather(outputs)
                 # val_outputs = accelerator.gather_for_metrics(val_outputs)
+                all_val_prompts = []
                 for k in all_val_outputs[0].keys():
                     if "images" in k and all_val_outputs[0][k] is not None:  # for visualization
                         val_outputs[k] = torch.cat([out[k] for out in all_val_outputs], dim=0)
+                for out in all_val_outputs:
+                    if "prompts" in out:
+                        prompts = out["prompts"]
+                        if isinstance(prompts[0], list):  # multi-clip: list of lists
+                            all_val_prompts.extend(["; ".join(p) for p in prompts])
+                        else:
+                            all_val_prompts.extend(prompts)
 
                 if is_main_process:
                     wandb.log({
@@ -717,6 +725,13 @@ def main():
                         "videos/validation": vis_util.wandb_video_log(
                             val_outputs, max_res=512, fps=16)  # resize videos to `512` for logging
                     }, step=global_update_step)
+                    if all_val_prompts:
+                        caption_table = wandb.Table(columns=["index", "caption"])
+                        for i, caption in enumerate(all_val_prompts):
+                            caption_table.add_data(i, caption)
+                        wandb.log({
+                            "validation/captions": caption_table,
+                        }, step=global_update_step)
 
                 del all_val_outputs, val_outputs, outputs
                 torch.cuda.empty_cache()

@@ -837,6 +837,9 @@ class Wan(nn.Module):
         if render_images is not None:
             outputs["images_render"] = render_images
 
+        # Save prompts for logging
+        outputs["prompts"] = prompts
+
         return outputs
 
     def evaluate_causal(self, data: Dict[str, Any], dtype: torch.dtype, verbose: bool = True, vae: Optional[WanVAEWrapper] = None):
@@ -1275,6 +1278,9 @@ class Wan(nn.Module):
 
         if self.opt.load_da3 and depths is not None:
             outputs["images_gt_depth"] = colorize_depth(1./depths, batch_mode=True)
+
+        # Save prompts for logging
+        outputs["prompts"] = prompts
 
         return outputs
 
