@@ -306,11 +306,7 @@ def main():
         # Collect prompts from all validation batches
         for out in all_val_outputs:
             if "prompts" in out:
-                prompts = out["prompts"]
-                if isinstance(prompts[0], list):  # multi-clip: list of lists
-                    all_val_prompts.extend(["; ".join(p) for p in prompts])
-                else:
-                    all_val_prompts.extend(prompts)
+                all_val_prompts.extend(out["prompts"])
 
     # WandB logging
     if is_main_process and not args.no_wandb:
@@ -355,9 +351,13 @@ def main():
 
         # Log evaluation captions
         if all_val_prompts:
-            caption_table = wandb.Table(columns=["index", "caption"])
-            for i, caption in enumerate(all_val_prompts):
-                caption_table.add_data(i, caption)
+            caption_table = wandb.Table(columns=["sample", "clip", "caption"])
+            for i, prompt in enumerate(all_val_prompts):
+                if isinstance(prompt, list):  # multi-clip: one row per clip
+                    for j, clip_prompt in enumerate(prompt):
+                        caption_table.add_data(i, j, clip_prompt)
+                else:
+                    caption_table.add_data(i, 0, prompt)
             wandb.log({
                 "validation/captions": caption_table,
             }, step=args.step)
