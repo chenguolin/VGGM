@@ -362,13 +362,17 @@ opt_dict["wan2.1_t2v_1.3b_causal"] = Options(
 
 # Self-Forcing DMD
 opt_dict["wan2.1_t2v_1.3b_dmd"] = Options(
+    eval_offline=False,  # True
+    #
     # use_internal_dataset=True,
+    # version_2s35w=True,
     #
     # input_res=(480, 832),
     #
     num_clips=1,
     max_kvcache_size=21,
     sp_size=1,
+    # shift=7.,
     #
     only_static_data=False,
     use_vidprom=False,  # True
