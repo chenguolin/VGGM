@@ -537,7 +537,6 @@ class WanDiffusionDA3Wrapper(nn.Module):
         self.max_seq_len = None  # not used, because we load videos in the same shape
 
         # Load DA3
-        assert da3_model_name == "da3-large-1.1", "By now, only `da3-large-1.1` is supported"
         _da3 = DepthAnything3.from_pretrained(f"depth-anything/{(da3_model_name.upper())}")
         self.da3_model: DepthAnything3Net = _da3.model
         self.da3_model.backbone.pretrained.patch_size = 16  # hard-coded for Wan2.1
@@ -552,12 +551,14 @@ class WanDiffusionDA3Wrapper(nn.Module):
         del _da3
 
         # Extra modules of WanDA3
-        self.da3_adapter = nn.Linear(1536, 1024)  # hard-coded for Wan2.1-1.3B to DA3-large
+        da3_embed_dim = self.da3_model.backbone.pretrained.embed_dim
+        num_da3_blocks = len(self.da3_model.backbone.pretrained.blocks)
+        self.da3_adapter = nn.Linear(self.model.dim, da3_embed_dim)
         if da3_interactive:
             self.dit_da3_interactive = nn.ModuleList([
-                # `1536` and `1024` are hard-coded for Wan1.3B and DA3-large
-                InteractiveModule(dim1=1536, dim2=1024, dim=1536, num_heads=24, down_ratio=da3_down_ratio)
-                for _ in range(24)  # `24`: hard-coded for DA3-large
+                # `da3_embed_dim`: DA3 backbone dim; `self.model.dim`/`self.model.num_heads`: Wan model-specific
+                InteractiveModule(dim1=self.model.dim, dim2=da3_embed_dim, dim=self.model.dim, num_heads=self.model.num_heads, down_ratio=da3_down_ratio)
+                for _ in range(num_da3_blocks)
             ])
 
         self.da3_chunk_size = da3_chunk_size
@@ -795,12 +796,14 @@ class WanDiffusionDA3Wrapper(nn.Module):
 
         dit_x, da3_x = None, None
         da3_output = []
-        blocks_to_take = [11, 15, 19, 23]  # hard-coded for DA3-large
+        blocks_to_take = self.da3_model.backbone.out_layers  # DA3 feature extraction indices
+        da3_rope_start = self.da3_model.backbone.pretrained.rope_start
+        da3_alt_start = self.da3_model.backbone.pretrained.alt_start
         pos, pos_nodiff = self.da3_model.backbone.pretrained._prepare_rope(B, tff, h*8//self.da3_down_ratio, w*8//self.da3_down_ratio, device)  # `8`: hard-coded for Wan2.1
 
         for i, block in enumerate(self.model.blocks):
             ## Only Wan DiT
-            if i < len(self.model.blocks) - 24:  #  `24`: hard-coded for da3-large
+            if i < len(self.model.blocks) - num_da3_blocks:
                 if torch.is_grad_enabled() and self.model.use_gradient_checkpointing_offload:
                     if self.is_causal and kv_cache is not None:
                         kwargs.update(
@@ -895,7 +898,7 @@ class WanDiffusionDA3Wrapper(nn.Module):
                     da3_x = rearrange(da3_x, "(b f) d h w -> b (f h w) d", f=tff, h=h//(2*self.da3_down_ratio), w=w//(2*self.da3_down_ratio))  # `2`: hard-coded for patch embedding
                 else:
                     da3_x = da3_x
-                da3_i = i - (len(self.model.blocks) - 24)
+                da3_i = i - (len(self.model.blocks) - num_da3_blocks)
                 da3_block = self.da3_model.backbone.pretrained.blocks[da3_i]
 
                 if da3_i == 0:  # the first layer of DA3
@@ -907,19 +910,19 @@ class WanDiffusionDA3Wrapper(nn.Module):
                     da3_x = da3_x + self.da3_model.backbone.pretrained.interpolate_pos_encoding(da3_x, h*8//self.da3_down_ratio, w*8//self.da3_down_ratio)  # `8`: hard-coded for Wan2.1
                     da3_x = rearrange(da3_x, "(b f) n d -> b f n d", f=tff)
 
-                if da3_i < 8:  # `8`: hard-coded for DA3-large `self.rope_start`
+                if da3_i < da3_rope_start:
                     g_pos, l_pos = None, None
                 else:
                     g_pos, l_pos = pos_nodiff, pos
 
-                if da3_i == 8:  # `8`: hard-coded for DA3-large `self.alt_start`
+                if da3_i == da3_alt_start:
                     if camera_token is None:
                         ref_token = self.da3_model.backbone.pretrained.camera_token[:, :1].expand(B, -1, -1)
                         src_token = self.da3_model.backbone.pretrained.camera_token[:, 1:].expand(B, tff - 1, -1)
                         camera_token = torch.cat([ref_token, src_token], dim=1)
                     da3_x[:, :, 0, :] = camera_token
 
-                if da3_i >= 8 and da3_i % 2 == 1:  # `8`: hard-coded for DA3-large `self.alt_start`
+                if da3_i >= da3_alt_start and da3_i % 2 == 1:
                     da3_x = self.da3_model.backbone.pretrained.process_attention(
                         da3_x, da3_block, "global", pos=g_pos,
                         gradient_checkpointing=self.training,
@@ -971,13 +974,13 @@ class WanDiffusionDA3Wrapper(nn.Module):
         dit_x = torch.stack([u.float() for u in dit_x])
 
         # DA3 head & unpatchify
+        da3_embed_dim = self.da3_model.backbone.pretrained.embed_dim
         camera_tokens = [out[0] for out in da3_output]
         da3_outputs = [
             torch.cat(
                 [
-                    # `1024`: hard-coded for DA3-large
-                    out[1][..., :1024],
-                    self.da3_model.backbone.pretrained.norm(out[1][..., 1024:])
+                    out[1][..., :da3_embed_dim],
+                    self.da3_model.backbone.pretrained.norm(out[1][..., da3_embed_dim:])
                 ],
                 dim=-1,
             )
