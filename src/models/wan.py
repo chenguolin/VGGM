@@ -1779,11 +1779,10 @@ class Wan(nn.Module):
             raise ValueError("Prompts should not be empty")
         if isinstance(prompts[0], list):
             B, num_clips = len(prompts), len(prompts[0])
-            # Encode one prompt at a time to save memory
-            embeds = torch.cat([self.text_encoder([p]) for sample in prompts for p in sample], dim=0)
+            flat_prompts = [p for sample in prompts for p in sample]
+            embeds = self.text_encoder(flat_prompts)
             return embeds.reshape(B, num_clips, embeds.shape[1], embeds.shape[2])  # (B, num_clips, N=512, D')
-        # Encode one prompt at a time to save memory
-        return torch.cat([self.text_encoder([p]) for p in prompts], dim=0)  # (B, N=512, D')
+        return self.text_encoder(prompts)  # (B, N=512, D')
 
     def _build_negative_prompt_embeds(self, batch_size: int, num_clips: int = 1) -> Tensor:
         neg = self.text_encoder([self.opt.negative_prompt]).repeat(batch_size * num_clips, 1, 1)
