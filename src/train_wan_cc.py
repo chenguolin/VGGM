@@ -27,7 +27,7 @@ from src.models import Wan, DMD_Wan, get_optimizer, get_lr_scheduler
 import src.utils.util as util
 import src.utils.vis_util as vis_util
 from src.utils.ema import EMAParams
-from src.utils.distributed import fsdp_wrap, fsdp_state_dict, launch_distributed_job, barrier, initialize_sequence_parallel
+from src.utils.distributed import fsdp_wrap, fsdp_state_dict, launch_distributed_job, barrier, initialize_sequence_parallel, initialize_sub_sequence_parallel
 
 
 def main():
@@ -282,6 +282,23 @@ def main():
         logger.info(f"Sequence Parallelism initialized: sp_size=[{opt.sp_size}], world_size=[{world_size}], num_heads=[{model.diffusion.model.num_heads}]")
         logger.info(f"Data parallel groups: [{world_size // opt.sp_size}], SP ranks per group: [{opt.sp_size}]\n")
 
+        # Initialize sub-SP for fake_score when its `num_heads` is not divisible by `sp_size`
+        if opt.use_dmd and not opt.ddt_fake_score and model.fake_score is not None:
+            fake_num_heads = model.fake_score.model.num_heads
+            if fake_num_heads % opt.sp_size != 0:
+                # Find the largest divisor of `fake_num_heads` that also divides `sp_size`
+                sub_sp_size = opt.sp_size
+                while sub_sp_size > 1 and fake_num_heads % sub_sp_size != 0:
+                    sub_sp_size //= 2
+                assert sub_sp_size > 1, \
+                    f"Cannot find a valid sub_sp_size: fake_score `num_heads`={fake_num_heads}, `sp_size`={opt.sp_size}"
+                assert opt.sp_size % sub_sp_size == 0, \
+                    f"`sp_size` ({opt.sp_size}) must be divisible by `sub_sp_size` ({sub_sp_size})"
+                initialize_sub_sequence_parallel(sub_sp_size)
+                model.fake_score_use_sub_sp = True
+                logger.info(f"Sub-SP initialized for fake_score: fake `num_heads`={fake_num_heads}, "
+                            f"sub_sp_size={sub_sp_size} (main sp_size={opt.sp_size})\n")
+
     # FSDP wrap
     if args.wrap_strategy == "transformer":
         from src.models.modules.wan_modules.t5 import T5Attention
@@ -481,19 +498,13 @@ def main():
 
             loss = outputs["loss"]
 
-            # Some extra outputs for logging
-            diffusion_loss = outputs["diffusion_loss"] if "diffusion_loss" in outputs else None
-            critic_loss = outputs["critic_loss"] if "critic_loss" in outputs else None
-            generator_loss = outputs["generator_loss"] if "generator_loss" in outputs else None
-            dmd_grad_norm = outputs["dmd_grad_norm"] if "dmd_grad_norm" in outputs else None
-            depth_loss = outputs["depth_loss"] if "depth_loss" in outputs else None
-            depth_loss_diffusion = outputs["depth_loss_diffusion"] if "depth_loss_diffusion" in outputs else None
-            ray_loss = outputs["ray_loss"] if "ray_loss" in outputs else None
-            ray_loss_diffusion = outputs["ray_loss_diffusion"] if "ray_loss_diffusion" in outputs else None
-            camera_loss = outputs["camera_loss"] if "camera_loss" in outputs else None
-            camera_loss_diffusion = outputs["camera_loss_diffusion"] if "camera_loss_diffusion" in outputs else None
-            render_loss = outputs["render_loss"] if "render_loss" in outputs else None
-            ss_loss = outputs["ss_loss"] if "ss_loss" in outputs else None
+            # Batch-extract optional training metrics from `outputs`
+            _METRIC_KEYS = [
+                "diffusion_loss", "critic_loss", "generator_loss", "dmd_grad_norm",
+                "depth_loss", "depth_loss_diffusion", "ray_loss", "ray_loss_diffusion",
+                "camera_loss", "camera_loss_diffusion", "render_loss", "ss_loss",
+            ]
+            train_metrics = {k: outputs[k] for k in _METRIC_KEYS if k in outputs}
 
             # Backpropagate
             loss.backward()
@@ -538,12 +549,12 @@ def main():
                 "loss": loss.item(),
                 "lr": lr_scheduler.get_last_lr()[0],
             }
-            if diffusion_loss is not None:
-                logs.update({"diffusion": diffusion_loss.item()})
-            if critic_loss is not None:
-                logs.update({"critic": critic_loss.item()})
-            if generator_loss is not None:
-                logs.update({"generator": generator_loss.item()})
+            if "diffusion_loss" in train_metrics:
+                logs["diffusion"] = train_metrics["diffusion_loss"].item()
+            if "critic_loss" in train_metrics:
+                logs["critic"] = train_metrics["critic_loss"].item()
+            if "generator_loss" in train_metrics:
+                logs["generator"] = train_metrics["generator_loss"].item()
 
             progress_bar.set_postfix(**logs)
             progress_bar.update(1)
@@ -551,8 +562,8 @@ def main():
             logger.info(
                 f"[{global_update_step:06d} / {total_updated_steps:06d}] " +
                 f"loss: {logs['loss']:.4f}, lr: {logs['lr']:.2e}" +
-                (f", critic: {logs['critic']:.4f}" if critic_loss is not None else "") +
-                (f", generator: {logs['generator']:.4f}" if generator_loss is not None else "")
+                (f", critic: {logs['critic']:.4f}" if "critic_loss" in train_metrics else "") +
+                (f", generator: {logs['generator']:.4f}" if "generator_loss" in train_metrics else "")
             )
 
             # WandB log the training progress
@@ -563,22 +574,8 @@ def main():
                         "training/loss": loss.item(),
                         "training/lr": lr_scheduler.get_last_lr()[0],
                     }
-                    for key, val in [
-                        ("training/diffusion_loss", diffusion_loss),
-                        ("training/critic_loss", critic_loss),
-                        ("training/generator_loss", generator_loss),
-                        ("training/dmd_grad_norm", dmd_grad_norm),
-                        ("training/depth_loss", depth_loss),
-                        ("training/depth_loss_diffusion", depth_loss_diffusion),
-                        ("training/ray_loss", ray_loss),
-                        ("training/ray_loss_diffusion", ray_loss_diffusion),
-                        ("training/camera_loss", camera_loss),
-                        ("training/camera_loss_diffusion", camera_loss_diffusion),
-                        ("training/render_loss", render_loss),
-                        ("training/ss_loss", ss_loss),
-                    ]:
-                        if val is not None:
-                            wandb_log[key] = val.item()
+                    for k, v in train_metrics.items():
+                        wandb_log[f"training/{k}"] = v.item()
                     wandb.log(wandb_log, step=global_update_step)
 
             # Save checkpoint
@@ -720,17 +717,12 @@ def main():
                         all_val_frame_ranges.extend(out["frame_ranges"])
 
                 if is_main_process:
-                    wandb.log({
-                        f"validation/{k}": v for k, v in all_val_metrics.items()
-                    }, step=global_update_step)
-                    wandb.log({
-                        "videos/training": vis_util.wandb_video_log(
-                            outputs, max_res=512, fps=16)  # resize videos to `512` for logging
-                    }, step=global_update_step)
-                    wandb.log({
-                        "videos/validation": vis_util.wandb_video_log(
-                            val_outputs, max_res=512, fps=16)  # resize videos to `512` for logging
-                    }, step=global_update_step)
+                    # Log evaluation metrics and videos
+                    val_wandb_log = {f"validation/{k}": v for k, v in all_val_metrics.items()}
+                    val_wandb_log["videos/training"] = vis_util.wandb_video_log(
+                        outputs, max_res=512, fps=16)  # resize videos to `512` for logging
+                    val_wandb_log["videos/validation"] = vis_util.wandb_video_log(
+                        val_outputs, max_res=512, fps=16)  # resize videos to `512` for logging
                     # Log evaluation captions
                     if all_val_prompts:
                         has_global = len(all_val_global_captions) == len(all_val_prompts)
@@ -764,9 +756,10 @@ def main():
                                 if has_frames:
                                     row.append(str(all_val_frame_ranges[i]))
                                 caption_table.add_data(*row)
-                        wandb.log({
-                            "validation/captions": caption_table,
-                        }, step=global_update_step)
+                        val_wandb_log["validation/captions"] = caption_table
+                    wandb.log(val_wandb_log, step=global_update_step)
+
+                barrier()  # wait for main process to finish wandb logging before next training step
 
                 del all_val_outputs, val_outputs, outputs
                 torch.cuda.empty_cache()

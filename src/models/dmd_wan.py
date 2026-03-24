@@ -15,6 +15,7 @@ from src.models.wan import Wan
 from src.models.pipelines.self_forcing_training import SelfForcingTrainingPipeline
 from src.utils.ema import EMAParams
 from src.utils import plucker_ray, colorize_depth, filter_da3_points, render_pt3d_points, mv_interpolate
+from src.utils.distributed import get_sp_world_size, use_sub_sp
 
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -87,6 +88,11 @@ class DMD_Wan(Wan):
         else:
             self.fake_score = None
 
+        # Whether the fake_score needs a smaller SP group because its `num_heads`
+        # is not divisible by the main `sp_size`.  Set by the training script
+        # after `initialize_sub_sequence_parallel` is called.
+        self.fake_score_use_sub_sp = False
+
         # This will be init later with fsdp-wrapped modules
         self.inference_pipeline: SelfForcingTrainingPipeline = None
 
@@ -115,6 +121,13 @@ class DMD_Wan(Wan):
                         break
                 if not _flag:
                     param.requires_grad_(False)
+
+    def _call_fake_score(self, *args, **kwargs) -> Tensor:
+        """Call `self.fake_score`, using sub-SP group when needed."""
+        if self.fake_score_use_sub_sp:
+            with use_sub_sp():
+                return self.fake_score(*args, **kwargs)
+        return self.fake_score(*args, **kwargs)
 
     def compute_loss(self,
         data: Dict[str, Any],
@@ -622,7 +635,7 @@ class DMD_Wan(Wan):
                 ddt_index=-1,  # last DDT head as fake score
             )
         else:
-            fake_model_outputs = self.fake_score(
+            fake_model_outputs = self._call_fake_score(
                 noisy_latents,
                 timesteps,
                 prompt_embeds,
@@ -824,7 +837,7 @@ class DMD_Wan(Wan):
                 ddt_index=-1,  # last DDT head as fake score
             )
         else:
-            fake_model_outputs = self.fake_score(
+            fake_model_outputs = self._call_fake_score(
                 noisy_latents,
                 timesteps,
                 prompt_embeds,
@@ -846,7 +859,7 @@ class DMD_Wan(Wan):
                     ddt_index=-1,  # last DDT head as fake score
                 )
             else:
-                fake_model_outputs_uncond = self.fake_score(
+                fake_model_outputs_uncond = self._call_fake_score(
                     noisy_latents,
                     timesteps,
                     negative_prompt_embeds,
