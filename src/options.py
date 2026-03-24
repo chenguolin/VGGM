@@ -300,6 +300,7 @@ opt_dict["wan2.1_t2v_1.3b"] = Options(
     #
     num_clips=1,
     sp_size=1,
+    shift=5.,
     #
     # wan_dir=f"{ROOT}/.cache/huggingface/hub/Wan-AI/Wan2.1-T2V-14B",
     # generator_path=f"{ROOT}/projects/VGGM/.pth",
@@ -372,7 +373,7 @@ opt_dict["wan2.1_t2v_1.3b_dmd"] = Options(
     num_clips=1,
     max_kvcache_size=21,
     sp_size=1,
-    # shift=7.,
+    shift=5.,
     #
     only_static_data=False,
     use_vidprom=False,  # True
