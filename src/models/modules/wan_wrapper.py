@@ -541,6 +541,11 @@ class WanDiffusionDA3Wrapper(nn.Module):
         self.da3_model: DepthAnything3Net = _da3.model
         self.da3_model.backbone.pretrained.patch_size = 16  # hard-coded for Wan2.1
         self.da3_model.head.patch_size = 16  # hard-coded for Wan2.1
+            ## Override `sink_size` and `max_attention_size` on every DA3 attention block,
+            ## since these are baked in by `from_pretrained` and can't be set at load time
+        for blk in self.da3_model.backbone.pretrained.blocks:
+            blk.attn.sink_size = sink_size
+            blk.attn.max_attention_size = da3_max_attention_size
             ## Remove not used modules
         if not da3_input_cam:
             self.da3_model.cam_enc = None
@@ -551,8 +556,8 @@ class WanDiffusionDA3Wrapper(nn.Module):
         del _da3
 
         # Extra modules of WanDA3
-        da3_embed_dim = self.da3_model.backbone.pretrained.embed_dim
-        num_da3_blocks = len(self.da3_model.backbone.pretrained.blocks)
+        self.da3_embed_dim = da3_embed_dim = self.da3_model.backbone.pretrained.embed_dim
+        self.num_da3_blocks = num_da3_blocks = len(self.da3_model.backbone.pretrained.blocks)
         self.da3_adapter = nn.Linear(self.model.dim, da3_embed_dim)
         if da3_interactive:
             self.dit_da3_interactive = nn.ModuleList([
@@ -803,7 +808,7 @@ class WanDiffusionDA3Wrapper(nn.Module):
 
         for i, block in enumerate(self.model.blocks):
             ## Only Wan DiT
-            if i < len(self.model.blocks) - num_da3_blocks:
+            if i < len(self.model.blocks) - self.num_da3_blocks:
                 if torch.is_grad_enabled() and self.model.use_gradient_checkpointing_offload:
                     if self.is_causal and kv_cache is not None:
                         kwargs.update(
@@ -898,7 +903,7 @@ class WanDiffusionDA3Wrapper(nn.Module):
                     da3_x = rearrange(da3_x, "(b f) d h w -> b (f h w) d", f=tff, h=h//(2*self.da3_down_ratio), w=w//(2*self.da3_down_ratio))  # `2`: hard-coded for patch embedding
                 else:
                     da3_x = da3_x
-                da3_i = i - (len(self.model.blocks) - num_da3_blocks)
+                da3_i = i - (len(self.model.blocks) - self.num_da3_blocks)
                 da3_block = self.da3_model.backbone.pretrained.blocks[da3_i]
 
                 if da3_i == 0:  # the first layer of DA3
@@ -974,13 +979,12 @@ class WanDiffusionDA3Wrapper(nn.Module):
         dit_x = torch.stack([u.float() for u in dit_x])
 
         # DA3 head & unpatchify
-        da3_embed_dim = self.da3_model.backbone.pretrained.embed_dim
         camera_tokens = [out[0] for out in da3_output]
         da3_outputs = [
             torch.cat(
                 [
-                    out[1][..., :da3_embed_dim],
-                    self.da3_model.backbone.pretrained.norm(out[1][..., da3_embed_dim:])
+                    out[1][..., :self.da3_embed_dim],
+                    self.da3_model.backbone.pretrained.norm(out[1][..., self.da3_embed_dim:])
                 ],
                 dim=-1,
             )
