@@ -839,6 +839,12 @@ class Wan(nn.Module):
 
         # Save prompts for logging
         outputs["prompts"] = prompts
+        if "global_caption" in data:
+            outputs["global_captions"] = data["global_caption"]
+        if "action_labels" in data:
+            outputs["action_labels"] = data["action_labels"]
+        if "frame_ranges" in data:
+            outputs["frame_ranges"] = data["frame_ranges"]
 
         return outputs
 
@@ -1281,6 +1287,12 @@ class Wan(nn.Module):
 
         # Save prompts for logging
         outputs["prompts"] = prompts
+        if "global_caption" in data:
+            outputs["global_captions"] = data["global_caption"]
+        if "action_labels" in data:
+            outputs["action_labels"] = data["action_labels"]
+        if "frame_ranges" in data:
+            outputs["frame_ranges"] = data["frame_ranges"]
 
         return outputs
 

@@ -701,14 +701,23 @@ def main():
 
                 # outputs = accelerator.gather(outputs)
                 # val_outputs = accelerator.gather_for_metrics(val_outputs)
-                all_val_prompts = []
                 for k in all_val_outputs[0].keys():
                     if "images" in k and all_val_outputs[0][k] is not None:  # for visualization
                         val_outputs[k] = torch.cat([out[k] for out in all_val_outputs], dim=0)
-                # Collect prompts from all validation batches
+                # Collect prompts and optional metadata from all validation batches
+                all_val_prompts = []
+                all_val_global_captions = []
+                all_val_action_labels = []
+                all_val_frame_ranges = []
                 for out in all_val_outputs:
                     if "prompts" in out:
                         all_val_prompts.extend(out["prompts"])
+                    if "global_captions" in out:
+                        all_val_global_captions.extend(out["global_captions"])
+                    if "action_labels" in out:
+                        all_val_action_labels.extend(out["action_labels"])
+                    if "frame_ranges" in out:
+                        all_val_frame_ranges.extend(out["frame_ranges"])
 
                 if is_main_process:
                     wandb.log({
@@ -724,13 +733,37 @@ def main():
                     }, step=global_update_step)
                     # Log evaluation captions
                     if all_val_prompts:
-                        caption_table = wandb.Table(columns=["sample", "clip", "caption"])
+                        has_global = len(all_val_global_captions) == len(all_val_prompts)
+                        has_action = len(all_val_action_labels) == len(all_val_prompts)
+                        has_frames = len(all_val_frame_ranges) == len(all_val_prompts)
+                        columns = ["sample", "clip", "caption"]
+                        if has_global:
+                            columns.append("global_caption")
+                        if has_action:
+                            columns.append("action_label")
+                        if has_frames:
+                            columns.append("frame_range")
+                        caption_table = wandb.Table(columns=columns)
                         for i, prompt in enumerate(all_val_prompts):
                             if isinstance(prompt, list):  # multi-clip: one row per clip
                                 for j, clip_prompt in enumerate(prompt):
-                                    caption_table.add_data(i, j, clip_prompt)
+                                    row = [i, j, clip_prompt]
+                                    if has_global:
+                                        row.append(all_val_global_captions[i] if j == 0 else "")
+                                    if has_action:
+                                        row.append(all_val_action_labels[i][j])
+                                    if has_frames:
+                                        row.append(str(all_val_frame_ranges[i][j]))
+                                    caption_table.add_data(*row)
                             else:
-                                caption_table.add_data(i, 0, prompt)
+                                row = [i, 0, prompt]
+                                if has_global:
+                                    row.append(all_val_global_captions[i])
+                                if has_action:
+                                    row.append(all_val_action_labels[i])
+                                if has_frames:
+                                    row.append(str(all_val_frame_ranges[i]))
+                                caption_table.add_data(*row)
                         wandb.log({
                             "validation/captions": caption_table,
                         }, step=global_update_step)

@@ -14,14 +14,25 @@ class InternalDataset(BaseDataset):
     def __init__(self, opt: Options, training: bool = True):
         super().__init__(opt, "internal", training)
 
+        # 4. Version: action
         if self.opt.version_action:
             with open(f"{self.root}/videos_action_caption.jsonl", "r", encoding="utf-8") as f:
                 data = [json.loads(line) for line in f]
-            # `caption_data`: uid -> {whole_caption, segments: [{segment_id, start_time, end_time, action_label, caption}, ...]}
+            ## Fix typo keys (e.g. `end_end`, `end_end_time`, `end_speed` -> `end_time`)
+            for item in data:
+                for seg in item["caption_result"]["segments"]:
+                    if "end_time" not in seg:
+                        for k in list(seg.keys()):
+                            if k not in ("segment_id", "start_time", "action_label", "caption"):
+                                seg["end_time"] = seg.pop(k)
+                                break
+            ## `caption_data`: `uid` -> {`whole_caption`, `segments`: [{`segment_id`, `start_time`, `end_time`, `action_label`, `caption`}, ...]}
             self.caption_data = {item["filename"]: item["caption_result"] for item in data}
             if self.opt.load_global_caption:
                 self.global_caption_data = {item["filename"]: item["caption_result"]["whole_caption"] for item in data}
             uids = list(self.caption_data.keys())
+
+        # 3. Version: 2sdiff
         elif self.opt.version_2sdiff:
             with open(f"{self.root}/valid_captions_2sdiff.jsonl", "r", encoding="utf-8") as f:
                 data = [json.loads(line) for line in f]
@@ -29,6 +40,8 @@ class InternalDataset(BaseDataset):
             if self.opt.load_global_caption:
                 self.global_caption_data = {item["raw_id"]: item["org_long_caption"] for item in data}
             uids = list(self.caption_data.keys())
+
+        # 2. Version: 2s35w
         elif self.opt.version_2s35w:
             with open(f"{self.root}/valid_captions_2s35w.jsonl", "r", encoding="utf-8") as f:
                 data = [json.loads(line) for line in f]
@@ -36,6 +49,8 @@ class InternalDataset(BaseDataset):
             if self.opt.load_global_caption:
                 self.global_caption_data = {item["raw_id"]: item["org_long_caption"] for item in data}
             uids = list(self.caption_data.keys())
+
+        # 1. Version: 5s40w
         else:
             uids = os.listdir(f"{self.root}/valid_captions")
 
@@ -92,6 +107,16 @@ class InternalDataset(BaseDataset):
             clip_idx for clip_idx in all_clip_idxs
             if all((clip_idx + i) in all_clip_idx_set for i in range(num_clips))
         ]
+        if self.opt.version_action:
+            # Filter by minimum duration: skip consecutive segments whose combined duration
+            # is too short for `total_frames` (would cause frame upsampling/repeats).
+            # Use 16 fps as a conservative lower bound for the minimum duration estimate.
+            min_duration = (self.opt.num_input_frames - 1) / 16. * num_clips  # TODO: make `16` configurable
+            valid_start_clip_idxs = [
+                ci for ci in valid_start_clip_idxs
+                if sum(segments[ci + j]["end_time"] - segments[ci + j]["start_time"] for j in range(num_clips))
+                >= min_duration
+            ]
         if len(valid_start_clip_idxs) == 0:
             if idx in self.valid_idxs:
                 self.valid_idxs.remove(idx)
@@ -123,17 +148,6 @@ class InternalDataset(BaseDataset):
         if scale < 1.:
             del vr
             vr = VideoReader(str(video_path), ctx=cpu(0), width=round(W * scale), height=round(H * scale))
-        # Compute `start_frame_idx` and `end_frame_idx` from selected clips
-        if self.opt.version_action:
-            selected_segments = [segments[ci] for ci in clip_idxs]
-            start_frame_idx = int(round(selected_segments[0]["start_time"] * fps))
-            end_frame_idx = int(round(selected_segments[-1]["end_time"] * fps))
-        else:
-            # `clip_duration`: seconds per clip; `clip_overlap`: inter-clip overlap in frames; `clip_base`: index offset
-            ci_first = clip_idxs[0] - clip_base
-            start_frame_idx = int(round(ci_first * clip_duration * fps)) - clip_overlap * ci_first
-            end_frame_idx = start_frame_idx + num_clips * int(round(clip_duration * fps))  # may exceed video length
-
         # Calculate total frames based on `num_clips`
         total_frames = (self.opt.num_input_frames - 1) * num_clips + 1
         if self.opt.is_causal:  # make sure video latents can be divided by the causal chunk size
@@ -141,12 +155,42 @@ class InternalDataset(BaseDataset):
             total_frames_latent = int(np.ceil(total_frames_latent / self.opt.chunk_size) * self.opt.chunk_size)
             total_frames = 1 + (total_frames_latent - 1) * self.opt.compression_ratio[0]
 
-        input_frame_idxs = self._frame_sample(
-            num_frames,
-            start_frame_idx=start_frame_idx,
-            end_frame_idx=end_frame_idx,
-            target_num_frames=total_frames,
-        )
+        # Compute frame indices and per-clip frame counts
+        if self.opt.version_action:
+            selected_segments = [segments[ci] for ci in clip_idxs]
+            # Per-segment proportional frame allocation and independent uniform sampling
+            seg_frame_ranges = []  # (seg_start_frame, seg_end_frame) for each segment
+            for seg in selected_segments:
+                seg_start = int(round(seg["start_time"] * fps))
+                seg_end = min(int(round(seg["end_time"] * fps)), num_frames)
+                seg_frame_ranges.append((seg_start, seg_end))
+            seg_num_frames = [max(end - start, 1) for start, end in seg_frame_ranges]  # real frame count per segment
+            total_seg_frames = sum(seg_num_frames)
+            # Allocate `total_frames` proportionally to each segment's real frame count
+            raw_alloc = [total_frames * n / total_seg_frames for n in seg_num_frames]
+            num_frames_per_clip = [max(1, int(round(a))) for a in raw_alloc]
+            # Fix rounding residual: adjust the largest clip
+            residual = total_frames - sum(num_frames_per_clip)
+            if residual != 0:
+                largest_idx = int(np.argmax(num_frames_per_clip))
+                num_frames_per_clip[largest_idx] += residual
+            # Sample frames independently within each segment
+            input_frame_idxs = []
+            for (seg_start, seg_end), target_f in zip(seg_frame_ranges, num_frames_per_clip):
+                seg_all_frames = np.arange(seg_start, seg_end, dtype=int)
+                sampled = seg_all_frames[np.linspace(0, len(seg_all_frames) - 1, target_f, dtype=int)]
+                input_frame_idxs.extend(sampled.tolist())
+        else:
+            # `clip_duration`: seconds per clip; `clip_overlap`: inter-clip overlap in frames; `clip_base`: index offset
+            ci_first = clip_idxs[0] - clip_base
+            start_frame_idx = int(round(ci_first * clip_duration * fps)) - clip_overlap * ci_first
+            end_frame_idx = start_frame_idx + num_clips * int(round(clip_duration * fps))  # may exceed video length
+            input_frame_idxs = self._frame_sample(
+                num_frames,
+                start_frame_idx=start_frame_idx,
+                end_frame_idx=end_frame_idx,
+                target_num_frames=total_frames,
+            )
 
         depths, confs = None, None  # no depth and conf for InternalDataset
 
@@ -183,19 +227,9 @@ class InternalDataset(BaseDataset):
         # Camera normalization
         C2W = self._camera_normalize(C2W)
 
-        # Split into clips
-        num_frames_per_clip = []
-        if self.opt.version_action:
-            for ii, clip_idx in enumerate(clip_idxs):
-                seg = segments[clip_idx]
-                seg_start = int(round(seg["start_time"] * fps))
-                seg_end = int(round(seg["end_time"] * fps))
-                num_frames_per_clip.append(len([idx for idx in input_frame_idxs if seg_start <= idx < seg_end]))
-            # Assign any remaining frames (due to rounding) to the last clip
-            assigned = sum(num_frames_per_clip)
-            if assigned < len(input_frame_idxs):
-                num_frames_per_clip[-1] += len(input_frame_idxs) - assigned
-        else:
+        # Split into clips (`num_frames_per_clip` already computed for `version_action`)
+        if not self.opt.version_action:
+            num_frames_per_clip = []
             for ii, clip_idx in enumerate(clip_idxs):
                 ci = clip_idx - clip_base
                 if ii == 0:
@@ -218,6 +252,16 @@ class InternalDataset(BaseDataset):
         }
         if self.opt.load_global_caption:
             return_dict["global_caption"] = self.global_caption_data[uid]  # str
+        if self.opt.version_action:
+            selected_segs = [segments[ci] for ci in clip_idxs]
+            return_dict["action_labels"] = [seg["action_label"] for seg in selected_segs]  # List[str]
+        # Cumulative time offsets for each clip at 16 fps: [(start_sec, end_sec), ...]
+        cum = 0
+        frame_ranges = []
+        for n in num_frames_per_clip:
+            frame_ranges.append((cum / 16., (cum + n) / 16.))  # TODO: make `16` configurable
+            cum += n
+        return_dict["frame_ranges"] = frame_ranges  # List[Tuple[float, float]]
         if self.opt.load_image:
             return_dict["image"] = images  # List[(F, 3, H, W)] in [0, 1]
 
