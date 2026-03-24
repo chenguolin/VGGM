@@ -1744,7 +1744,9 @@ class Wan(nn.Module):
             return data, None
 
         # Support dynamic num_clips: only support batch_size=1
-        assert len(prompts) == 1 and len(prompts[0]) <= self.opt.num_clips
+        assert len(prompts) == 1
+        if not self.opt.version_action:
+            assert len(prompts[0]) <= self.opt.num_clips
 
         new_data = dict(data)
         clip_frame_lens = []

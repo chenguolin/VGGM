@@ -95,48 +95,63 @@ class InternalDataset(BaseDataset):
 
         all_clip_idx_set = set(all_clip_idxs)
 
-        # Randomly sample num_clips from [1, `opt.num_clips`], but ensure all selected clips have captions
-        max_num_clips = max(1, int(self.opt.num_clips))
-        if self.training:
-            num_clips = max_num_clips if not self.opt.random_num_clips else \
-                np.random.randint(1, max_num_clips + 1)
-        else:
-            num_clips = max_num_clips  # fixed to `max_num_clips` for evaluation
-
-        valid_start_clip_idxs = [
-            clip_idx for clip_idx in all_clip_idxs
-            if all((clip_idx + i) in all_clip_idx_set for i in range(num_clips))
-        ]
+        # Sample `num_clips` and `start_clip_idx`, and get multiple prompts accordingly
         if self.opt.version_action:
-            # Filter by duration: skip consecutive segments whose combined duration is too short or too long
-            target_frames = (self.opt.num_input_frames - 1) * num_clips
-            min_duration, max_duration = target_frames / 32., target_frames / 8.  # TODO: make `32` / `8` configurable
+            ## Dynamic `num_clips` for `version_action`: randomly pick a start segment, then
+            ## greedily extend until duration falls in [min_duration, max_duration].
+            target_frames_per_clip = self.opt.num_input_frames - 1
+            min_duration, max_duration = target_frames_per_clip / 32., target_frames_per_clip / 8.  # TODO: make `32` / `8` configurable
+            n_segs = len(segments)
+            ## Build valid (start, num_clips) pairs
+            valid_pairs = []  # (start_idx, num_clips)
+            for si in range(n_segs):
+                cum_dur = 0.
+                for length in range(1, n_segs - si + 1):
+                    cum_dur += segments[si + length - 1]["end_time"] - segments[si + length - 1]["start_time"]
+                    if cum_dur > max_duration * length:
+                        break  # adding more segments won't help
+                    if min_duration * length <= cum_dur <= max_duration * length:
+                        valid_pairs.append((si, length))
+            if len(valid_pairs) == 0:
+                if idx in self.valid_idxs:
+                    self.valid_idxs.remove(idx)
+                    if len(self.valid_idxs) == 0:
+                        raise ValueError("No valid data in InternalDataset!")
+                return self.__getitem__(int(np.random.choice(self.valid_idxs)))
+            start_clip_idx, num_clips = valid_pairs[np.random.randint(len(valid_pairs))]
+            clip_idxs = [start_clip_idx + i for i in range(num_clips)]
+            prompt = [all_captions[clip_idx] for clip_idx in clip_idxs]
+        else:
+            ## Fixed `num_clips` for other dataset versions
+            max_num_clips = max(1, int(self.opt.num_clips))
+            if self.training:
+                num_clips = max_num_clips if not self.opt.random_num_clips else \
+                    np.random.randint(1, max_num_clips + 1)
+            else:
+                num_clips = max_num_clips  # fixed to `max_num_clips` for evaluation
+
             valid_start_clip_idxs = [
-                ci for ci in valid_start_clip_idxs
-                if min_duration
-                <= sum(segments[ci + j]["end_time"] - segments[ci + j]["start_time"] for j in range(num_clips))
-                <= max_duration
+                clip_idx for clip_idx in all_clip_idxs
+                if all((clip_idx + i) in all_clip_idx_set for i in range(num_clips))
             ]
-        if len(valid_start_clip_idxs) == 0:
-            if idx in self.valid_idxs:
-                self.valid_idxs.remove(idx)
-                if len(self.valid_idxs) == 0:
-                    raise ValueError("No valid data in InternalDataset!")
-            return self.__getitem__(int(np.random.choice(self.valid_idxs)))
+            if len(valid_start_clip_idxs) == 0:
+                if idx in self.valid_idxs:
+                    self.valid_idxs.remove(idx)
+                    if len(self.valid_idxs) == 0:
+                        raise ValueError("No valid data in InternalDataset!")
+                return self.__getitem__(int(np.random.choice(self.valid_idxs)))
 
-        if self.opt.version_2sdiff and 0 in valid_start_clip_idxs:
-            # For `version_2sdiff`, always start from clip 0 because clip 0 captions have a
-            # distinct introductory style vs. continuation style in later clips
-            start_clip_idx = 0
-        else:
-            start_clip_idx = int(np.random.choice(valid_start_clip_idxs))
-        clip_idxs = [start_clip_idx + i for i in range(num_clips)]  # consecutive clip indices
-        if self.opt.version_action:
-            prompt = [all_captions[clip_idx] for clip_idx in clip_idxs]
-        elif self.opt.version_2s35w or self.opt.version_2sdiff:
-            prompt = [all_captions[clip_idx] for clip_idx in clip_idxs]
-        else:
-            prompt = [all_captions[str(clip_idx)] for clip_idx in clip_idxs]
+            if self.opt.version_2sdiff and 0 in valid_start_clip_idxs:
+                ### For `version_2sdiff`, always start from clip 0 because clip 0 captions have a
+                ### distinct introductory style vs. continuation style in later clips
+                start_clip_idx = 0
+            else:
+                start_clip_idx = int(np.random.choice(valid_start_clip_idxs))
+            clip_idxs = [start_clip_idx + i for i in range(num_clips)]  # consecutive clip indices
+            if self.opt.version_2s35w or self.opt.version_2sdiff:
+                prompt = [all_captions[clip_idx] for clip_idx in clip_idxs]
+            else:
+                prompt = [all_captions[str(clip_idx)] for clip_idx in clip_idxs]
 
         # Sample frames
         video_path = os.path.join(self.root, "video", f"{uid}.mp4")
@@ -149,7 +164,10 @@ class InternalDataset(BaseDataset):
             del vr
             vr = VideoReader(str(video_path), ctx=cpu(0), width=round(W * scale), height=round(H * scale))
         # Calculate total frames based on `num_clips`
-        total_frames = (self.opt.num_input_frames - 1) * num_clips + 1
+        # For `version_action`, use `opt.num_clips` to keep total frame count fixed across
+        # samples (dynamic `num_clips` only controls how many segments are selected)
+        total_frames_clips = self.opt.num_clips if self.opt.version_action else num_clips
+        total_frames = (self.opt.num_input_frames - 1) * total_frames_clips + 1
         if self.opt.is_causal:  # make sure video latents can be divided by the causal chunk size
             total_frames_latent = 1 + (total_frames - 1) // self.opt.compression_ratio[0]
             total_frames_latent = int(np.ceil(total_frames_latent / self.opt.chunk_size) * self.opt.chunk_size)
@@ -158,7 +176,7 @@ class InternalDataset(BaseDataset):
         # Compute frame indices and per-clip frame counts
         if self.opt.version_action:
             selected_segments = [segments[ci] for ci in clip_idxs]
-            # Per-segment proportional frame allocation and independent uniform sampling
+            ## Per-segment proportional frame allocation and independent uniform sampling
             seg_frame_ranges = []  # (seg_start_frame, seg_end_frame) for each segment
             for seg in selected_segments:
                 seg_start = int(round(seg["start_time"] * fps))
@@ -166,22 +184,22 @@ class InternalDataset(BaseDataset):
                 seg_frame_ranges.append((seg_start, seg_end))
             seg_num_frames = [max(end - start, 1) for start, end in seg_frame_ranges]  # real frame count per segment
             total_seg_frames = sum(seg_num_frames)
-            # Allocate `total_frames` proportionally to each segment's real frame count
+            ## Allocate `total_frames` proportionally to each segment's real frame count
             raw_alloc = [total_frames * n / total_seg_frames for n in seg_num_frames]
             num_frames_per_clip = [max(1, int(round(a))) for a in raw_alloc]
-            # Fix rounding residual: adjust the largest clip
+            ## Fix rounding residual: adjust the largest clip
             residual = total_frames - sum(num_frames_per_clip)
             if residual != 0:
                 largest_idx = int(np.argmax(num_frames_per_clip))
                 num_frames_per_clip[largest_idx] += residual
-            # Sample frames independently within each segment
+            ## Sample frames independently within each segment
             input_frame_idxs = []
             for (seg_start, seg_end), target_f in zip(seg_frame_ranges, num_frames_per_clip):
                 seg_all_frames = np.arange(seg_start, seg_end, dtype=int)
                 sampled = seg_all_frames[np.linspace(0, len(seg_all_frames) - 1, target_f, dtype=int)]
                 input_frame_idxs.extend(sampled.tolist())
         else:
-            # `clip_duration`: seconds per clip; `clip_overlap`: inter-clip overlap in frames; `clip_base`: index offset
+            ## `clip_duration`: seconds per clip; `clip_overlap`: inter-clip overlap in frames; `clip_base`: index offset
             ci_first = clip_idxs[0] - clip_base
             start_frame_idx = int(round(ci_first * clip_duration * fps)) - clip_overlap * ci_first
             end_frame_idx = start_frame_idx + num_clips * int(round(clip_duration * fps))  # may exceed video length
@@ -255,6 +273,9 @@ class InternalDataset(BaseDataset):
         if self.opt.version_action:
             selected_segs = [segments[ci] for ci in clip_idxs]
             return_dict["action_labels"] = [seg["action_label"] for seg in selected_segs]  # List[str]
+        if self.opt.load_image:
+            return_dict["image"] = images  # List[(F, 3, H, W)] in [0, 1]
+
         # Cumulative time offsets for each clip at 16 fps: [(start_sec, end_sec), ...]
         cum = 0
         frame_ranges = []
@@ -262,8 +283,6 @@ class InternalDataset(BaseDataset):
             frame_ranges.append((cum / 16., (cum + n) / 16.))  # TODO: make `16` configurable
             cum += n
         return_dict["frame_ranges"] = frame_ranges  # List[Tuple[float, float]]
-        if self.opt.load_image:
-            return_dict["image"] = images  # List[(F, 3, H, W)] in [0, 1]
 
         # Unpack the single clip (based on actual num_clips, not opt.num_clips)
         if len(prompt) == 1:
