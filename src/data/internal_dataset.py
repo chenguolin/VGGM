@@ -108,14 +108,14 @@ class InternalDataset(BaseDataset):
             if all((clip_idx + i) in all_clip_idx_set for i in range(num_clips))
         ]
         if self.opt.version_action:
-            # Filter by minimum duration: skip consecutive segments whose combined duration
-            # is too short for `total_frames` (would cause frame upsampling/repeats).
-            # Use 16 fps as a conservative lower bound for the minimum duration estimate.
-            min_duration = (self.opt.num_input_frames - 1) / 16. * num_clips  # TODO: make `16` configurable
+            # Filter by duration: skip consecutive segments whose combined duration is too short or too long
+            target_frames = (self.opt.num_input_frames - 1) * num_clips
+            min_duration, max_duration = target_frames / 32., target_frames / 8.  # TODO: make `32` / `8` configurable
             valid_start_clip_idxs = [
                 ci for ci in valid_start_clip_idxs
-                if sum(segments[ci + j]["end_time"] - segments[ci + j]["start_time"] for j in range(num_clips))
-                >= min_duration
+                if min_duration
+                <= sum(segments[ci + j]["end_time"] - segments[ci + j]["start_time"] for j in range(num_clips))
+                <= max_duration
             ]
         if len(valid_start_clip_idxs) == 0:
             if idx in self.valid_idxs:
