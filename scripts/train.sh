@@ -41,6 +41,13 @@ shift 3  # remove $1~$3 for $@
 # export NCCL_SOCKET_IFNAME=bond1
 export NCCL_IB_HCA=mlx5_bond_1,mlx5_bond_2,mlx5_bond_3,mlx5_bond_4,mlx5_bond_5,mlx5_bond_6,mlx5_bond_7,mlx5_bond_8
 export NCCL_SOCKET_IFNAME=bond1  # fallback for bootstrap connection only
+# Not sure if these are useful:
+# export NCCL_IB_GID_INDEX=3  # force RoCE v2 for better congestion control
+# export NCCL_NET_GDR_LEVEL=5  # enable GPU Direct RDMA (skip CPU memory copy)
+# export NCCL_BUFFSIZE=16777216  # 16MB buffer for large all-gather
+# export NCCL_IB_QPS_PER_CONNECTION=4  # more RDMA parallelism per connection
+# export NCCL_MIN_NCHANNELS=32  # use more channels to saturate 8 NICs
+# export NCCL_CROSS_NIC=0  # keep GPU-NIC affinity, no cross-NIC traffic
 
 # export HF_ENDPOINT=https://hf-mirror.com
 # export WANDB_BASE_URL=https://api.bandw.top
