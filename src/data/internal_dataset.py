@@ -69,6 +69,9 @@ class InternalDataset(BaseDataset):
         # Filter UIDs: one `listdir` + set lookup instead of 300k `os.path.exists` calls
         existing_videos = set(os.listdir(os.path.join(self.root, "video")))
         self.uids = [uid for uid in self.uids if f"{uid}.mp4" in existing_videos]
+        if self.opt.input_plucker:
+            existing_vipe = set(os.listdir(os.path.join(self.root, "vipe")))
+            self.uids = [uid for uid in self.uids if f"{uid}.npz" in existing_vipe]
         self.valid_idxs = list(range(len(self.uids)))
 
     def __len__(self) -> int:
@@ -215,22 +218,25 @@ class InternalDataset(BaseDataset):
 
         depths, confs = None, None  # no depth and conf for InternalDataset
 
-        # Load cameras (in metric scale)
-        vipe_path = video_path.replace("video", "vipe").replace(".mp4", ".npz")
-        vipe_data = np.load(vipe_path, allow_pickle=True)
-        C2W, fxfycxcy = vipe_data["pose"], vipe_data["intrinsics"]
-        if (C2W.shape[0] != fxfycxcy.shape[0]) or (C2W.shape[0] != num_frames):
-            if idx in self.valid_idxs:
-                self.valid_idxs.remove(idx)
-                if len(self.valid_idxs) == 0:
-                    raise ValueError("No valid data in InternalDataset!")
-            return self.__getitem__(int(np.random.choice(self.valid_idxs)))
-        C2W = torch.from_numpy(C2W).float()[input_frame_idxs, ...]  # (F, 4, 4)
-        fxfycxcy = torch.from_numpy(fxfycxcy).float()[input_frame_idxs, ...]  # (F, 3, 3)
-        fxfycxcy[:, 0] /= W
-        fxfycxcy[:, 1] /= H
-        fxfycxcy[:, 2] /= W
-        fxfycxcy[:, 3] /= H
+        if self.opt.input_plucker:
+            # Load cameras (in metric scale)
+            vipe_path = video_path.replace("video", "vipe").replace(".mp4", ".npz")
+            vipe_data = np.load(vipe_path, allow_pickle=True)
+            C2W, fxfycxcy = vipe_data["pose"], vipe_data["intrinsics"]
+            if (C2W.shape[0] != fxfycxcy.shape[0]) or (C2W.shape[0] != num_frames):
+                if idx in self.valid_idxs:
+                    self.valid_idxs.remove(idx)
+                    if len(self.valid_idxs) == 0:
+                        raise ValueError("No valid data in InternalDataset!")
+                return self.__getitem__(int(np.random.choice(self.valid_idxs)))
+            C2W = torch.from_numpy(C2W).float()[input_frame_idxs, ...]  # (F, 4, 4)
+            fxfycxcy = torch.from_numpy(fxfycxcy).float()[input_frame_idxs, ...]  # (F, 3, 3)
+            fxfycxcy[:, 0] /= W
+            fxfycxcy[:, 1] /= H
+            fxfycxcy[:, 2] /= W
+            fxfycxcy[:, 3] /= H
+        else:
+            C2W, fxfycxcy = None, None
 
         if self.opt.load_image:
             # Load video
@@ -245,8 +251,9 @@ class InternalDataset(BaseDataset):
             del vr
             images = None
 
-        # Camera normalization
-        C2W = self._camera_normalize(C2W)
+        if C2W is not None:
+            # Camera normalization
+            C2W = self._camera_normalize(C2W)
 
         # Split into clips (`num_frames_per_clip` already computed for `version_action`)
         if not self.opt.version_action:
@@ -260,24 +267,28 @@ class InternalDataset(BaseDataset):
                 clip_end_frame_idx = clip_start_frame_idx + int(round(clip_duration * fps))  # may exceed video length
                 num_frames_per_clip.append(len([idx for idx in input_frame_idxs if clip_start_frame_idx <= idx < clip_end_frame_idx]))
         assert sum(num_frames_per_clip) == len(input_frame_idxs) and len(num_frames_per_clip) == len(prompt)
-        C2W = torch.split(C2W, num_frames_per_clip, dim=0)  # List of (F_i, 4, 4)
-        fxfycxcy = torch.split(fxfycxcy, num_frames_per_clip, dim=0)  # List of (F_i, 4)
+        if C2W is not None:
+            C2W = torch.split(C2W, num_frames_per_clip, dim=0)  # List of (F_i, 4, 4)
+        if fxfycxcy is not None:
+            fxfycxcy = torch.split(fxfycxcy, num_frames_per_clip, dim=0)  # List of (F_i, 4)
         if images is not None:
             images = torch.split(images, num_frames_per_clip, dim=0)  # List of (F_i, 3, H, W)
 
         return_dict = {
             "uid": uid,            # str
             "prompt": prompt,      # List[str]
-            "C2W": C2W,            # List[(F, 4, 4)]
-            "fxfycxcy": fxfycxcy,  # List[(F, 4)]
         }
+        if self.opt.load_image:
+            return_dict["image"] = images  # List[(F, 3, H, W)] in [0, 1]
+        if self.opt.input_plucker:
+            return_dict["C2W"] = C2W  # List[(F, 4, 4)]
+            return_dict["fxfycxcy"] = fxfycxcy  # List[(F, 4)]
+
         if self.opt.load_global_caption:
             return_dict["global_caption"] = self.global_caption_data[uid]  # str
         if self.opt.version_action:
             selected_segs = [segments[ci] for ci in clip_idxs]
             return_dict["action_labels"] = [seg["action_label"] for seg in selected_segs]  # List[str]
-        if self.opt.load_image:
-            return_dict["image"] = images  # List[(F, 3, H, W)] in [0, 1]
 
         # Cumulative time offsets for each clip at 16 fps: [(start_sec, end_sec), ...]
         cum = 0

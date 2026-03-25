@@ -94,7 +94,7 @@ class BaseDataset(EasyDataset):
         # Uniformly sampling
         return clip_frame_idxs[np.linspace(0, gap-1, F, dtype=int)].tolist()
 
-    def _data_augment(self, images: Tensor, depths: Optional[Tensor], confs: Optional[Tensor], fxfycxcy: Tensor):
+    def _data_augment(self, images: Tensor, depths: Optional[Tensor], confs: Optional[Tensor], fxfycxcy: Optional[Tensor]):
         assert images.ndim == 4  # (F, C, H, W)
         H, W = images.shape[-2:]
 
@@ -113,8 +113,9 @@ class BaseDataset(EasyDataset):
         images = tvT.Resize((scaled_H, scaled_W), tvT.InterpolationMode.BICUBIC)(images)  # intrinsic not changed
         # Adjust the intrinsics to account for the cropping
         images = tvT.CenterCrop((new_H, new_W))(images)  # intrinsic changed
-        fxfycxcy[:, 0] *= (scaled_W / new_W)
-        fxfycxcy[:, 1] *= (scaled_H / new_H)
+        if fxfycxcy is not None:
+            fxfycxcy[:, 0] *= (scaled_W / new_W)
+            fxfycxcy[:, 1] *= (scaled_H / new_H)
 
         # (Optional) Resize and CenterCrop depths
         if depths is not None:
