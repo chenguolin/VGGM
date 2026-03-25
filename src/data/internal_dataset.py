@@ -112,6 +112,9 @@ class InternalDataset(BaseDataset):
                         break  # adding more segments won't help
                     if min_duration * length <= cum_dur <= max_duration * length:
                         valid_pairs.append((si, length))
+            ## Filter to samples with too many clips to avoid OOM
+            max_clips = self.opt.num_clips * 3  # TODO: make `3` configurable
+            valid_pairs = [(si, nc) for si, nc in valid_pairs if nc <= max_clips]
             if len(valid_pairs) == 0:
                 if idx in self.valid_idxs:
                     self.valid_idxs.remove(idx)

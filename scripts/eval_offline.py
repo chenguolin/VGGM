@@ -99,6 +99,8 @@ def main():
                         help="Skip WandB logging, only run evaluation")
     parser.add_argument("--sp_size", type=int, default=1,
                         help="Sequence parallel size (1=single GPU, >1 requires torchrun)")
+    parser.add_argument("--num_clips", type=int, default=None,
+                        help="Number of clips (each 5s) to evaluate (default: use original `opt.num_clips`)")
     parser.add_argument("--seed", type=int, default=0,
                         help="Random seed")
     parser.add_argument("--num_workers", type=int, default=2,
@@ -124,6 +126,8 @@ def main():
 
     # Override SP size from CLI
     opt.sp_size = args.sp_size
+    if args.num_clips is not None:
+        opt.num_clips = args.num_clips
 
     # Distributed setup
     use_distributed = args.sp_size > 1
@@ -201,15 +205,15 @@ def main():
             del state_dict
             gc.collect()
 
-        # FSDP wrap with `no_shard` for eval (no backward needed)
+        # FSDP wrap
         model.diffusion = fsdp_wrap(
             model.diffusion,
-            sharding_strategy="no_shard",
+            sharding_strategy="hybrid_full",
             mixed_precision="bf16",
         )
         model.text_encoder = fsdp_wrap(
             model.text_encoder,
-            sharding_strategy="no_shard",
+            sharding_strategy="hybrid_full",
             mixed_precision="bf16",
         )
     else:
