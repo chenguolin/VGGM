@@ -39,6 +39,7 @@ class SelfForcingTrainingPipeline:
         self.crossattn_cache_pos = None
         self.kv_cache_pos_da3 = None
         self.ttt_state_pos = None
+        self.gdn_state_pos = None
 
         self.ray_loss_fn, self.camera_loss_fn = XYZLoss(opt), CameraLoss(opt)
 
@@ -169,6 +170,7 @@ class SelfForcingTrainingPipeline:
                             current_start=chunk_idx * self.opt.chunk_size * frame_seqlen,
                             #
                             ttt_state=self.ttt_state_pos,
+                            gdn_state=self.gdn_state_pos,
                             #
                             kv_cache_da3=self.kv_cache_pos_da3,
                             current_start_da3=chunk_idx * self.opt.chunk_size * (frame_seqlen // (self.opt.da3_down_ratio * self.opt.da3_down_ratio) + 1),  # `+1` for camera token
@@ -440,6 +442,19 @@ class SelfForcingTrainingPipeline:
             self.ttt_state_pos = ttt_state_pos
         else:
             self.ttt_state_pos = None
+
+        # GDN state initialization
+        if self.opt.use_gdn and self.diffusion.model.use_gdn:
+            gdn_state_pos = []
+            for block in self.diffusion.model.blocks:
+                if hasattr(block.self_attn, "gdn_branch"):
+                    gdn_state_pos.append(
+                        block.self_attn.gdn_branch.init_state(batch_size, device, dtype))
+                else:
+                    gdn_state_pos.append(None)
+            self.gdn_state_pos = gdn_state_pos
+        else:
+            self.gdn_state_pos = None
 
         if self.opt.load_da3:
             num_da3_blocks = len(self.diffusion.da3_model.backbone.pretrained.blocks)

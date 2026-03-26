@@ -21,3 +21,4 @@ omegaconf
 decord
 deepspeed
 qwen-vl-utils[decord]
+flash-linear-attention

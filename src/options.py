@@ -143,6 +143,14 @@ class Options:
     ttt_use_muon: bool = True
     ttt_use_momentum: bool = True
     ttt_prenorm: bool = True
+        ## GatedDeltaNet
+    use_gdn: bool = False
+    gdn_layers: Optional[str] = None  # e.g. "0,2,4,6,8"; None means all layers when `use_gdn=True`
+    gdn_num_heads: int = 4
+    gdn_head_qk_dim: Optional[int] = None  # None = same as attention `head_dim`
+    gdn_head_v_dim: Optional[int] = None   # None = same as `gdn_head_qk_dim`
+    gdn_causal_mode: str = 'bidirectional'  # 'bidirectional' or 'causal'
+    gdn_chunk_size: Optional[int] = None  # None = `frame_seqlen * chunk_size`
         ## Load pre-trained models
     generator_path: Optional[str] = None
     lora_path: Optional[str] = None
@@ -289,6 +297,17 @@ class Options:
         else:
             self.ttt_layers_list = None
 
+        # GatedDeltaNet
+        if self.use_gdn:
+            if self.gdn_chunk_size is None:
+                self.gdn_chunk_size = self.frame_seqlen * self.chunk_size
+            if self.gdn_layers is not None:
+                self.gdn_layers_list = [int(x) for x in self.gdn_layers.split(",")]
+            else:
+                self.gdn_layers_list = None  # will be resolved after model is loaded
+        else:
+            self.gdn_layers_list = None
+
 
 # Set all options for different tasks and models
 opt_dict: Dict[str, Options] = {}
@@ -405,6 +424,7 @@ opt_dict["wan2.1_t2v_1.3b_dmd"] = Options(
     chunk_size=3,
     max_window_size=9,
     rope_outside=True,
+    use_flexattn=True,  # False
     #
     # wan_dir=f"{ROOT}/.cache/huggingface/hub/Wan-AI/Wan2.1-T2V-14B",
     # real_wan_dir=f"{ROOT}/.cache/huggingface/hub/Wan-AI/Wan2.1-T2V-14B",

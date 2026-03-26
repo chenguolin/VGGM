@@ -181,7 +181,10 @@ class CausalWanSelfAttention(nn.Module):
                  eps=1e-6,
                  #
                  use_ttt=False,
-                 ttt_config=None):
+                 ttt_config=None,
+                 #
+                 use_gdn=False,
+                 gdn_config=None):
         assert dim % num_heads == 0
         super().__init__()
         self.dim = dim
@@ -211,6 +214,14 @@ class CausalWanSelfAttention(nn.Module):
             ttt_config = ttt_config or {}
             self.ttt_branch = TTTBranch(
                 dim=dim, num_heads=num_heads, **ttt_config)
+
+        # (Optional) GatedDeltaNet branch
+        self.use_gdn = use_gdn
+        if use_gdn:
+            from .gdn import GDNBranch
+            gdn_config = gdn_config or {}
+            self.gdn_branch = GDNBranch(
+                dim=dim, num_heads=num_heads, **gdn_config)
 
     def _loop_attention(self, q, k, v, loop_attn_params):
         """Dispatch to diffusion forcing or teacher forcing loop attention."""
@@ -384,6 +395,8 @@ class CausalWanSelfAttention(nn.Module):
         #
         ttt_state=None,
         #
+        gdn_state=None,
+        #
         _skip_kv_write=False,  # for gradient checkpointing
     ):
         r"""
@@ -408,9 +421,9 @@ class CausalWanSelfAttention(nn.Module):
 
         q, k, v = qkv_fn(x)
 
-        # Save pre-RoPE Q/K/V for TTT before the KV-cache path may
+        # Save pre-RoPE Q/K/V for TTT / GDN before the KV-cache path may
         # all-to-all them into head-parallel layout
-        if self.use_ttt:
+        if self.use_ttt or self.use_gdn:
             ttt_q, ttt_k, ttt_v = q, k, v
 
         # No KV cache
@@ -580,10 +593,23 @@ class CausalWanSelfAttention(nn.Module):
                 ttt_q, ttt_k, ttt_v, hidden_states, ttt_state=ttt_state,
                 teacher_forcing_clean_len=tf_clean_len)
 
+        # (Optional) GDN branch (parallel with attention, uses pre-RoPE Q/K/V)
+        if self.use_gdn:
+            tf_clean_len = None
+            if kv_cache is None and (s == seq_lens[0].item() * 2 // sp_size):
+                tf_clean_len = seq_lens[0].item()
+
+            # `gdn_state` is mutated in-place (like KV-cache)
+            gdn_output = self.gdn_branch(
+                ttt_q, ttt_k, ttt_v, hidden_states, gdn_state=gdn_state,
+                teacher_forcing_clean_len=tf_clean_len)
+
         # output
         x = x.flatten(2)
         if self.use_ttt:
             x = x + ttt_output
+        if self.use_gdn:
+            x = x + gdn_output
         x = self.o(x)
         return x
 
@@ -606,7 +632,10 @@ class CausalWanAttentionBlock(nn.Module):
                  eps=1e-6,
                  #
                  use_ttt=False,
-                 ttt_config=None):
+                 ttt_config=None,
+                 #
+                 use_gdn=False,
+                 gdn_config=None):
         super().__init__()
         self.dim = dim
         self.ffn_dim = ffn_dim
@@ -624,7 +653,8 @@ class CausalWanAttentionBlock(nn.Module):
         self.norm1 = WanLayerNorm(dim, eps)
         self.self_attn = CausalWanSelfAttention(
             dim, num_heads, sink_size, max_attention_size, rope_outside, use_flexattn,
-            qk_norm, eps, use_ttt=use_ttt, ttt_config=ttt_config)
+            qk_norm, eps, use_ttt=use_ttt, ttt_config=ttt_config,
+            use_gdn=use_gdn, gdn_config=gdn_config)
         self.norm3 = WanLayerNorm(
             dim, eps,
             elementwise_affine=True) if cross_attn_norm else nn.Identity()
@@ -662,6 +692,8 @@ class CausalWanAttentionBlock(nn.Module):
         #
         ttt_state=None,
         #
+        gdn_state=None,
+        #
         clip_query_lens=None,
         clip_context_lens=None,
         #
@@ -688,6 +720,7 @@ class CausalWanAttentionBlock(nn.Module):
             block_mask, kv_cache, current_start,
             loop_attn_params=loop_attn_params,
             ttt_state=ttt_state,
+            gdn_state=gdn_state,
             _skip_kv_write=_skip_kv_write,
         )
         # with torch.amp.autocast('cuda', dtype=torch.float32):
@@ -828,6 +861,7 @@ class CausalWanModel(ModelMixin, ConfigMixin):
         self.time_projection = nn.Sequential(nn.SiLU(), nn.Linear(dim, dim * 6))
 
         self.use_ttt = False
+        self.use_gdn = False
 
         # blocks
         cross_attn_type = 't2v_cross_attn' if model_type == 't2v' else 'i2v_cross_attn'
@@ -1086,6 +1120,8 @@ class CausalWanModel(ModelMixin, ConfigMixin):
         #
         ttt_state: list = None,
         #
+        gdn_state: list = None,
+        #
         clip_query_lens: Optional[int] = None,
         clip_context_lens: Optional[int] = None,
         #
@@ -1206,6 +1242,7 @@ class CausalWanModel(ModelMixin, ConfigMixin):
         inter_feats = None
         for block_index, block in enumerate(self.blocks):
             block_ttt_state = ttt_state[block_index] if ttt_state is not None else None
+            block_gdn_state = gdn_state[block_index] if gdn_state is not None else None
             this_kv_cache = kv_cache[block_index]
 
             if torch.is_grad_enabled() and (self.use_gradient_checkpointing_offload or self.use_gradient_checkpointing):
@@ -1235,6 +1272,7 @@ class CausalWanModel(ModelMixin, ConfigMixin):
                     "kv_cache": this_kv_cache,
                     "current_start": current_start,
                     "ttt_state": block_ttt_state,
+                    "gdn_state": block_gdn_state,
                 })
                 ckpt_fn = create_kv_restoring_forward(
                     block, this_kv_cache, saved_global_end, saved_local_end)
@@ -1251,6 +1289,7 @@ class CausalWanModel(ModelMixin, ConfigMixin):
                     "crossattn_cache": crossattn_cache[block_index],
                     "current_start": current_start,
                     "ttt_state": block_ttt_state,
+                    "gdn_state": block_gdn_state,
                 })
                 x = block(x, **kwargs)
 
@@ -1540,7 +1579,8 @@ class CausalWanModel(ModelMixin, ConfigMixin):
         if kwargs.get("kv_cache", None) is not None:
             return self._forward_inference(*args, **kwargs)
         else:
-            kwargs.pop("ttt_state", None)  # not used
+            kwargs.pop("ttt_state", None)  # not used in training forward
+            kwargs.pop("gdn_state", None)  # not used in training forward
             return self._forward_train(*args, **kwargs)
 
     def unpatchify(self, x, grid_sizes):
@@ -1627,3 +1667,39 @@ class CausalWanModel(ModelMixin, ConfigMixin):
             sa.use_ttt = True
             sa.ttt_branch = TTTBranch(
                 dim=sa.dim, num_heads=sa.num_heads, **ttt_config)
+
+    def inject_gdn(self, gdn_layers=None, gdn_config=None):
+        """
+        Inject GDNBranch into specified attention blocks AFTER pretrained weights
+        have been loaded. This avoids GDN parameters interfering with
+        `from_pretrained` / `load_state_dict`.
+
+        Args:
+            gdn_layers: List of layer indices to inject GDN into. If None and
+                `gdn_config` is provided, inject into all layers.
+            gdn_config: Dict of GDNBranch kwargs. If None, no injection is done.
+        """
+        if gdn_config is None and gdn_layers is None:
+            return
+
+        # Determine which layers get GDN
+        if gdn_layers is None and gdn_config is not None:
+            gdn_layer_set = set(range(self.num_layers))
+        elif gdn_layers is not None:
+            gdn_layer_set = set(gdn_layers)
+        else:
+            gdn_layer_set = set()
+
+        if len(gdn_layer_set) == 0:
+            return
+
+        self.use_gdn = True
+        gdn_config = gdn_config or {}
+
+        from .gdn import GDNBranch
+        for i in gdn_layer_set:
+            block = self.blocks[i]
+            sa = block.self_attn
+            sa.use_gdn = True
+            sa.gdn_branch = GDNBranch(
+                dim=sa.dim, num_heads=sa.num_heads, **gdn_config)
