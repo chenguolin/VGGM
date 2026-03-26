@@ -47,7 +47,7 @@ class Options:
     version_action: bool = False
     load_global_caption: bool = False
     num_clips: int = 1
-    num_clips_test: int = 1
+    num_clips_test: Optional[int] = None
     random_num_clips: bool = False
         ## RealCamVid
     load_da3_cam: bool = True
@@ -229,6 +229,9 @@ class Options:
     def __post_init__(self):
         if self.num_input_frames_test is None:
             self.num_input_frames_test = self.num_input_frames
+
+        if self.num_clips_test is None:
+            self.num_clips_test = self.num_clips
 
         if self.load_da3:
             self.load_depth = True
