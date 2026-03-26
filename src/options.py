@@ -129,7 +129,7 @@ class Options:
     sink_size: int = 0
     chunk_size: int = 3
     max_window_size: int = None  # if None, then `(num_input_frames - 1) // 4 + 1`
-    max_kvcache_size: int = 21  # set to a limited number to save memory
+    max_kvcache_size: Optional[int] = None  # set to a limited number to save memory
     rope_outside: bool = False
     use_flexattn: bool = True  # set to False to save memory; `block_mask` in flex_attn takes so much memory!
     prefill_image: bool = True
@@ -375,7 +375,6 @@ opt_dict["wan2.1_t2v_1.3b_dmd"] = Options(
     # input_res=(480, 832),
     #
     num_clips=1,
-    max_kvcache_size=21,
     sp_size=1,
     shift=5.,
     #
