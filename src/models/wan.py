@@ -146,6 +146,8 @@ class Wan(nn.Module):
                 #
                 ttt_layers=ttt_layers,
                 ttt_config=ttt_config,
+                #
+                skip_pretrained_weights=opt.generator_path is not None,
             )
         else:
             self.diffusion = WanDiffusionDA3Wrapper(
@@ -176,6 +178,8 @@ class Wan(nn.Module):
                 da3_interactive=opt.da3_interactive and not opt.only_train_da3,
                 da3_input_cam=opt.da3_input_cam,
                 da3_max_attention_size=opt.da3_max_attention_size,
+                #
+                skip_pretrained_weights=opt.generator_path is not None,
             )
             ## Freeze DA3 camera encoder / token
             if self.diffusion.da3_model.cam_enc is not None:
@@ -1768,14 +1772,11 @@ class Wan(nn.Module):
                 clip_latent_len = all_latent_len - sum(clip_latent_lens)  # the last clip takes all remaining latents
                 clip_latent_lens.append(clip_latent_len)
             else:  # middle clips
-                clip_latent_len = max(1, int(round(clip_frame_lens[0, i:i+1].sum().item() / self.opt.compression_ratio[0])))
+                clip_latent_len = int(round(clip_frame_lens[0, i:i+1].sum().item() / self.opt.compression_ratio[0]))
                 clip_latent_lens.append(clip_latent_len)
-        # Recompute last clip to absorb rounding adjustments and keep total consistent
-        all_latent_len = 1 + int(round((clip_frame_lens[0, :].sum().item() - 1) / self.opt.compression_ratio[0]))
-        if len(clip_latent_lens) > 1:
-            clip_latent_lens[-1] = max(1, all_latent_len - sum(clip_latent_lens[:-1]))
         clip_latent_lens = torch.tensor(clip_latent_lens, dtype=torch.long)[None, :]  # (B=1, num_clips)
-        assert torch.any(clip_latent_lens > 0), f"All clips must have at least one latent frame, but got empty clips: {clip_latent_lens}"
+        assert torch.any(clip_latent_lens > 0)
+        assert clip_latent_lens.sum() == 1 + int(round((clip_frame_lens[0, :].sum().item() - 1) / self.opt.compression_ratio[0]))
 
         return new_data, clip_latent_lens
 

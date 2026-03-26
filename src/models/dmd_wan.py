@@ -44,6 +44,8 @@ class DMD_Wan(Wan):
             sink_size=opt.sink_size,
             chunk_size=opt.chunk_size,
             max_attention_size=opt.max_attention_size,
+            #
+            skip_pretrained_weights=opt.teacher_path is not None,
         )
         if opt.teacher_path is not None:
             state_dict = torch.load(opt.teacher_path, map_location="cpu", weights_only=True)
@@ -76,6 +78,8 @@ class DMD_Wan(Wan):
                 sink_size=opt.sink_size,
                 chunk_size=opt.chunk_size,
                 max_attention_size=opt.max_attention_size,
+                #
+                skip_pretrained_weights=opt.fake_path is not None,
             )
             if opt.fake_path is not None:
                 state_dict = torch.load(opt.fake_path, map_location="cpu", weights_only=True)

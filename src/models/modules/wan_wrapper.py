@@ -160,24 +160,43 @@ class WanDiffusionWrapper(nn.Module):
         ttt_layers: Optional[str] = None,
         ttt_config: Optional[dict] = None,
         #
+        skip_pretrained_weights: bool = False,
+        #
         **kwargs,  # for compatibility
     ):
         super().__init__()
 
         if is_causal:
-            self.model = CausalWanModel.from_pretrained(
-                pretrained_dir,
-                sink_size=sink_size,
-                chunk_size=chunk_size,
-                max_attention_size=max_attention_size,
-                rope_outside=rope_outside,
-                use_flexattn=use_flexattn,
-            )
+            if skip_pretrained_weights:
+                # Skip loading pretrained weights — instantiate architecture only
+                config = CausalWanModel.load_config(pretrained_dir)
+                self.model = CausalWanModel.from_config(
+                    config,
+                    sink_size=sink_size,
+                    chunk_size=chunk_size,
+                    max_attention_size=max_attention_size,
+                    rope_outside=rope_outside,
+                    use_flexattn=use_flexattn,
+                )
+            else:
+                self.model = CausalWanModel.from_pretrained(
+                    pretrained_dir,
+                    sink_size=sink_size,
+                    chunk_size=chunk_size,
+                    max_attention_size=max_attention_size,
+                    rope_outside=rope_outside,
+                    use_flexattn=use_flexattn,
+                )
             # Inject TTT branches after pretrained weights are loaded, so that
             # TTT parameters don't interfere with `from_pretrained`
             self.model.inject_ttt(ttt_layers=ttt_layers, ttt_config=ttt_config)
         else:
-            self.model = WanModel.from_pretrained(pretrained_dir)
+            if skip_pretrained_weights:
+                # Skip loading pretrained weights — instantiate architecture only
+                config = WanModel.load_config(pretrained_dir)
+                self.model = WanModel.from_config(config)
+            else:
+                self.model = WanModel.from_pretrained(pretrained_dir)
 
         self.model.use_gradient_checkpointing = use_gradient_checkpointing
         self.model.use_gradient_checkpointing_offload = use_gradient_checkpointing_offload
@@ -495,20 +514,41 @@ class WanDiffusionDA3Wrapper(nn.Module):
         da3_interactive: bool = False,
         da3_input_cam: bool = True,
         da3_max_attention_size: int = 32781,  # 81 x 480 x 832 -> 21 x (30 x 52 + 1), +1 for camera token
+        #
+        skip_pretrained_weights: bool = False,
+        #
+        **kwargs,  # for compatibility
     ):
         super().__init__()
 
         if is_causal:
-            self.model = CausalWanModel.from_pretrained(
-                pretrained_dir,
-                sink_size=sink_size,
-                chunk_size=chunk_size,
-                max_attention_size=max_attention_size,
-                rope_outside=rope_outside,
-                use_flexattn=use_flexattn,
-            )
+            if skip_pretrained_weights:
+                # Skip loading pretrained weights — instantiate architecture only
+                config = CausalWanModel.load_config(pretrained_dir)
+                self.model = CausalWanModel.from_config(
+                    config,
+                    sink_size=sink_size,
+                    chunk_size=chunk_size,
+                    max_attention_size=max_attention_size,
+                    rope_outside=rope_outside,
+                    use_flexattn=use_flexattn,
+                )
+            else:
+                self.model = CausalWanModel.from_pretrained(
+                    pretrained_dir,
+                    sink_size=sink_size,
+                    chunk_size=chunk_size,
+                    max_attention_size=max_attention_size,
+                    rope_outside=rope_outside,
+                    use_flexattn=use_flexattn,
+                )
         else:
-            self.model = WanModel.from_pretrained(pretrained_dir)
+            if skip_pretrained_weights:
+                # Skip loading pretrained weights — instantiate architecture only
+                config = WanModel.load_config(pretrained_dir)
+                self.model = WanModel.from_config(config)
+            else:
+                self.model = WanModel.from_pretrained(pretrained_dir)
 
         self.model.use_gradient_checkpointing = use_gradient_checkpointing
         self.model.use_gradient_checkpointing_offload = use_gradient_checkpointing_offload
