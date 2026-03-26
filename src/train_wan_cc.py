@@ -271,10 +271,11 @@ def main():
     logger.info(f"Load [{len(train_dataset)}] training samples and [{len(val_dataset)}] validation samples\n")
 
     # Initialize the model
+    lazy = (global_rank != 0)  # only rank 0 loads state dicts; FSDP `sync_module_states` broadcasts
     if opt.use_dmd:
-        model = DMD_Wan(opt)
+        model = DMD_Wan(opt, lazy=lazy)
     else:
-        model = Wan(opt)
+        model = Wan(opt, lazy=lazy)
 
     logger.info(f"Trainable parameter names: {sorted([name for name, param in model.named_parameters() if param.requires_grad])}\n")
     if is_main_process:  # save model architecture

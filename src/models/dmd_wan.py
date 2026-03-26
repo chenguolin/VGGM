@@ -22,8 +22,8 @@ os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 
 class DMD_Wan(Wan):
-    def __init__(self, opt: Options):
-        super().__init__(opt)
+    def __init__(self, opt: Options, lazy: bool = False):
+        super().__init__(opt, lazy=lazy)
 
         # Real score model for DMD
         self.real_score = WanDiffusionWrapper(
@@ -47,7 +47,7 @@ class DMD_Wan(Wan):
             #
             skip_pretrained_weights=opt.teacher_path is not None,
         )
-        if opt.teacher_path is not None:
+        if opt.teacher_path is not None and not lazy:
             state_dict = torch.load(opt.teacher_path, map_location="cpu", weights_only=True)
             if "generator_ema" in state_dict:
                 self.real_score.load_state_dict(state_dict["generator_ema"])
@@ -81,7 +81,7 @@ class DMD_Wan(Wan):
                 #
                 skip_pretrained_weights=opt.fake_path is not None,
             )
-            if opt.fake_path is not None:
+            if opt.fake_path is not None and not lazy:
                 state_dict = torch.load(opt.fake_path, map_location="cpu", weights_only=True)
                 if "generator_ema" in state_dict:
                     self.fake_score.load_state_dict(state_dict["generator_ema"])
@@ -107,7 +107,7 @@ class DMD_Wan(Wan):
                 lora_rank=opt.lora_rank_in_fake_score,
             )
             # Load LoRA checkpoint if specified
-            if opt.fake_lora_path is not None:
+            if opt.fake_lora_path is not None and not lazy:
                 lora_state_dict = torch.load(opt.fake_lora_path, map_location="cpu", weights_only=True)
                 self.load_fake_score_lora_weights(lora_state_dict, strict=True)
 

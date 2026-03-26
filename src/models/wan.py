@@ -36,7 +36,7 @@ os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 
 class Wan(nn.Module):
-    def __init__(self, opt: Options):
+    def __init__(self, opt: Options, lazy: bool = False):
         super().__init__()
 
         self.opt = opt
@@ -211,7 +211,7 @@ class Wan(nn.Module):
                 if i < len(self.diffusion.model.blocks) - 24:  #  `24`: hard-coded for da3-large
                     block.requires_grad_(False)
 
-        if opt.generator_path is not None:
+        if opt.generator_path is not None and not lazy:
             state_dict = torch.load(opt.generator_path, map_location="cpu", weights_only=True)
             if "generator_ema" in state_dict:
                 self.diffusion.load_state_dict(state_dict["generator_ema"], strict=False)
@@ -222,8 +222,9 @@ class Wan(nn.Module):
 
         # Initialize DDT heads with weights from `model.head`
         if num_ddts > 0:
-            for ddt in self.diffusion.ddts:
-                ddt.head.load_state_dict(self.diffusion.model.head.state_dict())
+            if not lazy:
+                for ddt in self.diffusion.ddts:
+                    ddt.head.load_state_dict(self.diffusion.model.head.state_dict())
             self.diffusion.model.head = None  # replaced by DDT heads
 
         # Add LoRA in the diffusion model, will freeze all parameters except LoRA layers
@@ -233,7 +234,7 @@ class Wan(nn.Module):
                 lora_rank=opt.lora_rank_in_wan,
             )
             # Load LoRA checkpoint if specified
-            if opt.lora_path is not None:
+            if opt.lora_path is not None and not lazy:
                 lora_state_dict = torch.load(opt.lora_path, map_location="cpu", weights_only=True)
                 self.load_lora_weights(lora_state_dict, strict=True)
 
