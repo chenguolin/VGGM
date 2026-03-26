@@ -80,6 +80,12 @@ def main():
         help="The max iteration step for training"
     )
     parser.add_argument(
+        "--skip_steps",
+        type=int,
+        default=0,
+        help="Skip the first N training steps (fast-forward dataloader without forward pass)"
+    )
+    parser.add_argument(
         "--max_val_steps",
         type=int,
         default=2,
@@ -473,6 +479,12 @@ def main():
 
         train_sampler.set_epoch(epoch)  # for shuffling the training dataset
         for batch in train_loader:
+
+            # Fast-forward dataloader to `skip_steps` without running forward pass
+            if global_update_step < args.skip_steps:
+                global_update_step += 1
+                progress_bar.update(1)
+                continue
 
             if global_update_step == args.max_train_steps:
                 progress_bar.close()
