@@ -27,7 +27,7 @@ from src.models import Wan, DMD_Wan, get_optimizer, get_lr_scheduler
 import src.utils.util as util
 import src.utils.vis_util as vis_util
 from src.utils.ema import EMAParams
-from src.utils.distributed import fsdp_wrap, fsdp_state_dict, launch_distributed_job, barrier, initialize_sequence_parallel, initialize_sub_sequence_parallel
+from src.utils.distributed import fsdp_wrap, fsdp_state_dict, launch_distributed_job, barrier, initialize_sequence_parallel
 
 
 def main():
@@ -288,23 +288,6 @@ def main():
         initialize_sequence_parallel(opt.sp_size)  # set some global variables
         logger.info(f"Sequence Parallelism initialized: sp_size=[{opt.sp_size}], world_size=[{world_size}], num_heads=[{model.diffusion.model.num_heads}]")
         logger.info(f"Data parallel groups: [{world_size // opt.sp_size}], SP ranks per group: [{opt.sp_size}]\n")
-
-        # Initialize sub-SP for fake_score when its `num_heads` is not divisible by `sp_size`
-        if opt.use_dmd and not opt.ddt_fake_score and model.fake_score is not None:
-            fake_num_heads = model.fake_score.model.num_heads
-            if fake_num_heads % opt.sp_size != 0:
-                # Find the largest divisor of `fake_num_heads` that also divides `sp_size`
-                sub_sp_size = opt.sp_size
-                while sub_sp_size > 1 and fake_num_heads % sub_sp_size != 0:
-                    sub_sp_size //= 2
-                assert sub_sp_size > 1, \
-                    f"Cannot find a valid sub_sp_size: fake_score `num_heads`={fake_num_heads}, `sp_size`={opt.sp_size}"
-                assert opt.sp_size % sub_sp_size == 0, \
-                    f"`sp_size` ({opt.sp_size}) must be divisible by `sub_sp_size` ({sub_sp_size})"
-                initialize_sub_sequence_parallel(sub_sp_size)
-                model.fake_score_use_sub_sp = True
-                logger.info(f"Sub-SP initialized for fake_score: fake `num_heads`={fake_num_heads}, "
-                            f"sub_sp_size={sub_sp_size} (main sp_size={opt.sp_size})\n")
 
     # FSDP wrap
     if args.wrap_strategy == "transformer":

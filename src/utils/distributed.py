@@ -147,13 +147,6 @@ _SP_GROUP = None
 _SP_RANK = None
 _SP_WORLD_SIZE = None
 
-# Global variables for sub-SP process groups (used when a sub-module has fewer
-# heads than the main SP size, e.g. 1.3B fake_score with `num_heads=12` inside
-# an `sp_size=8` setup).  Initialized lazily via `initialize_sub_sequence_parallel`.
-_SUB_SP_GROUP = None
-_SUB_SP_RANK = None
-_SUB_SP_WORLD_SIZE = None
-
 
 def initialize_sequence_parallel(sp_size: int):
     """
@@ -197,55 +190,6 @@ def initialize_sequence_parallel(sp_size: int):
     barrier()
 
 
-def initialize_sub_sequence_parallel(sub_sp_size: int):
-    """
-    Initialize sub-SP process groups within each existing SP group.
-
-    This is used when a sub-module (e.g. fake_score with `num_heads=12`) cannot
-    evenly split its heads across the full `sp_size` (e.g. 8).  We create smaller
-    sub-groups of size `sub_sp_size` *within* each SP group so that the sub-module
-    can use a compatible SP size.
-
-    Example:
-        With sp_size=8 and sub_sp_size=4, each SP group [0..7] is split into two
-        sub-groups: [0,1,2,3] and [4,5,6,7].
-    """
-    global _SUB_SP_GROUP, _SUB_SP_RANK, _SUB_SP_WORLD_SIZE
-
-    assert _SP_GROUP is not None, "Must initialize main SP groups first"
-    assert _SP_WORLD_SIZE % sub_sp_size == 0, \
-        f"`sp_size` ({_SP_WORLD_SIZE}) must be divisible by `sub_sp_size` ({sub_sp_size})"
-
-    world_size = dist.get_world_size()
-    rank = dist.get_rank()
-    sp_size = _SP_WORLD_SIZE
-
-    # Create sub-SP groups by splitting each SP group
-    for sp_group_start in range(0, world_size, sp_size):
-        for sub_start in range(sp_group_start, sp_group_start + sp_size, sub_sp_size):
-            sub_ranks = list(range(sub_start, sub_start + sub_sp_size))
-            group = dist.new_group(sub_ranks)
-            if rank in sub_ranks:
-                _SUB_SP_GROUP = group
-                _SUB_SP_RANK = rank - sub_start
-                _SUB_SP_WORLD_SIZE = sub_sp_size
-
-    print(f"[Rank {rank}] Initialized sub-SP: sub_sp_size={sub_sp_size}, "
-          f"sub_sp_rank={_SUB_SP_RANK}")
-
-    barrier()
-
-
-def get_sub_sp_group():
-    """Get the sub-SP process group (None if not initialized)."""
-    return _SUB_SP_GROUP
-
-
-def get_sub_sp_world_size():
-    """Get the sub-SP world size (1 if not initialized)."""
-    return _SUB_SP_WORLD_SIZE if _SUB_SP_WORLD_SIZE is not None else 1
-
-
 def get_sp_rank():
     """Get sequence parallel rank within the SP group."""
     if _SP_RANK is not None:
@@ -263,46 +207,6 @@ def get_sp_world_size():
 def get_sp_group():
     """Get the sequence parallel process group."""
     return _SP_GROUP
-
-
-
-@contextmanager
-def use_sub_sp():
-    """
-    Context manager that temporarily swaps the global SP variables to the sub-SP
-    group.  All SP-aware code (all_to_all, all_gather, all_split, etc.) will
-    transparently use the sub-SP group inside this context.
-
-    Usage::
-
-        # Before entering: sequence is split across `sp_size` ranks
-        x = all_gather(x, dim=1)                       # gather to full sequence
-        x = all_split(x, dim=1, group=sub_sp_group)    # re-split to `sub_sp_size`
-        with use_sub_sp():
-            out = fake_score(x, ...)                    # runs with sub-SP
-        out = all_gather(out, dim=1, group=sub_sp_group)  # gather back
-        out = all_split(out, dim=1)                     # re-split to `sp_size`
-    """
-    global _SP_GROUP, _SP_RANK, _SP_WORLD_SIZE
-
-    assert _SUB_SP_GROUP is not None, \
-        "Sub-SP groups not initialized. Call `initialize_sub_sequence_parallel` first."
-
-    # Save originals
-    orig_group, orig_rank, orig_world_size = _SP_GROUP, _SP_RANK, _SP_WORLD_SIZE
-
-    # Swap to sub-SP
-    _SP_GROUP = _SUB_SP_GROUP
-    _SP_RANK = _SUB_SP_RANK
-    _SP_WORLD_SIZE = _SUB_SP_WORLD_SIZE
-
-    try:
-        yield
-    finally:
-        # Restore originals
-        _SP_GROUP = orig_group
-        _SP_RANK = orig_rank
-        _SP_WORLD_SIZE = orig_world_size
 
 
 def _resolve_group_info(group=None):
