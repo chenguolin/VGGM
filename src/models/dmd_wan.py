@@ -279,10 +279,13 @@ class DMD_Wan(Wan):
                 pred_x0_diffusion = None
                 da3_outputs_diffusion = None
                 diffusion_loss = 0.
+
+            # Collect generator-side losses for separate backward pass
+            generator_total_loss = generator_loss + self.opt.diffusion_loss_weight * diffusion_loss
         else:
             pred_x0, pred_x0_diffusion = None, None
             da3_outputs, da3_outputs_diffusion = None, None
-            generator_loss, diffusion_loss = 0., 0.
+            generator_total_loss = None
 
         ## 3. Critic loss
         outputs["critic_loss"] = critic_loss = \
@@ -303,8 +306,16 @@ class DMD_Wan(Wan):
                 clip_latent_lens=clip_latent_lens,
             )
 
-        outputs["loss"] = self.opt.critic_loss_weight * critic_loss + generator_loss \
-            + self.opt.diffusion_loss_weight * diffusion_loss
+        # Return separate losses for sequential backward passes to reduce peak memory
+        # Each loss is backward-ed independently so their activation graphs don't overlap
+        losses = []
+        if generator_total_loss is not None:
+            losses.append(generator_total_loss)
+        losses.append(self.opt.critic_loss_weight * critic_loss)
+        outputs["losses"] = losses
+
+        # Scalar `loss` for logging only (detached sum)
+        outputs["loss"] = sum(l.detach() for l in losses)
 
         # # For visualizaiton
         # if is_eval:
@@ -860,7 +871,9 @@ class DMD_Wan(Wan):
                 )
             fake_model_outputs = fake_model_outputs_uncond + self.opt.fake_guidance_scale * (
                 fake_model_outputs - fake_model_outputs_uncond)
+            del fake_model_outputs_uncond  # free intermediate tensors
         fake_pred_x0 = self.diffusion._convert_flow_pred_to_x0(fake_model_outputs, noisy_latents, timesteps)
+        del fake_model_outputs  # free intermediate tensors
 
         # Step 2: Compute the real score
         # We compute the conditional and unconditional prediction
@@ -884,16 +897,23 @@ class DMD_Wan(Wan):
             )
             real_model_outputs = real_model_outputs_uncond + self.opt.real_guidance_scale * (
                 real_model_outputs - real_model_outputs_uncond)
+            del real_model_outputs_uncond  # free intermediate tensors
         real_pred_x0 = self.diffusion._convert_flow_pred_to_x0(real_model_outputs, noisy_latents, timesteps)
+        del real_model_outputs  # free intermediate tensors
 
         # Step 3: Compute the DMD gradient (DMD paper eq. 7).
         grad = (fake_pred_x0 - real_pred_x0)
+        del fake_pred_x0  # free intermediate tensors
 
         if normalization:
             # Step 4: Gradient normalization (DMD paper eq. 8).
             p_real = (pred_x0 - real_pred_x0)
+            del real_pred_x0  # free intermediate tensors
             normalizer = torch.abs(p_real).mean(dim=[1, 2, 3, 4], keepdim=True)
+            del p_real  # free intermediate tensors
             grad = grad / normalizer
+        else:
+            del real_pred_x0  # free intermediate tensors
         grad = torch.nan_to_num(grad)
 
         return grad

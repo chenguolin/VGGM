@@ -145,10 +145,10 @@ class Options:
     ttt_prenorm: bool = True
         ## Load pre-trained models
     generator_path: Optional[str] = None
-    lora_path: Optional[str] = None  # Path to LoRA weights file (lora_weights.pth)
+    lora_path: Optional[str] = None
     teacher_path: Optional[str] = None
     fake_path: Optional[str] = None
-    fake_lora_path: Optional[str] = None  # Path to fake_score LoRA weights file
+    fake_lora_path: Optional[str] = None
     is_teacher_causal: bool = False
     teacher_input_plucker: bool = False
     teacher_input_pcrender: bool = False
@@ -159,6 +159,7 @@ class Options:
     fake_guidance_scale: float = 1.
     real_guidance_scale: float = 4.
     ddt_fake_score: bool = False
+    real_score_offload: bool = False
         ## Self-forcing
     self_forcing_prob: float = 1.
     denoising_step_list: Tuple[int, ...] = (1000, 750, 500, 250)

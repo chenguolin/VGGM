@@ -321,6 +321,7 @@ def main():
             wrap_strategy=args.wrap_strategy,
             transformer_module=transformer_blocks,
             mixed_precision=args.mixed_precision,
+            cpu_offload=opt.real_score_offload,
         )
         if not opt.ddt_fake_score:
             model.fake_score = fsdp_wrap(
@@ -503,7 +504,12 @@ def main():
             train_metrics = {k: outputs[k] for k in _METRIC_KEYS if k in outputs}
 
             # Backpropagate
-            loss.backward()
+            # For DMD: sequential backward passes to reduce peak activation memory
+            if "losses" in outputs:
+                for sub_loss in outputs["losses"]:
+                    sub_loss.backward()
+            else:
+                loss.backward()
 
             # Skip the step if any rank produces NaN/Inf gradients
             local_nonfinite_grad_names = util.find_nonfinite_grad_names(model)

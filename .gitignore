@@ -3,6 +3,7 @@ __pycache__/
 .claude/
 .cursor/
 .ipynb_checkpoints/
+docs/
 build/
 *.egg-info/
 dump/
