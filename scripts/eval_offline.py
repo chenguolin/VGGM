@@ -127,7 +127,7 @@ def main():
     # Override SP size from CLI
     opt.sp_size = args.sp_size
     if args.num_clips is not None:
-        opt.num_clips = args.num_clips
+        opt.num_clips_test = args.num_clips
 
     # Distributed setup
     use_distributed = args.sp_size > 1

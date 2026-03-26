@@ -115,9 +115,18 @@ class InternalDataset(BaseDataset):
                         break  # adding more segments won't help
                     if min_duration * length <= cum_dur <= max_duration * length:
                         valid_pairs.append((si, length))
-            ## Filter to samples with too many clips to avoid OOM
-            max_clips = self.opt.num_clips * 3  # TODO: make `3` configurable
-            valid_pairs = [(si, nc) for si, nc in valid_pairs if nc <= max_clips]
+            ## Filter out pairs with too many clips or any segment too short
+            max_clips = self.opt.num_clips * 2  # TODO: make `2` configurable
+            min_seg_duration = 1.  # TODO: make `1.` configurable
+            def _pair_is_valid(si, nc):
+                if nc > max_clips:
+                    return False
+                for k in range(nc):
+                    seg = segments[si + k]
+                    if seg["end_time"] - seg["start_time"] < min_seg_duration:
+                        return False
+                return True
+            valid_pairs = [(si, nc) for si, nc in valid_pairs if _pair_is_valid(si, nc)]
             if len(valid_pairs) == 0:
                 if idx in self.valid_idxs:
                     self.valid_idxs.remove(idx)
@@ -173,6 +182,8 @@ class InternalDataset(BaseDataset):
         # For `version_action`, use `opt.num_clips` to keep total frame count fixed across
         # samples (dynamic `num_clips` only controls how many segments are selected)
         total_frames_clips = self.opt.num_clips if self.opt.version_action else num_clips
+        if not self.training:
+            total_frames_clips = self.opt.num_clips_test
         total_frames = (self.opt.num_input_frames - 1) * total_frames_clips + 1
         if self.opt.is_causal:  # make sure video latents can be divided by the causal chunk size
             total_frames_latent = 1 + (total_frames - 1) // self.opt.compression_ratio[0]

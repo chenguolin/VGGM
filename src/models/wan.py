@@ -1768,9 +1768,14 @@ class Wan(nn.Module):
                 clip_latent_len = all_latent_len - sum(clip_latent_lens)  # the last clip takes all remaining latents
                 clip_latent_lens.append(clip_latent_len)
             else:  # middle clips
-                clip_latent_len = int(round(clip_frame_lens[0, i:i+1].sum().item() / self.opt.compression_ratio[0]))
+                clip_latent_len = max(1, int(round(clip_frame_lens[0, i:i+1].sum().item() / self.opt.compression_ratio[0])))
                 clip_latent_lens.append(clip_latent_len)
+        # Recompute last clip to absorb rounding adjustments and keep total consistent
+        all_latent_len = 1 + int(round((clip_frame_lens[0, :].sum().item() - 1) / self.opt.compression_ratio[0]))
+        if len(clip_latent_lens) > 1:
+            clip_latent_lens[-1] = max(1, all_latent_len - sum(clip_latent_lens[:-1]))
         clip_latent_lens = torch.tensor(clip_latent_lens, dtype=torch.long)[None, :]  # (B=1, num_clips)
+        assert torch.any(clip_latent_lens > 0), f"All clips must have at least one latent frame, but got empty clips: {clip_latent_lens}"
 
         return new_data, clip_latent_lens
 

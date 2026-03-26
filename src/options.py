@@ -47,6 +47,7 @@ class Options:
     version_action: bool = False
     load_global_caption: bool = False
     num_clips: int = 1
+    num_clips_test: int = 1
     random_num_clips: bool = False
         ## RealCamVid
     load_da3_cam: bool = True
