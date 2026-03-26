@@ -964,13 +964,15 @@ class WanModel(ModelMixin, ConfigMixin):
             context_clip = self.img_emb(clip_fea)  # bs x 257 (x2) x dim
             context = torch.concat([context_clip, context], dim=1)
 
-        ddt_inputs = dict(
-            x=x.clone(),
-            e=e,
-            context=context,
-            grid_sizes=grid_sizes,
-            seq_lens=seq_lens,
-        )
+        # Only build `ddt_inputs` when needed to avoid unnecessary `x.clone()`
+        if return_ddt_inputs:
+            ddt_inputs = dict(
+                x=x.clone(),
+                e=e,
+                context=context,
+                grid_sizes=grid_sizes,
+                seq_lens=seq_lens,
+            )
 
         # Sequence parallelism: chunk sequences across ranks
         sp_size = get_sp_world_size()

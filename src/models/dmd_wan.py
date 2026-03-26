@@ -208,12 +208,15 @@ class DMD_Wan(Wan):
 
         self.diffusion.scheduler.set_timesteps(self.opt.num_train_timesteps, training=True)
 
+        # Shared noises for generator and critic to enable `pred_x0` reuse
+        shared_noises = torch.randn_like(latents)
+
         # DMD + (Optional) Diffusion
         if train_generator:
             ## 1. Generator loss
             generator_loss, dmd_grad_norm, pred_x0, da3_outputs = \
                 self.generator_loss(
-                    torch.randn_like(latents),
+                    shared_noises,
                     prompt_embeds,
                     negative_prompt_embeds,
                     cond_latents,
@@ -287,10 +290,10 @@ class DMD_Wan(Wan):
             da3_outputs, da3_outputs_diffusion = None, None
             generator_total_loss = None
 
-        ## 3. Critic loss
+        ## 3. Critic loss — reuse generator's `pred_x0` when available to skip redundant self-forcing
         outputs["critic_loss"] = critic_loss = \
             self.critic_loss(
-                torch.randn_like(latents),
+                shared_noises,
                 prompt_embeds,
                 cond_latents,
                 plucker,
@@ -304,6 +307,8 @@ class DMD_Wan(Wan):
                 images_f=images_f,
                 #
                 clip_latent_lens=clip_latent_lens,
+                #
+                cached_pred_x0=pred_x0 if train_generator else None,
             )
 
         # Return separate losses for sequential backward passes to reduce peak memory
@@ -572,6 +577,8 @@ class DMD_Wan(Wan):
         images_f: Optional[Tensor] = None,
         #
         clip_latent_lens: Optional[Tensor] = None,  # (B=1, num_clips); for multi-clip generation
+        #
+        cached_pred_x0: Optional[Tensor] = None,  # reuse `pred_x0` from generator to skip self-forcing replay
     ):
         """
         Generate image/videos from noise and train the critic with generated samples.
@@ -582,24 +589,27 @@ class DMD_Wan(Wan):
         B, f = noises.shape[0], noises.shape[2]
         device, dtype = noises.device, noises.dtype
 
-        # Step 1: Run generator on backward simulated noisy inputs
-        with torch.no_grad():
-            pred_x0, _, _ = self._run_generator(
-                noises,
-                prompt_embeds,
-                cond_latents,
-                plucker,
-                #
-                clean_latents,
-                #
-                C2W,
-                fxfycxcy,
-                depths,
-                confs,
-                images_f,
-                #
-                clip_latent_lens,
-            )
+        # Step 1: Obtain fake videos — reuse from generator if available, otherwise run generator
+        if cached_pred_x0 is not None:
+            pred_x0 = cached_pred_x0.detach()
+        else:
+            with torch.no_grad():
+                pred_x0, _, _ = self._run_generator(
+                    noises,
+                    prompt_embeds,
+                    cond_latents,
+                    plucker,
+                    #
+                    clean_latents,
+                    #
+                    C2W,
+                    fxfycxcy,
+                    depths,
+                    confs,
+                    images_f,
+                    #
+                    clip_latent_lens,
+                )
 
         # Step 2: Compute the fake prediction
         min_t, max_t = int(self.opt.min_timestep_boundary * self.opt.num_train_timesteps), \

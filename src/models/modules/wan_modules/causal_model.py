@@ -1206,13 +1206,15 @@ class CausalWanModel(ModelMixin, ConfigMixin):
             context_clip = self.img_emb(clip_fea)  # bs x 257 x dim
             context = torch.concat([context_clip, context], dim=1)
 
-        ddt_inputs = dict(
-            x=x.clone(),
-            e=e,
-            context=context,
-            grid_sizes=grid_sizes,
-            seq_lens=seq_lens,
-        )
+        # Only build `ddt_inputs` when needed to avoid unnecessary `x.clone()`
+        if return_ddt_inputs:
+            ddt_inputs = dict(
+                x=x.clone(),
+                e=e,
+                context=context,
+                grid_sizes=grid_sizes,
+                seq_lens=seq_lens,
+            )
 
         # Sequence parallelism: chunk sequences across ranks
         sp_size = get_sp_world_size()
@@ -1466,15 +1468,17 @@ class CausalWanModel(ModelMixin, ConfigMixin):
             # Loop-based attention: pass parameters instead of block mask
             self.block_mask = None
 
-        ddt_inputs = dict(
-            x=x.clone(),
-            e=torch.cat([e_clean, e], dim=1) \
-                if clean_x is not None else e,
-            context=context,
-            grid_sizes=grid_sizes,
-            seq_lens=seq_lens,
-            block_mask=self.block_mask,
-        )
+        # Only build `ddt_inputs` when needed to avoid unnecessary `x.clone()`
+        if return_ddt_inputs:
+            ddt_inputs = dict(
+                x=x.clone(),
+                e=torch.cat([e_clean, e], dim=1) \
+                    if clean_x is not None else e,
+                context=context,
+                grid_sizes=grid_sizes,
+                seq_lens=seq_lens,
+                block_mask=self.block_mask,
+            )
 
         # Sequence parallelism: chunk sequences across ranks
         sp_size = get_sp_world_size()
