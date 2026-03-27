@@ -1794,21 +1794,25 @@ class Wan(nn.Module):
             new_data[key] = torch.stack([torch.cat(sample, dim=0) for sample in value], dim=0)  # (B=1, sum(F_clip), ...)
 
         clip_frame_lens = torch.tensor(clip_frame_lens, dtype=torch.long)  # (B=1, num_clips)
+        all_latent_len = 1 + int(round((clip_frame_lens[0, :].sum().item() - 1) / self.opt.compression_ratio[0]))
         clip_latent_lens = []
         for i in range(clip_frame_lens.shape[1]):
-            if i == 0:  # first clip keeps the first image latent
-                clip_latent_len = 1 + int(round((clip_frame_lens[0, 0:1].item() - 1) / self.opt.compression_ratio[0]))
-                clip_latent_lens.append(clip_latent_len)
-            elif i == clip_frame_lens.shape[1] - 1:  # last clip
-                all_latent_len = 1 + int(round((clip_frame_lens[0, :].sum().item() - 1) / self.opt.compression_ratio[0]))
-                clip_latent_len = all_latent_len - sum(clip_latent_lens)  # the last clip takes all remaining latents
-                clip_latent_lens.append(clip_latent_len)
+            if i == clip_frame_lens.shape[1] - 1:  # last clip takes all remaining latents
+                clip_latent_len = all_latent_len - sum(clip_latent_lens)
+            elif i == 0:  # first clip keeps the first image latent
+                clip_latent_len = 1 + int(round((clip_frame_lens[0, 0].item() - 1) / self.opt.compression_ratio[0]))
+                if self.opt.is_causal:
+                    clip_latent_len = max(int(round(clip_latent_len / self.opt.chunk_size)) * self.opt.chunk_size, self.opt.chunk_size)
             else:  # middle clips
-                clip_latent_len = int(round(clip_frame_lens[0, i:i+1].sum().item() / self.opt.compression_ratio[0]))
-                clip_latent_lens.append(clip_latent_len)
+                clip_latent_len = int(round(clip_frame_lens[0, i].item() / self.opt.compression_ratio[0]))
+                if self.opt.is_causal:
+                    clip_latent_len = max(int(round(clip_latent_len / self.opt.chunk_size)) * self.opt.chunk_size, self.opt.chunk_size)
+            clip_latent_lens.append(clip_latent_len)
         clip_latent_lens = torch.tensor(clip_latent_lens, dtype=torch.long)[None, :]  # (B=1, num_clips)
         assert torch.any(clip_latent_lens > 0)
-        assert clip_latent_lens.sum() == 1 + int(round((clip_frame_lens[0, :].sum().item() - 1) / self.opt.compression_ratio[0]))
+        assert clip_latent_lens.sum() == all_latent_len
+        if self.opt.is_causal:
+            assert torch.all(clip_latent_lens % self.opt.chunk_size == 0)
 
         return new_data, clip_latent_lens
 
