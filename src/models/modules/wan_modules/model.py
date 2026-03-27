@@ -369,10 +369,6 @@ class WanT2VCrossAttention(WanSelfAttention):
             k_lens = clip_context_lens[b_idx].tolist()
             for q_len, k_len in zip(q_lens, k_lens):
                 q_len, k_len = int(q_len), int(k_len)
-                if q_len == 0 or k_len == 0:  # skip empty clips to avoid flash attention errors
-                    q_start += q_len
-                    k_start += k_len
-                    continue
                 q_chunk = q[b_idx:b_idx+1, q_start:q_start+q_len]
                 k_chunk = k[b_idx:b_idx+1, k_start:k_start+k_len]
                 v_chunk = v[b_idx:b_idx+1, k_start:k_start+k_len]
@@ -403,11 +399,6 @@ class WanT2VCrossAttention(WanSelfAttention):
             for q_len, k_len in zip(q_lens, k_lens):
                 q_len, k_len = int(q_len), int(k_len)
                 q_end, k_end = q_start + q_len, k_start + k_len
-
-                if q_len == 0 or k_len == 0:  # skip empty clips to avoid flash attention errors
-                    q_start = q_end
-                    k_start = k_end
-                    continue
 
                 overlap_start = max(q_start, q_global_start)
                 overlap_end = min(q_end, q_global_end)
@@ -533,10 +524,12 @@ class WanI2VCrossAttention(WanSelfAttention):
             v = self.v(context).view(b, -1, n, d)
 
         # TODO: cache image conditions in cross attention
+
         k_img = self.norm_k_img(self.k_img(context_img)).view(b, -1, n, d)
         v_img = self.v_img(context_img).view(b, -1, n, d)
 
         # TODO: support clipwise attention and SP in I2V cross attention
+
         # compute attention
         img_x = attention(q, k_img, v_img, k_lens=None)
         x = attention(q, k, v, k_lens=context_lens)
