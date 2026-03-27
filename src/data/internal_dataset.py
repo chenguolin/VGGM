@@ -116,7 +116,7 @@ class InternalDataset(BaseDataset):
                     if min_duration * length <= cum_dur <= max_duration * length:
                         valid_pairs.append((si, length))
             ## Filter out pairs with too many clips or any segment too short
-            max_clips = self.opt.num_clips * 2  # TODO: make `2` configurable
+            max_clips = self.opt.num_clips * 3  # TODO: make `3` configurable
             min_seg_duration = 1.  # TODO: make `1.` configurable
             def _pair_is_valid(si, nc):
                 if nc > max_clips:
@@ -128,11 +128,7 @@ class InternalDataset(BaseDataset):
                 return True
             valid_pairs = [(si, nc) for si, nc in valid_pairs if _pair_is_valid(si, nc)]
             if len(valid_pairs) == 0:
-                if idx in self.valid_idxs:
-                    self.valid_idxs.remove(idx)
-                    if len(self.valid_idxs) == 0:
-                        raise ValueError("No valid data in InternalDataset!")
-                return self.__getitem__(int(np.random.choice(self.valid_idxs)))
+                return self._skip_this_idx(idx)
             start_clip_idx, num_clips = valid_pairs[np.random.randint(len(valid_pairs))]
             clip_idxs = [start_clip_idx + i for i in range(num_clips)]
             prompt = [all_captions[clip_idx] for clip_idx in clip_idxs]
@@ -150,11 +146,7 @@ class InternalDataset(BaseDataset):
                 if all((clip_idx + i) in all_clip_idx_set for i in range(num_clips))
             ]
             if len(valid_start_clip_idxs) == 0:
-                if idx in self.valid_idxs:
-                    self.valid_idxs.remove(idx)
-                    if len(self.valid_idxs) == 0:
-                        raise ValueError("No valid data in InternalDataset!")
-                return self.__getitem__(int(np.random.choice(self.valid_idxs)))
+                return self._skip_this_idx(idx)
 
             if self.opt.version_2sdiff and 0 in valid_start_clip_idxs:
                 ### For `version_2sdiff`, always start from clip 0 because clip 0 captions have a
@@ -198,12 +190,14 @@ class InternalDataset(BaseDataset):
             for seg in selected_segments:
                 seg_start = int(round(seg["start_time"] * fps))
                 seg_end = min(int(round(seg["end_time"] * fps)), num_frames)
+                if seg_end < seg_start + min_seg_duration * fps:
+                    return self._skip_this_idx(idx)
                 seg_frame_ranges.append((seg_start, seg_end))
-            seg_num_frames = [max(end - start, 1) for start, end in seg_frame_ranges]  # real frame count per segment
+            seg_num_frames = [(end - start) for start, end in seg_frame_ranges]  # real frame count per segment
             total_seg_frames = sum(seg_num_frames)
             ## Allocate `total_frames` proportionally to each segment's real frame count
-            raw_alloc = [total_frames * n / total_seg_frames for n in seg_num_frames]
-            num_frames_per_clip = [max(1, int(round(a))) for a in raw_alloc]
+            raw_alloc = [(total_frames * n / total_seg_frames) for n in seg_num_frames]
+            num_frames_per_clip = [int(round(a)) for a in raw_alloc]
             ## Fix rounding residual: adjust the largest clip
             residual = total_frames - sum(num_frames_per_clip)
             if residual != 0:
@@ -235,11 +229,7 @@ class InternalDataset(BaseDataset):
             vipe_data = np.load(vipe_path, allow_pickle=True)
             C2W, fxfycxcy = vipe_data["pose"], vipe_data["intrinsics"]
             if (C2W.shape[0] != fxfycxcy.shape[0]) or (C2W.shape[0] != num_frames):
-                if idx in self.valid_idxs:
-                    self.valid_idxs.remove(idx)
-                    if len(self.valid_idxs) == 0:
-                        raise ValueError("No valid data in InternalDataset!")
-                return self.__getitem__(int(np.random.choice(self.valid_idxs)))
+                return self._skip_this_idx(idx)
             C2W = torch.from_numpy(C2W).float()[input_frame_idxs, ...]  # (F, 4, 4)
             fxfycxcy = torch.from_numpy(fxfycxcy).float()[input_frame_idxs, ...]  # (F, 3, 3)
             fxfycxcy[:, 0] /= W
@@ -316,3 +306,10 @@ class InternalDataset(BaseDataset):
                     return_dict[key] = return_dict[key][0]
 
         return return_dict
+
+    def _skip_this_idx(self, idx: int):
+        if idx in self.valid_idxs:
+            self.valid_idxs.remove(idx)
+            if len(self.valid_idxs) == 0:
+                raise ValueError("No valid data in InternalDataset!")
+        return self.__getitem__(int(np.random.choice(self.valid_idxs)))

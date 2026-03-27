@@ -81,11 +81,7 @@ class RealcamvidDataset(BaseDataset):
         else:
             W2C = metadata["camera_extrinsics"]
             if num_frames != W2C.shape[0]:
-                if idx in self.valid_idxs:
-                    self.valid_idxs.remove(idx)
-                    if len(self.valid_idxs) == 0:
-                        raise ValueError("No valid data in RealcamvidDataset!")
-                return self.__getitem__(np.random.choice(self.valid_idxs))
+                return self._skip_this_idx(idx)
 
             C2W = inverse_c2w(torch.from_numpy(W2C).float())[input_frame_idxs, ...]  # (F, 4, 4)
             C2W[:, :3, 3] *= metadata["align_factor"]  # to metric scale
@@ -132,3 +128,10 @@ class RealcamvidDataset(BaseDataset):
         if self.opt.load_conf:
             return_dict["conf"] = confs  # (F, H, W)
         return return_dict
+
+    def _skip_this_idx(self, idx: int):
+        if idx in self.valid_idxs:
+            self.valid_idxs.remove(idx)
+            if len(self.valid_idxs) == 0:
+                raise ValueError("No valid data in InternalDataset!")
+        return self.__getitem__(int(np.random.choice(self.valid_idxs)))
