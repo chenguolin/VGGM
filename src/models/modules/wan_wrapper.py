@@ -623,6 +623,7 @@ class WanDiffusionDA3Wrapper(nn.Module):
         self.da3_max_attention_size = da3_max_attention_size
 
         self.is_causal = is_causal
+        self.use_flexattn = use_flexattn
         self.block_mask = None
 
     def forward(self,
@@ -778,46 +779,52 @@ class WanDiffusionDA3Wrapper(nn.Module):
                 e0 = torch.cat([e0_clean, e0], dim=1)
 
             # Construct blockwise causal attn mask
+            frame_seqlen = h * w // (self.model.patch_size[1] * self.model.patch_size[2])
+            if self.use_flexattn:
                 ## For Wan DiT
-            if self.model.block_mask is None and kv_cache is None:
-                if clean_x is not None:
-                    self.model.block_mask = self.model._prepare_teacher_forcing_mask(
-                        device,
-                        num_frames=f,
-                        frame_seqlen=h * w // (self.model.patch_size[1] * self.model.patch_size[2]),
-                        sink_size=self.model.sink_size,
-                        chunk_size=self.model.chunk_size,
-                        max_attention_size=self.model.max_attention_size,
-                    )
-                else:
-                    self.model.block_mask = self.model._prepare_blockwise_causal_attn_mask(
-                        device,
-                        num_frames=f,
-                        frame_seqlen=h * w // (self.model.patch_size[1] * self.model.patch_size[2]),
-                        sink_size=self.model.sink_size,
-                        chunk_size=self.model.chunk_size,
-                        max_attention_size=self.model.max_attention_size,
-                    )
+                if self.model.block_mask is None and kv_cache is None:
+                    if clean_x is not None:
+                        self.model.block_mask = self.model._prepare_teacher_forcing_mask(
+                            device,
+                            num_frames=f,
+                            frame_seqlen=frame_seqlen,
+                            sink_size=self.model.sink_size,
+                            chunk_size=self.model.chunk_size,
+                            max_attention_size=self.model.max_attention_size,
+                        )
+                    else:
+                        self.model.block_mask = self.model._prepare_blockwise_causal_attn_mask(
+                            device,
+                            num_frames=f,
+                            frame_seqlen=frame_seqlen,
+                            sink_size=self.model.sink_size,
+                            chunk_size=self.model.chunk_size,
+                            max_attention_size=self.model.max_attention_size,
+                        )
                 ## For DA3
-            if self.block_mask is None and kv_cache_da3 is None:
-                if clean_x is not None:
-                    self.block_mask = self.model._prepare_teacher_forcing_mask(
-                        device,
-                        num_frames=f,
-                        frame_seqlen=1 + h * w // (self.model.patch_size[1] * self.model.patch_size[2]) // (self.da3_down_ratio * self.da3_down_ratio),  # `1+` for camera token
-                        sink_size=self.model.sink_size,
-                        chunk_size=self.model.chunk_size,
-                        max_attention_size=self.da3_max_attention_size,
-                    )
-                else:
-                    self.block_mask = self.model._prepare_blockwise_causal_attn_mask(
-                        device,
-                        num_frames=f,
-                        frame_seqlen=1 + h * w // (self.model.patch_size[1] * self.model.patch_size[2]) // (self.da3_down_ratio * self.da3_down_ratio),  # `1+` for camera token
-                        sink_size=self.model.sink_size,
-                        chunk_size=self.model.chunk_size,
-                        max_attention_size=self.da3_max_attention_size,
-                    )
+                if self.block_mask is None and kv_cache_da3 is None:
+                    if clean_x is not None:
+                        self.block_mask = self.model._prepare_teacher_forcing_mask(
+                            device,
+                            num_frames=f,
+                            frame_seqlen=1 + frame_seqlen // (self.da3_down_ratio * self.da3_down_ratio),  # `1+` for camera token
+                            sink_size=self.model.sink_size,
+                            chunk_size=self.model.chunk_size,
+                            max_attention_size=self.da3_max_attention_size,
+                        )
+                    else:
+                        self.block_mask = self.model._prepare_blockwise_causal_attn_mask(
+                            device,
+                            num_frames=f,
+                            frame_seqlen=1 + frame_seqlen // (self.da3_down_ratio * self.da3_down_ratio),  # `1+` for camera token
+                            sink_size=self.model.sink_size,
+                            chunk_size=self.model.chunk_size,
+                            max_attention_size=self.da3_max_attention_size,
+                        )
+            else:
+                # Loop-based attention: no block mask needed
+                self.model.block_mask = None
+                self.block_mask = None
 
         # Sequence parallelism: chunk sequences across ranks
         sp_size = get_sp_world_size()
@@ -827,6 +834,16 @@ class WanDiffusionDA3Wrapper(nn.Module):
             e0 = all_split(sync_across_sp_group(e0), dim=1)
 
         # arguments
+        loop_attn_params = None
+        if self.is_causal and not self.use_flexattn:
+            loop_attn_params = dict(
+                frame_seqlen=frame_seqlen,
+                num_frames=f,
+                chunk_size=self.model.chunk_size,
+                sink_size=self.model.sink_size,
+                max_attention_size=self.model.max_attention_size,
+                is_teacher_forcing=clean_x is not None,
+            )
         kwargs = dict(
             e=e0,
             seq_lens=seq_lens,
@@ -842,7 +859,8 @@ class WanDiffusionDA3Wrapper(nn.Module):
         )
         if self.is_causal:
             kwargs.update(
-                block_mask=self.model.block_mask,  # None if kv cache is used
+                block_mask=self.model.block_mask,  # None if `use_flexattn=False` or kv cache is used
+                loop_attn_params=loop_attn_params,
             )
 
         def create_custom_forward(module):
@@ -857,91 +875,83 @@ class WanDiffusionDA3Wrapper(nn.Module):
         da3_alt_start = self.da3_model.backbone.pretrained.alt_start
         pos, pos_nodiff = self.da3_model.backbone.pretrained._prepare_rope(B, tff, h*8//self.da3_down_ratio, w*8//self.da3_down_ratio, device)  # `8`: hard-coded for Wan2.1
 
+        def create_kv_restoring_forward(module, kvc, s_global, s_local):
+            first_call = [True]  # forward pass, not recompute
+
+            def custom_forward(*inputs, **kwargs):
+                if first_call[0]:
+                    first_call[0] = False
+                    return module(*inputs, **kwargs)
+                # Recompute: restore indices and skip KV cache writes
+                kvc["global_end_index"].copy_(s_global)
+                kvc["local_end_index"].copy_(s_local)
+                kwargs["_skip_kv_write"] = True
+                return module(*inputs, **kwargs)
+            return custom_forward
+
         for i, block in enumerate(self.model.blocks):
+            this_kv_cache = kv_cache[i] if (self.is_causal and kv_cache is not None) else None
+
             ## Only Wan DiT
             if i < len(self.model.blocks) - self.num_da3_blocks:
-                if torch.is_grad_enabled() and self.model.use_gradient_checkpointing_offload:
-                    if self.is_causal and kv_cache is not None:
-                        kwargs.update(
-                            {
-                                "kv_cache": kv_cache[i],
-                                "current_start": current_start,
-                            }
-                        )
-                    with torch.autograd.graph.save_on_cpu():
+                if torch.is_grad_enabled() and (self.model.use_gradient_checkpointing_offload or self.model.use_gradient_checkpointing):
+                    if this_kv_cache is not None:
+                        saved_global_end = this_kv_cache["global_end_index"].clone()
+                        saved_local_end = this_kv_cache["local_end_index"].clone()
+                        kwargs.update({
+                            "kv_cache": this_kv_cache,
+                            "current_start": current_start,
+                        })
+                        ckpt_fn = create_kv_restoring_forward(
+                            block, this_kv_cache, saved_global_end, saved_local_end)
+                    else:
+                        ckpt_fn = create_custom_forward(block)
+                    if self.model.use_gradient_checkpointing_offload:
+                        with torch.autograd.graph.save_on_cpu():
+                            x = torch.utils.checkpoint.checkpoint(
+                                ckpt_fn, x, **kwargs, use_reentrant=False)
+                    else:
                         x = torch.utils.checkpoint.checkpoint(
-                            create_custom_forward(block),
-                            x,
-                            **kwargs,
-                            use_reentrant=False,
-                        )
-                elif torch.is_grad_enabled() and self.model.use_gradient_checkpointing:
-                    if self.is_causal and kv_cache is not None:
-                        kwargs.update(
-                            {
-                                "kv_cache": kv_cache[i],
-                                "current_start": current_start,
-                            }
-                        )
-                    x = torch.utils.checkpoint.checkpoint(
-                        create_custom_forward(block),
-                        x,
-                        **kwargs,
-                        use_reentrant=False,
-                    )
+                            ckpt_fn, x, **kwargs, use_reentrant=False)
                 else:
-                    if self.is_causal and kv_cache is not None:
-                        kwargs.update(
-                            {
-                                "kv_cache": kv_cache[i],
-                                "crossattn_cache": crossattn_cache[i],
-                                "current_start": current_start,
-                            }
-                        )
+                    if this_kv_cache is not None:
+                        kwargs.update({
+                            "kv_cache": this_kv_cache,
+                            "crossattn_cache": crossattn_cache[i],
+                            "current_start": current_start,
+                        })
                     x = block(x, **kwargs)
 
             ## Wan DiT & DA3
             else:
                 ### Wan DiT
                 dit_x = dit_x if dit_x is not None else x
-                if torch.is_grad_enabled() and self.model.use_gradient_checkpointing_offload:
-                    if self.is_causal and kv_cache is not None:
-                        kwargs.update(
-                            {
-                                "kv_cache": kv_cache[i],
-                                "current_start": current_start,
-                            }
-                        )
-                    with torch.autograd.graph.save_on_cpu():
+                if torch.is_grad_enabled() and (self.model.use_gradient_checkpointing_offload or self.model.use_gradient_checkpointing):
+                    if this_kv_cache is not None:
+                        saved_global_end = this_kv_cache["global_end_index"].clone()
+                        saved_local_end = this_kv_cache["local_end_index"].clone()
+                        kwargs.update({
+                            "kv_cache": this_kv_cache,
+                            "current_start": current_start,
+                        })
+                        ckpt_fn = create_kv_restoring_forward(
+                            block, this_kv_cache, saved_global_end, saved_local_end)
+                    else:
+                        ckpt_fn = create_custom_forward(block)
+                    if self.model.use_gradient_checkpointing_offload:
+                        with torch.autograd.graph.save_on_cpu():
+                            dit_x = torch.utils.checkpoint.checkpoint(
+                                ckpt_fn, dit_x, **kwargs, use_reentrant=False)
+                    else:
                         dit_x = torch.utils.checkpoint.checkpoint(
-                            create_custom_forward(block),
-                            dit_x,
-                            **kwargs,
-                            use_reentrant=False,
-                        )
-                elif torch.is_grad_enabled() and self.model.use_gradient_checkpointing:
-                    if self.is_causal and kv_cache is not None:
-                        kwargs.update(
-                            {
-                                "kv_cache": kv_cache[i],
-                                "current_start": current_start,
-                            }
-                        )
-                    dit_x = torch.utils.checkpoint.checkpoint(
-                        create_custom_forward(block),
-                        dit_x,
-                        **kwargs,
-                        use_reentrant=False,
-                    )
+                            ckpt_fn, dit_x, **kwargs, use_reentrant=False)
                 else:
-                    if self.is_causal and kv_cache is not None:
-                        kwargs.update(
-                            {
-                                "kv_cache": kv_cache[i],
-                                "crossattn_cache": crossattn_cache[i],
-                                "current_start": current_start,
-                            }
-                        )
+                    if this_kv_cache is not None:
+                        kwargs.update({
+                            "kv_cache": this_kv_cache,
+                            "crossattn_cache": crossattn_cache[i],
+                            "current_start": current_start,
+                        })
                     dit_x = block(dit_x, **kwargs)
 
                 ### DA3
