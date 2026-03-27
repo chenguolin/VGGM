@@ -14,7 +14,7 @@ lr_scheduler:
 train:
   batch_size_per_gpu: 1
   gradient_accumulation_steps: 1
-  sharding_strategy: "hybrid_full"
+  sharding_strategy: "full"
   wrap_strategy: "transformer"
   mixed_precision: "bf16"
   epochs: 10
