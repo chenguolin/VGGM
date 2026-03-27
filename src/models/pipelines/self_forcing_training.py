@@ -482,6 +482,7 @@ class SelfForcingTrainingPipeline:
         num_heads = self.diffusion.model.num_heads
         head_dim = self.diffusion.model.dim // num_heads
 
+        # NOTE: `512` is hard-coded here, but we use `text_len` * `num_clips` for cross-attention cache actually
         crossattn_cache_pos = []
         for _ in range(num_blocks):
             crossattn_cache_pos.append({

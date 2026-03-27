@@ -837,6 +837,8 @@ class WanDiffusionDA3Wrapper(nn.Module):
             #
             clip_query_lens=clip_query_lens,
             clip_context_lens=clip_context_lens,
+            #
+            is_teacher_forcing=clean_x is not None,
         )
         if self.is_causal:
             kwargs.update(

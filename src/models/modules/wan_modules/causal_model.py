@@ -697,6 +697,8 @@ class CausalWanAttentionBlock(nn.Module):
         clip_query_lens=None,
         clip_context_lens=None,
         #
+        is_teacher_forcing=False,  # for correct clipwise cross-attention
+        #
         _skip_kv_write=False,  # for gradient checkpointing
     ):
         r"""
@@ -736,12 +738,29 @@ class CausalWanAttentionBlock(nn.Module):
             clip_query_lens=None,
             clip_context_lens=None,
         ):
-            x = x + self.cross_attn(
-                self.norm3(x), context, context_lens,
-                crossattn_cache=crossattn_cache,
-                clip_query_lens=clip_query_lens,
-                clip_context_lens=clip_context_lens,
-            )
+            if is_teacher_forcing:
+                half = x.shape[1] // 2
+                x_clean, x_noisy = x[:, :half], x[:, half:]
+                x_clean = x_clean + self.cross_attn(
+                    self.norm3(x_clean), context, context_lens,
+                    crossattn_cache=crossattn_cache,
+                    clip_query_lens=clip_query_lens,
+                    clip_context_lens=clip_context_lens,
+                )
+                x_noisy = x_noisy + self.cross_attn(
+                    self.norm3(x_noisy), context, context_lens,
+                    crossattn_cache=crossattn_cache,
+                    clip_query_lens=clip_query_lens,
+                    clip_context_lens=clip_context_lens,
+                )
+                x = torch.cat([x_clean, x_noisy], dim=1)
+            else:
+                x = x + self.cross_attn(
+                    self.norm3(x), context, context_lens,
+                    crossattn_cache=crossattn_cache,
+                    clip_query_lens=clip_query_lens,
+                    clip_context_lens=clip_context_lens,
+                )
             y = self.ffn(self.norm2(x) * (1 + e[4]) + e[3])
             # with torch.amp.autocast('cuda', dtype=torch.float32):
             x = x + y * e[5]
@@ -1439,8 +1458,6 @@ class CausalWanModel(ModelMixin, ConfigMixin):
             e0_clean = self.time_projection(e_clean).unflatten(1, (6, self.dim)).unflatten(0, (bt, seq_lens_clean.max()))
             # assert e_clean.dtype == torch.float32 and e0_clean.dtype == torch.float32
             e0 = torch.cat([e0_clean, e0], dim=1)
-            if clip_query_lens is not None:
-                clip_query_lens = torch.cat([clip_query_lens, clip_query_lens], dim=1)
 
         # Construct blockwise causal attn mask
         frame_seqlen = h * w // (self.patch_size[1] * self.patch_size[2])
@@ -1511,6 +1528,8 @@ class CausalWanModel(ModelMixin, ConfigMixin):
             #
             clip_query_lens=clip_query_lens,
             clip_context_lens=clip_context_lens,
+            #
+            is_teacher_forcing=clean_x is not None,
         )
 
         def create_custom_forward(module):
