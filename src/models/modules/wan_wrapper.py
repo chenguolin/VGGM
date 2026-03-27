@@ -312,6 +312,11 @@ class WanDiffusionWrapper(nn.Module):
                 assert clip_latent_lens.shape == (B_prompt, num_clips)
             clip_query_lens = clip_latent_lens * (h * w // 4)
 
+        # Adjust `clip_query_lens` for per-chunk causal inference
+        if kv_cache is not None and clip_query_lens is not None:
+            chunk_query_len = f * (h * w // 4)
+            clip_query_lens = _adjust_clip_lens_for_chunk(clip_query_lens, current_start, chunk_query_len)
+
         if timesteps.dim() == 1:
             timesteps = timesteps.unsqueeze(1).repeat(1, f)  # (B, f)
         timesteps = timesteps[:, :, None, None].repeat(1, 1, h//2, w//2).flatten(1)  # (B, f*hh*ww); `//2`: hard-coded for patch embeddig
@@ -676,6 +681,11 @@ class WanDiffusionDA3Wrapper(nn.Module):
                 clip_latent_lens = clip_latent_lens.to(device=noisy_latents.device, dtype=torch.long)
                 assert clip_latent_lens.shape == (B_prompt, num_clips)
             clip_query_lens = clip_latent_lens * (h * w // 4)
+
+        # Adjust `clip_query_lens` for per-chunk causal inference
+        if kv_cache is not None and clip_query_lens is not None:
+            chunk_query_len = f * (h * w // 4)
+            clip_query_lens = _adjust_clip_lens_for_chunk(clip_query_lens, current_start, chunk_query_len)
 
         # (Optional) Plucker embedding
         if self.input_plucker:
@@ -1204,3 +1214,21 @@ class InteractiveModule(nn.Module):
             o2 = rearrange(o2, "b d h w -> b (h w) d")
 
         return o1, o2
+
+
+def _adjust_clip_lens_for_chunk(
+    clip_query_lens: Tensor,
+    current_start: int,
+    chunk_query_len: int,
+) -> Tensor:
+    """Adjust `clip_query_lens` for per-chunk causal inference so that only the
+    active clip carries the chunk's token count and all other clips are zeroed out.
+    This lets `_clipwise_attention` skip inactive clips (empty slice → no-op) while
+    still advancing `k_start` past their text tokens."""
+    cumsum = clip_query_lens.cumsum(dim=1)
+    clip_idx = (cumsum <= current_start).sum(dim=1)
+    new_clip_query_lens = torch.zeros_like(clip_query_lens)
+    for b in range(clip_query_lens.shape[0]):
+        new_clip_query_lens[b, clip_idx[b]] = chunk_query_len
+    return new_clip_query_lens
+
