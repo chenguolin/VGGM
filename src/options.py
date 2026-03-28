@@ -176,7 +176,7 @@ class Options:
     context_noise: int = 0
     same_step_across_chunks: bool = True
         ## Teacher-forcing
-    use_teacher_forcing: bool = False
+    use_teacher_forcing: bool = True
         ## Noise scheduler
     num_train_timesteps: int = 1000
     num_inference_steps: int = 25
@@ -364,7 +364,7 @@ opt_dict["wan2.1_t2v_1.3b_causal"] = Options(
     # no_noise_for_da3=True,
     #
     is_causal=True,
-    use_teacher_forcing=True,  # False
+    use_teacher_forcing=True,
     #
     sink_size=3,
     chunk_size=3,
@@ -418,7 +418,7 @@ opt_dict["wan2.1_t2v_1.3b_dmd"] = Options(
     # no_noise_for_da3=False,
     #
     is_causal=True,
-    use_teacher_forcing=False,
+    use_teacher_forcing=True,
     #
     sink_size=3,
     chunk_size=3,

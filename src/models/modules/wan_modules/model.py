@@ -361,6 +361,8 @@ class WanT2VCrossAttention(WanSelfAttention):
         clip_query_lens: Tensor,
         clip_context_lens: Tensor,
     ) -> Tensor:
+        assert clip_query_lens.shape == clip_context_lens.shape
+
         out = q.new_zeros(q.shape)
         B = q.shape[0]
         for b_idx in range(B):
@@ -387,6 +389,8 @@ class WanT2VCrossAttention(WanSelfAttention):
         clip_query_lens: Tensor,
         clip_context_lens: Tensor,
     ) -> Tensor:
+        assert clip_query_lens.shape == clip_context_lens.shape
+
         out = q.new_zeros(q.shape)
         B, q_local_len = q.shape[0], q.shape[1]
         sp_rank = get_sp_rank()
