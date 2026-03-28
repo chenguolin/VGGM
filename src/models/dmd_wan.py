@@ -510,6 +510,8 @@ class DMD_Wan(Wan):
             C2W=C2W, fxfycxcy=fxfycxcy,  # for DA3
             extra_condition=input_extra_condition,
             #
+            clean_x=clean_latents if self.opt.use_teacher_forcing else None,
+            #
             clip_latent_lens=clip_latent_lens,  # for multi-clip generation
             #
             ddt_index=1 if self.opt.ddt_diffusion_loss else 0,  # first or second DDT head for diffusion loss
@@ -642,6 +644,8 @@ class DMD_Wan(Wan):
                 prompt_embeds,
                 plucker=plucker,
                 #
+                clean_x=pred_x0 if self.opt.teacher_use_teacher_forcing else None,
+                #
                 clip_latent_lens=clip_latent_lens,  # for multi-clip generation
                 #
                 ddt_index=-1,  # last DDT head as fake score
@@ -652,6 +656,8 @@ class DMD_Wan(Wan):
                 timesteps,
                 prompt_embeds,
                 plucker=plucker,
+                #
+                clean_x=pred_x0 if self.opt.teacher_use_teacher_forcing else None,
                 #
                 clip_latent_lens=clip_latent_lens,  # for multi-clip generation
             )
@@ -844,6 +850,8 @@ class DMD_Wan(Wan):
                 prompt_embeds,
                 plucker=plucker,
                 #
+                clean_x=pred_x0 if self.opt.teacher_use_teacher_forcing else None,
+                #
                 clip_latent_lens=clip_latent_lens,  # for multi-clip generation
                 #
                 ddt_index=-1,  # last DDT head as fake score
@@ -854,6 +862,8 @@ class DMD_Wan(Wan):
                 timesteps,
                 prompt_embeds,
                 plucker=plucker,
+                #
+                clean_x=pred_x0 if self.opt.teacher_use_teacher_forcing else None,
                 #
                 clip_latent_lens=clip_latent_lens,  # for multi-clip generation
             )
@@ -866,6 +876,8 @@ class DMD_Wan(Wan):
                     negative_prompt_embeds,
                     plucker=plucker,
                     #
+                    clean_x=pred_x0 if self.opt.teacher_use_teacher_forcing else None,
+                    #
                     clip_latent_lens=clip_latent_lens,  # for multi-clip generation
                     #
                     ddt_index=-1,  # last DDT head as fake score
@@ -876,6 +888,8 @@ class DMD_Wan(Wan):
                     timesteps,
                     negative_prompt_embeds,
                     plucker=plucker,
+                    #
+                    clean_x=pred_x0 if self.opt.teacher_use_teacher_forcing else None,
                     #
                     clip_latent_lens=clip_latent_lens,  # for multi-clip generation
                 )
@@ -894,6 +908,8 @@ class DMD_Wan(Wan):
             prompt_embeds,
             plucker=plucker,
             #
+            clean_x=pred_x0 if self.opt.teacher_use_teacher_forcing else None,
+            #
             clip_latent_lens=clip_latent_lens,  # for multi-clip generation
         )
         if self.opt.real_guidance_scale != 1.:
@@ -902,6 +918,8 @@ class DMD_Wan(Wan):
                 timesteps,
                 negative_prompt_embeds,
                 plucker=plucker,
+                #
+                clean_x=pred_x0 if self.opt.teacher_use_teacher_forcing else None,
                 #
                 clip_latent_lens=clip_latent_lens,  # for multi-clip generation
             )
@@ -1096,6 +1114,8 @@ class DMD_Wan(Wan):
                 plucker=plucker,
                 C2W=C2W, fxfycxcy=fxfycxcy,  # for DA3
                 extra_condition=input_extra_condition,
+                #
+                clean_x=clean_latents if self.opt.use_teacher_forcing else None,
                 #
                 clip_latent_lens=clip_latent_lens,  # for multi-clip generation
                 ddt_index=0,  # the first DDT head

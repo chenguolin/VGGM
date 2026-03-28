@@ -158,6 +158,7 @@ class Options:
     fake_path: Optional[str] = None
     fake_lora_path: Optional[str] = None
     is_teacher_causal: bool = False
+    teacher_use_teacher_forcing: bool = False
     teacher_input_plucker: bool = False
     teacher_input_pcrender: bool = False
     teacher_first_latent_cond: bool = False
@@ -435,6 +436,7 @@ opt_dict["wan2.1_t2v_1.3b_dmd"] = Options(
     fake_path=f"{ROOT}/projects/VGGM/.pth",
     #
     is_teacher_causal=False,
+    teacher_use_teacher_forcing=False,
     teacher_input_plucker=True,
     teacher_first_latent_cond=False,
     #
@@ -483,6 +485,7 @@ opt_dict["sf_rep"] = Options(
     real_wan_dir=f"{ROOT}/.cache/huggingface/hub/Wan-AI/Wan2.1-T2V-14B",
     teacher_path=None,
     is_teacher_causal=False,
+    teacher_use_teacher_forcing=False,
     #
     use_dmd=True,
     self_forcing_prob=1.,
