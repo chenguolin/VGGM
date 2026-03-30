@@ -237,7 +237,7 @@ def main():
         else:
             train_dataset = RealcamvidDataset(opt, training=True)
     # SP-aware sampling: ranks in the same SP group should get the same samples
-    train_sampler = DistributedSampler(train_dataset, num_replicas=dp_size, rank=dp_rank, shuffle=True, drop_last=True)
+    train_sampler = DistributedSampler(train_dataset, num_replicas=dp_size, rank=dp_rank, shuffle=True, seed=args.seed, drop_last=True)
     train_loader = DataLoader(
         train_dataset,
         batch_size=configs["train"]["batch_size_per_gpu"],
@@ -256,7 +256,7 @@ def main():
             val_dataset = InternalDataset(opt, training=False)
         else:
             val_dataset = RealcamvidDataset(opt, training=False)
-    val_sampler = DistributedSampler(val_dataset, num_replicas=dp_size, rank=dp_rank, shuffle=True, drop_last=False)
+    val_sampler = DistributedSampler(val_dataset, num_replicas=dp_size, rank=dp_rank, shuffle=True, seed=args.seed, drop_last=False)
     val_loader = DataLoader(
         val_dataset,
         batch_size=configs["val"]["batch_size_per_gpu"],

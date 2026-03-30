@@ -103,7 +103,7 @@ class InternalDataset(BaseDataset):
             ## Dynamic `num_clips` for `version_action`: randomly pick a start segment, then
             ## greedily extend until duration falls in [min_duration, max_duration].
             target_frames_per_clip = self.opt.num_input_frames - 1
-            min_duration, max_duration = target_frames_per_clip / 32., target_frames_per_clip / 12.  # TODO: make `32` / `12` configurable
+            min_duration, max_duration = target_frames_per_clip / 32., target_frames_per_clip / 16.  # TODO: make `32` / `16` configurable
             n_segs = len(segments)
             ## Build valid (start, num_clips) pairs
             valid_pairs = []  # (start_idx, num_clips)
