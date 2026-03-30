@@ -136,7 +136,7 @@ class Options:
         ## TTT
     use_ttt: bool = False
     ttt_layers: Optional[str] = None  # e.g. "0,2,4,6,8"; None means all layers when `use_ttt=True`
-    ttt_num_fw_heads: int = 4
+    ttt_num_fw_heads: int = 8
     ttt_fw_head_dim: Optional[int] = None  # None = same as attention `head_dim`
     ttt_chunk_size: Optional[int] = None  # None = `frame_seqlen * chunk_size`
     ttt_w0_w2_low_rank: int = 32
@@ -148,10 +148,10 @@ class Options:
         ## GatedDeltaNet
     use_gdn: bool = False
     gdn_layers: Optional[str] = None  # e.g. "0,2,4,6,8"; None means all layers when `use_gdn=True`
-    gdn_num_heads: int = 4
+    gdn_num_heads: int = 8
     gdn_head_qk_dim: Optional[int] = None  # None = same as attention `head_dim`
     gdn_head_v_dim: Optional[int] = None   # None = same as `gdn_head_qk_dim`
-    gdn_causal_mode: str = 'bidirectional'  # 'bidirectional' or 'causal'
+    gdn_causal_mode: Literal["bidirectional", "causal"] = "bidirectional"
     gdn_chunk_size: Optional[int] = None  # None = `frame_seqlen * chunk_size`
     gdn_use_conv: bool = False
     gdn_conv_kernel: int = 3
