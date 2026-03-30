@@ -356,7 +356,7 @@ opt_dict["wan2.1_t2v_1.3b"] = Options(
     use_gdn=False,  # True
     #
     input_plucker=True,
-    exclude_name_lr_mult="ttt_branch,plucker_embed,extra_condition_embed",
+    exclude_name_lr_mult="gdn_branch,ttt_branch,plucker_embed,extra_condition_embed",
     #
     # load_conf=True,
     # input_pcrender=True,
@@ -390,7 +390,7 @@ opt_dict["wan2.1_t2v_1.3b_causal"] = Options(
     generator_path=f"{ROOT}/projects/VGGM/.pth",
     #
     input_plucker=True,
-    exclude_name_lr_mult="ttt_branch,plucker_embed,extra_condition_embed,da3_adapter",
+    exclude_name_lr_mult="gdn_branch,ttt_branch,plucker_embed,extra_condition_embed,da3_adapter",
     #
     # num_input_frames=201,
     # num_input_frames_test=201,
