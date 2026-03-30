@@ -163,6 +163,8 @@ class WanDiffusionWrapper(nn.Module):
         gdn_layers: Optional[list] = None,
         gdn_config: Optional[dict] = None,
         #
+        attn_gate_layers: Optional[list] = None,
+        #
         skip_pretrained_weights: bool = False,
         #
         **kwargs,  # for compatibility
@@ -195,6 +197,8 @@ class WanDiffusionWrapper(nn.Module):
             self.model.inject_ttt(ttt_layers=ttt_layers, ttt_config=ttt_config)
             # Inject GDN branches (same pattern as TTT)
             self.model.inject_gdn(gdn_layers=gdn_layers, gdn_config=gdn_config)
+            # Inject attention gates for progressive SWA → GDN/TTT transition
+            self.model.inject_attn_gate(attn_gate_layers=attn_gate_layers)
         else:
             if skip_pretrained_weights:
                 # Skip loading pretrained weights — instantiate architecture only

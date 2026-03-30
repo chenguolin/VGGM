@@ -155,6 +155,8 @@ class Options:
     gdn_chunk_size: Optional[int] = None  # None = `frame_seqlen * chunk_size`
     gdn_use_conv: bool = False
     gdn_conv_kernel: int = 3
+        ## Attention gate (for progressive GDN/TTT-only transition)
+    attn_gate_layers: Optional[str] = None  # e.g. "0,2,4,6,8"; layers where attention output gets a learnable gate (init 1.)
         ## Load pre-trained models
     generator_path: Optional[str] = None
     lora_path: Optional[str] = None
@@ -312,6 +314,12 @@ class Options:
                 self.gdn_layers_list = None  # will be resolved after model is loaded
         else:
             self.gdn_layers_list = None
+
+        # Attention gate
+        if self.attn_gate_layers is not None:
+            self.attn_gate_layers_list = [int(x) for x in self.attn_gate_layers.split(",")]
+        else:
+            self.attn_gate_layers_list = None
 
 
 # Set all options for different tasks and models

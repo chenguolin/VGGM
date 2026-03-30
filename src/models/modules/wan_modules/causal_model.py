@@ -223,6 +223,16 @@ class CausalWanSelfAttention(nn.Module):
             self.gdn_branch = GDNBranch(
                 dim=dim, num_heads=num_heads, **gdn_config)
 
+        # (Optional) Attention gate for progressive SWA -> GDN/TTT transition.
+        # Learnable scalar that scales attention output; init to 1. (identity).
+        # When trained toward 0., attention is effectively removed for this layer.
+        self.use_attn_gate = False  # set to True via `inject_attn_gate()`
+
+    def enable_attn_gate(self):
+        """Enable a learnable gate on attention output (init 1.)."""
+        self.use_attn_gate = True
+        self.attn_gate = nn.Parameter(torch.ones(1))
+
     def _loop_attention(self, q, k, v, loop_attn_params):
         """Dispatch to diffusion forcing or teacher forcing loop attention."""
         if loop_attn_params["is_teacher_forcing"]:
@@ -622,6 +632,8 @@ class CausalWanSelfAttention(nn.Module):
 
         # output
         x = x.flatten(2)
+        if self.use_attn_gate:
+            x = self.attn_gate * x
         if self.use_ttt:
             x = x + ttt_output
         if self.use_gdn:
@@ -1742,3 +1754,21 @@ class CausalWanModel(ModelMixin, ConfigMixin):
             sa.use_gdn = True
             sa.gdn_branch = GDNBranch(
                 dim=sa.dim, num_heads=sa.num_heads, **gdn_config)
+
+    def inject_attn_gate(self, attn_gate_layers=None):
+        """
+        Inject learnable attention gates into specified layers AFTER pretrained
+        weights have been loaded. Each gate is a scalar parameter initialized
+        to 1. that multiplies the attention output before adding TTT/GDN output.
+
+        Used for progressive SWA -> GDN/TTT transition: train the gate toward 0
+        to let GDN/TTT take over, then remove attention computation entirely.
+
+        Args:
+            attn_gate_layers: List of layer indices. If None, no injection.
+        """
+        if attn_gate_layers is None:
+            return
+
+        for i in attn_gate_layers:
+            self.blocks[i].self_attn.enable_attn_gate()

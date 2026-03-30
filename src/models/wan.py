@@ -171,6 +171,8 @@ class Wan(nn.Module):
                 gdn_layers=gdn_layers,
                 gdn_config=gdn_config,
                 #
+                attn_gate_layers=opt.attn_gate_layers_list,
+                #
                 skip_pretrained_weights=opt.generator_path is not None,
             )
         else:
