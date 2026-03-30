@@ -2,20 +2,18 @@
 # Two modes:
 #   - "bidirectional": chunk-internal bidirectional + chunk-external causal
 #     (matches DiT causality; pure matmul, no Triton kernels)
-#   - "causal": token-level strict causal via existing Triton kernels from
-#     extensions/GatedDeltaNet/
+#   - "causal": token-level strict causal via existing Triton kernels in `gated_delta_rule_ops`
 
 from typing import *
 from torch import Tensor
 
-import os
-import sys
 import math
-
 import torch
 from torch import nn
 import torch.nn.functional as tF
 
+from .ttt import ShortConv3d
+from .gated_delta_rule_ops import chunk_gated_delta_rule
 from src.utils.distributed import get_sp_rank, get_sp_world_size, all_to_all
 
 
@@ -245,15 +243,6 @@ def _bidirectional_teacher_forcing(
 # Causal mode: load Triton kernels from extensions/GatedDeltaNet
 # ============================================================================
 
-def _get_causal_kernel():
-    """Lazy-import the Triton kernel from extensions/GatedDeltaNet."""
-    ext_path = os.path.join(
-        os.path.dirname(__file__), "../../../../extensions/GatedDeltaNet/lit_gpt")
-    if ext_path not in sys.path:
-        sys.path.insert(0, ext_path)
-    from gated_delta_rule_ops import chunk_gated_delta_rule
-    return chunk_gated_delta_rule
-
 
 def _causal_teacher_forcing(
     q: Tensor,
@@ -275,8 +264,6 @@ def _causal_teacher_forcing(
     (token-level causal within chunk + state update), noisy chunks do
     read-only `q @ state`.
     """
-    chunk_gated_delta_rule = _get_causal_kernel()
-
     B, H = q.shape[:2]
     D_k = q.shape[-1]
     D_v = v.shape[-1]
@@ -371,6 +358,9 @@ class GDNBranch(nn.Module):
         head_v_dim: Optional[int] = None,
         causal_mode: str = "bidirectional",
         chunk_size: int = 4680,  # default: `frame_seqlen * chunk_size`
+        #
+        use_conv: bool = False,
+        conv_kernel_size: int = 3,
     ):
         super().__init__()
 
@@ -382,6 +372,11 @@ class GDNBranch(nn.Module):
         self.head_v_dim = head_v_dim if head_v_dim is not None else self.head_qk_dim
         self.causal_mode = causal_mode
         self.chunk_size = chunk_size
+
+        # (Optional) Short convolution for spatial-temporal mixing before recurrence
+        self.use_conv = use_conv
+        if use_conv:
+            self.short_conv = ShortConv3d(self.head_qk_dim, self.head_v_dim, conv_kernel_size)
 
         assert causal_mode in ("bidirectional", "causal"), \
             f"Unknown `causal_mode`: {causal_mode}"
@@ -517,6 +512,8 @@ class GDNBranch(nn.Module):
         gdn_state: Optional[dict] = None,
         #
         teacher_forcing_clean_len: Optional[int] = None,
+        #
+        grid_sizes: Optional[tuple] = None,
     ):
         """
         Forward pass of the GDN branch.
@@ -571,6 +568,10 @@ class GDNBranch(nn.Module):
             gdn_k = l2_norm(k_gdn.permute(0, 2, 1, 3))
             gdn_v = v_gdn.permute(0, 2, 1, 3)
 
+            # (Optional) Short convolution for spatial-temporal mixing before recurrence
+            if self.use_conv:
+                gdn_q, gdn_k, gdn_v = self.short_conv(gdn_q, gdn_k, gdn_v, *grid_sizes)
+
             # Gates: compute on local shard, then all-to-all
             gk_full = self.gk_proj(hidden_states).float()  # [B, L_local, num_gdn_heads]
             gk_full = -self.A_log.float().exp() * tF.softplus(gk_full + self.dt_bias)
@@ -586,6 +587,11 @@ class GDNBranch(nn.Module):
             active_heads = local_gdn_heads
         else:
             gdn_q, gdn_k, gdn_v = self._prepare_qkv(q, k, v)
+
+            # (Optional) Short convolution for spatial-temporal mixing before recurrence
+            if self.use_conv:
+                gdn_q, gdn_k, gdn_v = self.short_conv(gdn_q, gdn_k, gdn_v, *grid_sizes)
+
             gk, beta = self._compute_gates(hidden_states)
             L = L_local
             active_heads = self.num_gdn_heads
@@ -623,7 +629,6 @@ class GDNBranch(nn.Module):
                         output_final_state=False,
                     )
                 else:
-                    chunk_gated_delta_rule = _get_causal_kernel()
                     o, _ = chunk_gated_delta_rule(
                         gdn_q, gdn_k, gdn_v, beta, gk,
                         initial_state=initial_state,
@@ -641,7 +646,6 @@ class GDNBranch(nn.Module):
                     output_final_state=True,
                 )
             else:
-                chunk_gated_delta_rule = _get_causal_kernel()
                 o, new_state = chunk_gated_delta_rule(
                     gdn_q, gdn_k, gdn_v, beta, gk,
                     initial_state=recurrent_state,

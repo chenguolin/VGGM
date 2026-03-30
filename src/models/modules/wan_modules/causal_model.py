@@ -423,8 +423,10 @@ class CausalWanSelfAttention(nn.Module):
 
         # Save pre-RoPE Q/K/V for TTT / GDN before the KV-cache path may
         # all-to-all them into head-parallel layout
-        if self.use_ttt or self.use_gdn:
+        if self.use_ttt:
             ttt_q, ttt_k, ttt_v = q, k, v
+        if self.use_gdn:
+            gdn_q, gdn_k, gdn_v = q, k, v
 
         # No KV cache
         if kv_cache is None:
@@ -582,6 +584,14 @@ class CausalWanSelfAttention(nn.Module):
         # (Optional) TTT branch (parallel with attention, uses pre-RoPE Q/K/V)
         # Always uses the original seq-parallel Q/K/V saved above; TTT handles
         # its own Ulysses-style all-to-all internally when `sp_size > 1`.
+
+        # Compute grid sizes for short conv (latent patch dims)
+        conv_grid = None
+        if (self.use_ttt and self.ttt_branch.use_conv) or \
+           (self.use_gdn and self.gdn_branch.use_conv):
+            _gs = grid_sizes[0]  # assume uniform batch
+            conv_grid = (_gs[0].item(), _gs[1].item(), _gs[2].item())
+
         if self.use_ttt:
             # Detect teacher forcing: sequence has [clean, noisy] layout
             tf_clean_len = None
@@ -591,9 +601,13 @@ class CausalWanSelfAttention(nn.Module):
             # `ttt_state` is mutated in-place (like KV-cache)
             ttt_output = self.ttt_branch(
                 ttt_q, ttt_k, ttt_v, hidden_states, ttt_state=ttt_state,
-                teacher_forcing_clean_len=tf_clean_len)
+                teacher_forcing_clean_len=tf_clean_len,
+                grid_sizes=conv_grid,
+            )
 
         # (Optional) GDN branch (parallel with attention, uses pre-RoPE Q/K/V)
+        # Always uses the original seq-parallel Q/K/V saved above; GDN handles
+        # its own Ulysses-style all-to-all internally when `sp_size > 1`.
         if self.use_gdn:
             tf_clean_len = None
             if kv_cache is None and (s == seq_lens[0].item() * 2 // sp_size):
@@ -601,8 +615,10 @@ class CausalWanSelfAttention(nn.Module):
 
             # `gdn_state` is mutated in-place (like KV-cache)
             gdn_output = self.gdn_branch(
-                ttt_q, ttt_k, ttt_v, hidden_states, gdn_state=gdn_state,
-                teacher_forcing_clean_len=tf_clean_len)
+                gdn_q, gdn_k, gdn_v, hidden_states, gdn_state=gdn_state,
+                teacher_forcing_clean_len=tf_clean_len,
+                grid_sizes=conv_grid,
+            )
 
         # output
         x = x.flatten(2)

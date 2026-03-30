@@ -143,6 +143,8 @@ class Options:
     ttt_use_muon: bool = True
     ttt_use_momentum: bool = True
     ttt_prenorm: bool = True
+    ttt_use_conv: bool = False
+    ttt_conv_kernel: int = 3
         ## GatedDeltaNet
     use_gdn: bool = False
     gdn_layers: Optional[str] = None  # e.g. "0,2,4,6,8"; None means all layers when `use_gdn=True`
@@ -151,6 +153,8 @@ class Options:
     gdn_head_v_dim: Optional[int] = None   # None = same as `gdn_head_qk_dim`
     gdn_causal_mode: str = 'bidirectional'  # 'bidirectional' or 'causal'
     gdn_chunk_size: Optional[int] = None  # None = `frame_seqlen * chunk_size`
+    gdn_use_conv: bool = False
+    gdn_conv_kernel: int = 3
         ## Load pre-trained models
     generator_path: Optional[str] = None
     lora_path: Optional[str] = None

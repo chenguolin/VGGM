@@ -111,6 +111,8 @@ class Wan(nn.Module):
                 use_muon=opt.ttt_use_muon,
                 use_momentum=opt.ttt_use_momentum,
                 prenorm=opt.ttt_prenorm,
+                use_conv=opt.ttt_use_conv,
+                conv_kernel_size=opt.ttt_conv_kernel,
             )
         else:
             ttt_layers = None
@@ -128,6 +130,8 @@ class Wan(nn.Module):
                 head_v_dim=opt.gdn_head_v_dim,
                 causal_mode=opt.gdn_causal_mode,
                 chunk_size=opt.gdn_chunk_size,
+                use_conv=opt.gdn_use_conv,
+                conv_kernel_size=opt.gdn_conv_kernel,
             )
         else:
             gdn_layers = None

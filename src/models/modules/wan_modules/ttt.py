@@ -19,6 +19,63 @@ from src.utils.distributed import get_sp_rank, get_sp_world_size, all_to_all
 _ttt_compile = (lambda fn: fn) if os.environ.get("TTT_NO_COMPILE") else torch.compile()
 
 
+class ShortConv3d(nn.Module):
+    """
+    Depthwise 3D short convolution for spatial-temporal token mixing.
+    Applied separately to Q, K, V before recurrence.
+
+    Adapted from Spatial-TTT (`causal_swa_lact.py`):
+    - Conv3d with depthwise groups, replicate padding, no bias
+    - Dirac initialization (identity at init)
+    - No activation after conv
+
+    Differences from Spatial-TTT:
+    - No `video_mask` (VGGM sequences are all video tokens)
+    - Configurable kernel size (Spatial-TTT hard-codes 3)
+    - Accepts `[B, H, L, D]` tensor layout (Spatial-TTT uses `[N, C]` flat layout)
+    """
+    def __init__(self, qk_dim: int, v_dim: int, kernel_size: int = 3):
+        super().__init__()
+        pad = kernel_size // 2
+        self.conv_q = nn.Conv3d(qk_dim, qk_dim, kernel_size, padding=pad,
+                                groups=qk_dim, padding_mode="replicate", bias=False)
+        self.conv_k = nn.Conv3d(qk_dim, qk_dim, kernel_size, padding=pad,
+                                groups=qk_dim, padding_mode="replicate", bias=False)
+        self.conv_v = nn.Conv3d(v_dim, v_dim, kernel_size, padding=pad,
+                                groups=v_dim, padding_mode="replicate", bias=False)
+        nn.init.dirac_(self.conv_q.weight, groups=qk_dim)
+        nn.init.dirac_(self.conv_k.weight, groups=qk_dim)
+        nn.init.dirac_(self.conv_v.weight, groups=v_dim)
+
+    def _apply_conv(self, x: Tensor, conv: nn.Conv3d, t: int, h: int, w: int):
+        """
+        Args:
+            x: [B, H, L, D] where L = t * h * w, D = conv channel dim
+        Returns:
+            x: [B, H, L, D] after Conv3d
+        """
+        B, H, L, D = x.shape
+        # [B, H, L, D] -> [B*H, D, t, h, w]
+        x = x.reshape(B * H, t, h, w, D).permute(0, 4, 1, 2, 3)
+        x = conv(x)
+        # [B*H, D, t, h, w] -> [B, H, L, D]
+        x = x.permute(0, 2, 3, 4, 1).reshape(B, H, L, D)
+        return x
+
+    def forward(self, q: Tensor, k: Tensor, v: Tensor, t: int, h: int, w: int):
+        """
+        Args:
+            q, k: [B, H, L, qk_dim]
+            v: [B, H, L, v_dim]
+            t, h, w: spatial-temporal grid sizes (L = t * h * w)
+        Returns:
+            q, k, v after depthwise Conv3d
+        """
+        return (self._apply_conv(q, self.conv_q, t, h, w),
+                self._apply_conv(k, self.conv_k, t, h, w),
+                self._apply_conv(v, self.conv_v, t, h, w))
+
+
 def inv_softplus(x: float) -> float:
     return math.log(math.exp(x) - 1.)
 
@@ -729,6 +786,9 @@ class TTTBranch(nn.Module):
         use_momentum: bool = True,
         prenorm: bool = True,
         fp32_states: bool = True,
+        #
+        use_conv: bool = False,
+        conv_kernel_size: int = 3,
     ):
         super().__init__()
 
@@ -743,6 +803,14 @@ class TTTBranch(nn.Module):
         self.use_momentum = use_momentum
         self.prenorm = prenorm
         self.fp32_states = fp32_states
+
+        # (Optional) Short convolution for spatial-temporal mixing before recurrence
+        self.use_conv = use_conv
+        if use_conv:
+            self.short_conv = ShortConv3d(
+                fw_head_dim if fw_head_dim is not None else dim // num_heads,
+                fw_head_dim if fw_head_dim is not None else dim // num_heads,
+                conv_kernel_size)
 
         # Dimension of TTT Q/K/V slice from the full Q/K/V
         self.ttt_dim = num_fw_heads * self.fw_head_dim
@@ -892,6 +960,8 @@ class TTTBranch(nn.Module):
         ttt_state: Optional[dict] = None,
         #
         teacher_forcing_clean_len: Optional[int] = None,
+        #
+        grid_sizes: Optional[tuple] = None,
     ):
         """
         Forward pass of the TTT branch.
@@ -950,6 +1020,17 @@ class TTTBranch(nn.Module):
             fast_q = l2_norm(fast_q)
             fast_k = l2_norm(fast_k)
 
+            # (Optional) Short convolution for spatial-temporal mixing before recurrence
+            if self.use_conv:
+                # [B*local_fw_heads, L, D] -> [B, local_fw_heads, L, D]
+                fast_q = fast_q.view(B, local_fw_heads, L, self.fw_head_dim)
+                fast_k = fast_k.view(B, local_fw_heads, L, self.fw_head_dim)
+                fast_v = fast_v.view(B, local_fw_heads, L, self.fw_head_dim)
+                fast_q, fast_k, fast_v = self.short_conv(fast_q, fast_k, fast_v, *grid_sizes)
+                fast_q = fast_q.reshape(B * local_fw_heads, L, self.fw_head_dim)
+                fast_k = fast_k.reshape(B * local_fw_heads, L, self.fw_head_dim)
+                fast_v = fast_v.reshape(B * local_fw_heads, L, self.fw_head_dim)
+
             # lr: compute on local shard, then all-to-all
             lr = self.lr_proj(hidden_states)  # [B, L_local, 3*num_fw_heads]
             lr = lr.view(B, L_local, self.num_fw_heads, 3)
@@ -973,6 +1054,18 @@ class TTTBranch(nn.Module):
             head_slice = slice(sp_rank * local_fw_heads, (sp_rank + 1) * local_fw_heads)
         else:
             fast_q, fast_k, fast_v = self._prepare_qkv(q, k, v)
+
+            # (Optional) Short convolution for spatial-temporal mixing before recurrence
+            if self.use_conv:
+                # [B*num_fw_heads, L, D] -> [B, num_fw_heads, L, D]
+                fast_q = fast_q.view(B, self.num_fw_heads, L_local, self.fw_head_dim)
+                fast_k = fast_k.view(B, self.num_fw_heads, L_local, self.fw_head_dim)
+                fast_v = fast_v.view(B, self.num_fw_heads, L_local, self.fw_head_dim)
+                fast_q, fast_k, fast_v = self.short_conv(fast_q, fast_k, fast_v, *grid_sizes)
+                fast_q = fast_q.reshape(B * self.num_fw_heads, L_local, self.fw_head_dim)
+                fast_k = fast_k.reshape(B * self.num_fw_heads, L_local, self.fw_head_dim)
+                fast_v = fast_v.reshape(B * self.num_fw_heads, L_local, self.fw_head_dim)
+
             lr0, lr1, lr2, momentum = self._compute_lr_and_momentum(hidden_states)
             L = L_local
             active_fw_heads = self.num_fw_heads
