@@ -353,6 +353,8 @@ opt_dict["wan2.1_t2v_1.3b"] = Options(
     #
     use_ttt=False,  # True
     #
+    use_gdn=False,  # True
+    #
     input_plucker=True,
     exclude_name_lr_mult="ttt_branch,plucker_embed,extra_condition_embed",
     #
