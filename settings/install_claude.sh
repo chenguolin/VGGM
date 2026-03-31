@@ -10,3 +10,5 @@ source ~/.bashrc
 nvm install 20
 nvm alias default 20
 npm install -g --registry=https://mirrors.tencent.com/npm @tencent/claude-code-internal
+npm install -g --registry=https://mirrors.tencent.com/npm @tencent/codex-internal
+npm install -g --registry=https://mirrors.tencent.com/npm @tencent/gemini-cli-internal
