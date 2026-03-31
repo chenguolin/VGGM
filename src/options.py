@@ -333,6 +333,7 @@ opt_dict["wan2.1_t2v_1.3b"] = Options(
     use_internal_dataset=True,
     # version_2s35w=True,
     #
+    # num_input_frames=33,
     # input_res=(480, 832),
     #
     num_clips=1,
@@ -351,26 +352,6 @@ opt_dict["wan2.1_t2v_1.3b"] = Options(
     rope_outside=True,
     use_flexattn=True,  # False
     #
-    use_ttt=False,  # True
-    #
-    use_gdn=False,  # True
-    #
-    input_plucker=True,
-    exclude_name_lr_mult="gdn_branch,ttt_branch,plucker_embed,extra_condition_embed",
-    #
-    # load_conf=True,
-    # input_pcrender=True,
-)
-
-# Diffusion/Teacher Forcing
-opt_dict["wan2.1_t2v_1.3b_causal"] = Options(
-    # use_internal_dataset=True,
-    #
-    # input_res=(480, 832),
-    #
-    num_clips=1,
-    sp_size=1,
-    #
     load_da3=False,  # True
     da3_interactive=False,
     da3_weight_type="inverse_timestep",
@@ -378,22 +359,12 @@ opt_dict["wan2.1_t2v_1.3b_causal"] = Options(
     # only_train_da3=True,
     # no_noise_for_da3=True,
     #
-    is_causal=True,
-    use_teacher_forcing=True,
+    use_ttt=False,  # True
     #
-    sink_size=3,
-    chunk_size=3,
-    max_window_size=9,
-    rope_outside=True,
-    #
-    # wan_dir=f"{ROOT}/.cache/huggingface/hub/Wan-AI/Wan2.1-T2V-14B",
-    generator_path=f"{ROOT}/projects/VGGM/.pth",
+    use_gdn=False,  # True
     #
     input_plucker=True,
-    exclude_name_lr_mult="gdn_branch,ttt_branch,plucker_embed,extra_condition_embed,da3_adapter",
-    #
-    # num_input_frames=201,
-    # num_input_frames_test=201,
+    exclude_name_lr_mult="gdn_branch,ttt_branch,plucker_embed,extra_condition_embed",
     #
     # load_conf=True,
     # input_pcrender=True,
