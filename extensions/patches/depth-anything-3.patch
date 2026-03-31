@@ -96,35 +96,37 @@ index f9e5bd6..af41f91 100644
          # Set sky regions to maximum depth and high confidence
          output.depth, output.depth_conf = set_sky_regions_to_max_depth(
 diff --git a/src/depth_anything_3/model/dinov2/dinov2.py b/src/depth_anything_3/model/dinov2/dinov2.py
-index ee0d88b..c33a6ba 100644
+index ee0d88b..fa0d023 100644
 --- a/src/depth_anything_3/model/dinov2/dinov2.py
 +++ b/src/depth_anything_3/model/dinov2/dinov2.py
-@@ -28,6 +28,10 @@ class DinoV2(nn.Module):
+@@ -28,6 +28,11 @@ class DinoV2(nn.Module):
          qknorm_start: int = -1,
          rope_start: int = -1,
          cat_token: bool = True,
 +        #
 +        sink_size: int = 3,
 +        max_attention_size: int = ((288 // 16) * (512 // 16) + 1) * (3 + 9),
++        use_flexattn: bool = True,
 +        #
          **kwargs,
      ):
          super().__init__()
-@@ -54,6 +58,9 @@ class DinoV2(nn.Module):
+@@ -54,6 +59,10 @@ class DinoV2(nn.Module):
              qknorm_start=qknorm_start,
              rope_start=rope_start,
              cat_token=cat_token,
 +            #
 +            sink_size=sink_size,
 +            max_attention_size=max_attention_size,
++            use_flexattn=use_flexattn,
          )
  
      def forward(self, x, **kwargs):
 diff --git a/src/depth_anything_3/model/dinov2/layers/attention.py b/src/depth_anything_3/model/dinov2/layers/attention.py
-index 096b9d4..cb5cbcc 100644
+index 096b9d4..c4cfa17 100644
 --- a/src/depth_anything_3/model/dinov2/layers/attention.py
 +++ b/src/depth_anything_3/model/dinov2/layers/attention.py
-@@ -12,9 +12,68 @@ import logging
+@@ -12,6 +12,21 @@ import logging
  import torch.nn.functional as F
  from torch import Tensor, nn
  
@@ -132,88 +134,43 @@ index 096b9d4..cb5cbcc 100644
 +import torch
 +from torch.nn.attention.flex_attention import flex_attention
 +
-+import os, sys; sys.path.append(os.path.join(os.path.dirname(__file__), ".."))  # for src modules
-+from src.utils.distributed import get_sp_world_size, all_to_all
++# Lazy-compile `flex_attention` on first use so that sessions that never invoke
++# flex attention (e.g. non-causal inference) don't pay the compilation cost.
++_flex_attention_raw = flex_attention
++_flex_attention_compiled = None
 +
-+flex_attention = torch.compile(flex_attention)
++def _get_compiled_flex_attention():
++    global _flex_attention_compiled
++    if _flex_attention_compiled is None:
++        _flex_attention_compiled = torch.compile(_flex_attention_raw)
++    return _flex_attention_compiled
 +
  logger = logging.getLogger("dinov2")
  
  
-+# ============================================================================
-+# Sequence Parallelism Support
-+# ============================================================================
-+
-+def _distributed_attention(q: Tensor, k: Tensor, v: Tensor, dropout_p: float, attn_mask) -> Tensor:
-+    # Ulysses-style SP: scatter heads and gather sequence
-+    q = all_to_all(q, scatter_dim=1, gather_dim=2)  # (B, H//sp, N, D)
-+    k = all_to_all(k, scatter_dim=1, gather_dim=2)  # (B, H//sp, N, D)
-+    v = all_to_all(v, scatter_dim=1, gather_dim=2)  # (B, H//sp, N, D)
-+
-+    x = F.scaled_dot_product_attention(
-+        q,
-+        k,
-+        v,
-+        dropout_p=dropout_p,
-+        attn_mask=attn_mask,
-+    )
-+
-+    # Scatter sequence back and gather heads
-+    x = all_to_all(x, scatter_dim=2, gather_dim=1)  # (B, H, N//sp, D)
-+    return x
-+
-+
-+def _distributed_flex_attention(q: Tensor, k: Tensor, v: Tensor, block_mask) -> Tensor:
-+    # Ulysses-style SP: scatter heads and gather sequence
-+    q = all_to_all(q, scatter_dim=1, gather_dim=2)  # (B, H//sp, N, D)
-+    k = all_to_all(k, scatter_dim=1, gather_dim=2)  # (B, H//sp, N, D)
-+    v = all_to_all(v, scatter_dim=1, gather_dim=2)  # (B, H//sp, N, D)
-+
-+    # Padding for flexattention (`128`: block size for flexattention)
-+    padded_length = math.ceil(q.shape[2] / 128) * 128 - q.shape[2]
-+    if padded_length > 0:
-+        q = torch.cat([q, torch.zeros([q.shape[0], q.shape[1], padded_length, q.shape[3]], device=q.device, dtype=q.dtype)], dim=2)
-+        k = torch.cat([k, torch.zeros([k.shape[0], k.shape[1], padded_length, k.shape[3]], device=k.device, dtype=k.dtype)], dim=2)
-+        v = torch.cat([v, torch.zeros([v.shape[0], v.shape[1], padded_length, v.shape[3]], device=v.device, dtype=v.dtype)], dim=2)
-+
-+    x = flex_attention(
-+        q,
-+        k,
-+        v,
-+        block_mask=block_mask,
-+    )
-+    if padded_length > 0:
-+        x = x[:, :, :-padded_length, ...]
-+
-+    # Scatter sequence back and gather heads
-+    x = all_to_all(x, scatter_dim=2, gather_dim=1)  # (B, H, N//sp, D)
-+    return x
-+
-+
- class Attention(nn.Module):
-     def __init__(
-         self,
-@@ -28,6 +87,9 @@ class Attention(nn.Module):
+@@ -28,6 +43,10 @@ class Attention(nn.Module):
          qk_norm: bool = False,
          fused_attn: bool = True,  # use F.scaled_dot_product_attention or not
          rope=None,
 +        #
 +        sink_size: int = 0,
 +        max_attention_size: int = 32760 + 21,  # 21 x 480 x 832 + 21 camera tokens
++        use_flexattn: bool = True,
      ) -> None:
          super().__init__()
          assert dim % num_heads == 0, "dim should be divisible by num_heads"
-@@ -35,6 +97,9 @@ class Attention(nn.Module):
+@@ -35,6 +54,10 @@ class Attention(nn.Module):
          head_dim = dim // num_heads
          self.scale = head_dim**-0.5
          self.fused_attn = fused_attn
 +        #
 +        self.sink_size = sink_size
 +        self.max_attention_size = max_attention_size
++        self.use_flexattn = use_flexattn
  
          self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
          self.q_norm = norm_layer(head_dim) if qk_norm else nn.Identity()
-@@ -44,8 +109,20 @@ class Attention(nn.Module):
+@@ -44,8 +67,17 @@ class Attention(nn.Module):
          self.proj_drop = nn.Dropout(proj_drop)
          self.rope = rope
  
@@ -224,18 +181,15 @@ index 096b9d4..cb5cbcc 100644
 +        kv_cache=None,
 +        current_start=0,    # use with `kv_cache`
 +        frame_seqlen=None,  # use with `kv_cache`
++        #
++        loop_attn_params=None,
 +    ) -> Tensor:
          B, N, C = x.shape
-+        sp_size = get_sp_world_size()
-+        if sp_size > 1 and self.num_heads % sp_size != 0:
-+            raise ValueError(
-+                f"num_heads ({self.num_heads}) must be divisible by sequence parallel size ({sp_size})"
-+            )
 +
          qkv = (
              self.qkv(x)
              .reshape(B, N, 3, self.num_heads, C // self.num_heads)
-@@ -54,26 +131,130 @@ class Attention(nn.Module):
+@@ -54,47 +86,280 @@ class Attention(nn.Module):
          q, k, v = qkv[0], qkv[1], qkv[2]
          q, k = self.q_norm(q), self.k_norm(k)
          if self.rope is not None and pos is not None:
@@ -248,20 +202,8 @@ index 096b9d4..cb5cbcc 100644
 +        # No KV cache
 +        if kv_cache is None:
 +            ## Not causal attention
-+            if block_mask is None:
-+                if sp_size > 1:
-+                    x = _distributed_attention(
-+                        q,
-+                        k,
-+                        v,
-+                        dropout_p=self.attn_drop.p if self.training else 0.0,
-+                        attn_mask=(
-+                            (attn_mask)[:, None].repeat(1, self.num_heads, 1, 1)
-+                            if attn_mask is not None
-+                            else None
-+                        ),
-+                    )
-+                elif self.fused_attn:
++            if block_mask is None and loop_attn_params is None:
++                if self.fused_attn:
 +                    x = F.scaled_dot_product_attention(
 +                        q,
 +                        k,
@@ -279,35 +221,38 @@ index 096b9d4..cb5cbcc 100644
 +                    attn = attn.softmax(dim=-1)
 +                    attn = self.attn_drop(attn)
 +                    x = attn @ v
-+            ## Causal attention with block mask
-+            else:
-+                if sp_size > 1:
-+                    x = _distributed_flex_attention(q, k, v, block_mask)
-+                else:
-+                    # Padding for flexattention
-+                    padded_length = math.ceil(q.shape[2] / 128) * 128 - q.shape[2]  # `128`: block size for flexattention; TODO: make it configurable
-+                    if padded_length > 0:
-+                        q = torch.cat([q, torch.zeros([q.shape[0], q.shape[1], padded_length, q.shape[3]], device=q.device, dtype=v.dtype)], dim=2)
-+                        k = torch.cat([k, torch.zeros([k.shape[0], k.shape[1], padded_length, k.shape[3]], device=k.device, dtype=v.dtype)], dim=2)
-+                        v = torch.cat([v, torch.zeros([v.shape[0], v.shape[1], padded_length, v.shape[3]], device=v.device, dtype=v.dtype)], dim=2)
++            ## Causal attention: flex_attention with block mask
++            elif block_mask is not None:
++                # Padding for flexattention (`128`: block size for flexattention)
++                padded_length = math.ceil(q.shape[2] / 128) * 128 - q.shape[2]
++                if padded_length > 0:
++                    q = torch.cat([q, torch.zeros([q.shape[0], q.shape[1], padded_length, q.shape[3]], device=q.device, dtype=v.dtype)], dim=2)
++                    k = torch.cat([k, torch.zeros([k.shape[0], k.shape[1], padded_length, k.shape[3]], device=k.device, dtype=v.dtype)], dim=2)
++                    v = torch.cat([v, torch.zeros([v.shape[0], v.shape[1], padded_length, v.shape[3]], device=v.device, dtype=v.dtype)], dim=2)
 +
-+                    x = flex_attention(
-+                        q,
-+                        k,
-+                        v,
-+                        block_mask=block_mask,
-+                    )
-+                    if padded_length > 0:
-+                        x = x[:, :, :-padded_length, ...]
++                x = _get_compiled_flex_attention()(
++                    q,
++                    k,
++                    v,
++                    block_mask=block_mask,
++                )
++                if padded_length > 0:
++                    x = x[:, :, :-padded_length, ...]
++            ## Causal attention: loop-based windowed attention (use_flexattn=False)
++            else:
++                assert loop_attn_params is not None
++                # Reshape to [B, L, num_heads, head_dim] for loop attention
++                # `q/k/v` are [B, num_heads, L, head_dim]; transpose to [B, L, num_heads, head_dim]
++                q_l = q.transpose(1, 2)  # [B, L, num_heads, head_dim]
++                k_l = k.transpose(1, 2)
++                v_l = v.transpose(1, 2)
++                x = self._loop_attention(q_l, k_l, v_l, loop_attn_params)
++                # Transpose back to [B, num_heads, L, head_dim]
++                x = x.transpose(1, 2)
 +
 +        # Use KV cache
 +        else:
 +            assert frame_seqlen is not None
-+            if sp_size > 1:
-+                # Scatter heads, gather sequence; KV cache is stored head-sharded
-+                q = all_to_all(q, scatter_dim=1, gather_dim=2)
-+                k = all_to_all(k, scatter_dim=1, gather_dim=2)
-+                v = all_to_all(v, scatter_dim=1, gather_dim=2)
 +
 +            current_end = current_start + q.shape[2]
 +            sink_tokens = self.sink_size * frame_seqlen
@@ -373,38 +318,214 @@ index 096b9d4..cb5cbcc 100644
 +
 +            kv_cache["global_end_index"].fill_(current_end)
 +            kv_cache["local_end_index"].fill_(local_end_index)
-+
-+            if sp_size > 1:
-+                # Scatter sequence, gather heads
-+                x = all_to_all(x, scatter_dim=2, gather_dim=1)
  
          x = x.transpose(1, 2).reshape(B, N, C)
          x = self.proj(x)
+         x = self.proj_drop(x)
+         return x
+ 
+-    def _forward(self, x: Tensor) -> Tensor:
+-        B, N, C = x.shape
+-        qkv = (
+-            self.qkv(x)
+-            .reshape(B, N, 3, self.num_heads, C // self.num_heads)
+-            .permute(2, 0, 3, 1, 4)
+-        )
++    def _sdpa(self, q, k, v):
++        """Scaled dot-product attention on [B, L, N, D] tensors."""
++        # Transpose to [B, N, L, D] for F.scaled_dot_product_attention
++        q = q.transpose(1, 2)
++        k = k.transpose(1, 2)
++        v = v.transpose(1, 2)
++        out = F.scaled_dot_product_attention(q, k, v)
++        return out.transpose(1, 2)  # [B, L, N, D]
+ 
+-        q, k, v = qkv[0] * self.scale, qkv[1], qkv[2]
+-        attn = q @ k.transpose(-2, -1)
++    def _loop_attention(self, q, k, v, loop_attn_params):
++        """Dispatch to diffusion forcing or teacher forcing loop attention."""
++        if loop_attn_params["is_teacher_forcing"]:
++            return self._loop_attention_teacher_forcing(q, k, v, loop_attn_params)
++        else:
++            return self._loop_attention_diffusion_forcing(q, k, v, loop_attn_params)
+ 
+-        attn = attn.softmax(dim=-1)
+-        attn = self.attn_drop(attn)
++    def _loop_attention_diffusion_forcing(self, q, k, v, params):
++        """
++        Loop-based windowed attention for diffusion forcing.
++        Each chunk `i` attends to KV in `[0, (i+1)*block)`, with sink + window limits.
+ 
+-        x = (attn @ v).transpose(1, 2).reshape(B, N, C)
+-        x = self.proj(x)
+-        x = self.proj_drop(x)
+-        return x
++        Args:
++            q/k/v: [B, L, num_heads, head_dim]
++        """
++        frame_seqlen = params["frame_seqlen"]
++        num_frames = params["num_frames"]
++        chunk_size = params["chunk_size"]
++        sink_size = params["sink_size"]
++        max_attention_size = params["max_attention_size"]
++
++        block = frame_seqlen * chunk_size
++        total_len = num_frames * frame_seqlen
++        sink_end = sink_size * frame_seqlen
++        num_chunks = math.ceil(total_len / block)
++
++        outputs = []
++        for i in range(num_chunks):
++            q_start = i * block
++            q_end = min((i + 1) * block, total_len)
++            q_i = q[:, q_start:q_end]
++
++            chunk_end = q_end
++
++            if max_attention_size == -1 or sink_end == 0:
++                if max_attention_size == -1:
++                    k_i = k[:, :chunk_end]
++                    v_i = v[:, :chunk_end]
++                else:
++                    # Window limit, no sink
++                    window_start = max(0, chunk_end - max_attention_size)
++                    k_i = k[:, window_start:chunk_end]
++                    v_i = v[:, window_start:chunk_end]
++            else:
++                # Sink + window
++                window = max_attention_size - sink_end
++                window_start = max(sink_end, chunk_end - window)
++                k_i = torch.cat([k[:, :sink_end], k[:, window_start:chunk_end]], dim=1)
++                v_i = torch.cat([v[:, :sink_end], v[:, window_start:chunk_end]], dim=1)
++
++            out_i = self._sdpa(q_i, k_i, v_i)
++            outputs.append(out_i)
++
++        return torch.cat(outputs, dim=1)
++
++    def _loop_attention_teacher_forcing(self, q, k, v, params):
++        """
++        Loop-based windowed attention for teacher forcing.
++        Sequence layout: `[clean_tokens | noisy_tokens]`, each half has
++        `num_frames * frame_seqlen` tokens.
++
++        Clean chunk `i`: same as diffusion forcing, operating within clean half.
++        Noisy chunk `i`: attends to context from clean half (sink + window) and
++        itself from noisy half.
++
++        Args:
++            q/k/v: [B, L, num_heads, head_dim]
++        """
++        frame_seqlen = params["frame_seqlen"]
++        num_frames = params["num_frames"]
++        chunk_size = params["chunk_size"]
++        sink_size = params["sink_size"]
++        max_attention_size = params["max_attention_size"]
++
++        block = frame_seqlen * chunk_size
++        half_len = num_frames * frame_seqlen
++        sink_end = sink_size * frame_seqlen
++        num_chunks = math.ceil(half_len / block)
++
++        # Split into clean and noisy halves
++        q_clean, q_noisy = q[:, :half_len], q[:, half_len:]
++        k_clean, k_noisy = k[:, :half_len], k[:, half_len:]
++        v_clean, v_noisy = v[:, :half_len], v[:, half_len:]
++
++        outputs = []
++
++        # --- Clean half: same as diffusion forcing ---
++        for i in range(num_chunks):
++            q_start = i * block
++            q_end = min((i + 1) * block, half_len)
++            q_i = q_clean[:, q_start:q_end]
++
++            chunk_end = q_end
++
++            if max_attention_size == -1 or sink_end == 0:
++                if max_attention_size == -1:
++                    k_i = k_clean[:, :chunk_end]
++                    v_i = v_clean[:, :chunk_end]
++                else:
++                    window_start = max(0, chunk_end - max_attention_size)
++                    k_i = k_clean[:, window_start:chunk_end]
++                    v_i = v_clean[:, window_start:chunk_end]
++            else:
++                window = max_attention_size - sink_end
++                window_start = max(sink_end, chunk_end - window)
++                k_i = torch.cat([k_clean[:, :sink_end], k_clean[:, window_start:chunk_end]], dim=1)
++                v_i = torch.cat([v_clean[:, :sink_end], v_clean[:, window_start:chunk_end]], dim=1)
++
++            out_i = self._sdpa(q_i, k_i, v_i)
++            outputs.append(out_i)
++
++        # --- Noisy half: attend to clean context + noisy self ---
++        for i in range(num_chunks):
++            q_start = i * block
++            q_end = min((i + 1) * block, half_len)
++            q_i = q_noisy[:, q_start:q_end]
++
++            # Context from clean half: blocks `[0, i*block)`
++            context_end = i * block
++
++            # Self from noisy half
++            noisy_k_self = k_noisy[:, q_start:q_end]
++            noisy_v_self = v_noisy[:, q_start:q_end]
++
++            if context_end == 0:
++                # First noisy chunk: no clean context, only self
++                k_i = noisy_k_self
++                v_i = noisy_v_self
++            else:
++                if max_attention_size == -1 or sink_end == 0:
++                    if max_attention_size == -1:
++                        ctx_k = k_clean[:, :context_end]
++                        ctx_v = v_clean[:, :context_end]
++                    else:
++                        ctx_window = max_attention_size - (sink_size + chunk_size) * frame_seqlen
++                        ctx_window_start = max(0, context_end - ctx_window)
++                        ctx_k = k_clean[:, ctx_window_start:context_end]
++                        ctx_v = v_clean[:, ctx_window_start:context_end]
++                else:
++                    ctx_window = max_attention_size - (sink_size + chunk_size) * frame_seqlen
++                    ctx_window_start = max(sink_end, context_end - ctx_window)
++                    ctx_k = torch.cat([k_clean[:, :sink_end], k_clean[:, ctx_window_start:context_end]], dim=1)
++                    ctx_v = torch.cat([v_clean[:, :sink_end], v_clean[:, ctx_window_start:context_end]], dim=1)
++
++                k_i = torch.cat([ctx_k, noisy_k_self], dim=1)
++                v_i = torch.cat([ctx_v, noisy_v_self], dim=1)
++
++            out_i = self._sdpa(q_i, k_i, v_i)
++            outputs.append(out_i)
++
++        return torch.cat(outputs, dim=1)
 diff --git a/src/depth_anything_3/model/dinov2/layers/block.py b/src/depth_anything_3/model/dinov2/layers/block.py
-index 731519b..292ab5c 100644
+index 731519b..d1dd5ea 100644
 --- a/src/depth_anything_3/model/dinov2/layers/block.py
 +++ b/src/depth_anything_3/model/dinov2/layers/block.py
-@@ -43,6 +43,9 @@ class Block(nn.Module):
+@@ -43,6 +43,10 @@ class Block(nn.Module):
          qk_norm: bool = False,
          rope=None,
          ln_eps: float = 1e-6,
 +        #
 +        sink_size: int = 0,
 +        max_attention_size: int = 32760 + 21,  # 21 x 480 x 832 + 21 camera tokens
++        use_flexattn: bool = True,
      ) -> None:
          super().__init__()
          # print(f"biases: qkv: {qkv_bias}, proj: {proj_bias}, ffn: {ffn_bias}")
-@@ -56,6 +59,9 @@ class Block(nn.Module):
+@@ -56,6 +60,10 @@ class Block(nn.Module):
              proj_drop=drop,
              qk_norm=qk_norm,
              rope=rope,
 +            #
 +            sink_size=sink_size,
 +            max_attention_size=max_attention_size,
++            use_flexattn=use_flexattn,
          )
          self.ls1 = LayerScale(dim, init_values=init_values) if init_values else nn.Identity()
          self.drop_path1 = DropPath(drop_path) if drop_path > 0.0 else nn.Identity()
-@@ -74,9 +80,21 @@ class Block(nn.Module):
+@@ -74,9 +82,25 @@ class Block(nn.Module):
  
          self.sample_drop_ratio = drop_path
  
@@ -415,6 +536,8 @@ index 731519b..292ab5c 100644
 +        kv_cache=None,
 +        current_start=0,    # use with `kv_cache`
 +        frame_seqlen=None,  # use with `kv_cache`
++        #
++        loop_attn_params=None,
 +    ) -> Tensor:
          def attn_residual_func(x: Tensor, pos=None, attn_mask=None) -> Tensor:
 -            return self.ls1(self.attn(self.norm1(x), pos=pos, attn_mask=attn_mask))
@@ -424,35 +547,39 @@ index 731519b..292ab5c 100644
 +                kv_cache=kv_cache,
 +                current_start=current_start,
 +                frame_seqlen=frame_seqlen,
++                #
++                loop_attn_params=loop_attn_params,
 +            ))
  
          def ffn_residual_func(x: Tensor) -> Tensor:
              return self.ls2(self.mlp(self.norm2(x)))
 diff --git a/src/depth_anything_3/model/dinov2/vision_transformer.py b/src/depth_anything_3/model/dinov2/vision_transformer.py
-index f0f8e23..86cf1b8 100644
+index f0f8e23..0e18526 100644
 --- a/src/depth_anything_3/model/dinov2/vision_transformer.py
 +++ b/src/depth_anything_3/model/dinov2/vision_transformer.py
-@@ -110,6 +110,9 @@ class DinoVisionTransformer(nn.Module):
+@@ -110,6 +110,10 @@ class DinoVisionTransformer(nn.Module):
          rope_freq=100,
          plus_cam_token=False,
          cat_token=True,
 +        #
 +        sink_size: int = 0,
 +        max_attention_size: int = 32760 + 21,  # 21 x 480 x 832 + 21 camera tokens
++        use_flexattn: bool = True,
      ):
          """
          Args:
-@@ -211,6 +214,9 @@ class DinoVisionTransformer(nn.Module):
+@@ -211,6 +215,10 @@ class DinoVisionTransformer(nn.Module):
                  init_values=init_values,
                  qk_norm=i >= qknorm_start if qknorm_start != -1 else False,
                  rope=self.rope if i >= rope_start and rope_start != -1 else None,
 +                #
 +                sink_size=sink_size,
 +                max_attention_size=max_attention_size,
++                use_flexattn=use_flexattn,
              )
              for i in range(depth)
          ]
-@@ -314,7 +320,7 @@ class DinoVisionTransformer(nn.Module):
+@@ -314,7 +322,7 @@ class DinoVisionTransformer(nn.Module):
              if self.alt_start != -1 and (i == self.alt_start - 1) and x.shape[1] >= THRESH_FOR_REF_SELECTION and kwargs.get("cam_token", None) is None:
                  # Select reference view using configured strategy
                  strategy = kwargs.get("ref_view_strategy", "saddle_balanced")
@@ -461,7 +588,7 @@ index f0f8e23..86cf1b8 100644
                  b_idx = select_reference_view(x, strategy=strategy)
                  # Reorder views to place reference view first
                  x = reorder_by_reference(x, b_idx)
-@@ -348,7 +354,15 @@ class DinoVisionTransformer(nn.Module):
+@@ -348,7 +356,17 @@ class DinoVisionTransformer(nn.Module):
                  aux_output.append(x)
          return output, aux_output
  
@@ -474,11 +601,13 @@ index f0f8e23..86cf1b8 100644
 +        kv_cache=None,
 +        current_start=0,    # use with `kv_cache`
 +        frame_seqlen=None,  # use with `kv_cache`
++        #
++        loop_attn_params=None,
 +    ):
          b, s, n = x.shape[:3]
          if attn_type == "local":
              x = rearrange(x, "b s n c -> (b s) n c")
-@@ -361,7 +375,25 @@ class DinoVisionTransformer(nn.Module):
+@@ -361,7 +379,29 @@ class DinoVisionTransformer(nn.Module):
          else:
              raise ValueError(f"Invalid attention type: {attn_type}")
  
@@ -490,6 +619,8 @@ index f0f8e23..86cf1b8 100644
 +                kv_cache=kv_cache,
 +                current_start=current_start,
 +                frame_seqlen=frame_seqlen,
++                #
++                loop_attn_params=loop_attn_params,
 +            )
 +        else:
 +            x = torch.utils.checkpoint.checkpoint(
@@ -499,6 +630,8 @@ index f0f8e23..86cf1b8 100644
 +                kv_cache=kv_cache,
 +                current_start=current_start,
 +                frame_seqlen=frame_seqlen,
++                #
++                loop_attn_params=loop_attn_params,
 +                #
 +                use_reentrant=False
 +            )

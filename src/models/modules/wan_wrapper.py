@@ -599,11 +599,12 @@ class WanDiffusionDA3Wrapper(nn.Module):
         self.da3_model: DepthAnything3Net = _da3.model
         self.da3_model.backbone.pretrained.patch_size = 16  # hard-coded for Wan2.1
         self.da3_model.head.patch_size = 16  # hard-coded for Wan2.1
-            ## Override `sink_size` and `max_attention_size` on every DA3 attention block,
+            ## Override `sink_size`, `max_attention_size`, and `use_flexattn` on every DA3 attention block,
             ## since these are baked in by `from_pretrained` and can't be set at load time
         for blk in self.da3_model.backbone.pretrained.blocks:
             blk.attn.sink_size = sink_size
             blk.attn.max_attention_size = da3_max_attention_size
+            blk.attn.use_flexattn = use_flexattn
             ## Remove not used modules
         if not da3_input_cam:
             self.da3_model.cam_enc = None
@@ -858,6 +859,19 @@ class WanDiffusionDA3Wrapper(nn.Module):
                 max_attention_size=self.model.max_attention_size,
                 is_teacher_forcing=clean_x is not None,
             )
+
+        # DA3 loop-based attention params (mirrors DiT, but uses DA3-specific `frame_seqlen`)
+        loop_attn_params_da3 = None
+        if self.is_causal and not self.use_flexattn:
+            da3_frame_seqlen = 1 + frame_seqlen // (self.da3_down_ratio * self.da3_down_ratio)  # `1+` for camera token
+            loop_attn_params_da3 = dict(
+                frame_seqlen=da3_frame_seqlen,
+                num_frames=f,
+                chunk_size=self.model.chunk_size,
+                sink_size=self.model.sink_size,
+                max_attention_size=self.da3_max_attention_size,
+                is_teacher_forcing=clean_x is not None,
+            )
         kwargs = dict(
             e=e0,
             seq_lens=seq_lens,
@@ -1011,6 +1025,8 @@ class WanDiffusionDA3Wrapper(nn.Module):
                         kv_cache=kv_cache_da3[da3_i] if self.is_causal and kv_cache_da3 is not None else None,
                         current_start=current_start_da3,
                         frame_seqlen=da3_x.shape[2],  # it should be h*w//4 + 1
+                        #
+                        loop_attn_params=loop_attn_params_da3 if kv_cache_da3 is None else None,
                     )
                 else:
                     da3_x = self.da3_model.backbone.pretrained.process_attention(
