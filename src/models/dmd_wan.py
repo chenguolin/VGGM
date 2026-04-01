@@ -290,33 +290,38 @@ class DMD_Wan(Wan):
             da3_outputs, da3_outputs_diffusion = None, None
             generator_total_loss = None
 
-        ## 3. Critic loss — reuse generator's `pred_x0` when available to skip redundant self-forcing
-        outputs["critic_loss"] = critic_loss = \
-            self.critic_loss(
-                shared_noises,
-                prompt_embeds,
-                cond_latents,
-                plucker,
-                #
-                clean_latents=latents if not use_self_forcing else None,
-                #
-                C2W=C2W,
-                fxfycxcy=fxfycxcy,
-                depths=depths,
-                confs=confs,
-                images_f=images_f,
-                #
-                clip_latent_lens=clip_latent_lens,
-                #
-                cached_pred_x0=pred_x0 if train_generator else None,
-            )
+        ## 3. Critic loss — skipped on generator steps when `separate_gen_crit=True` to reduce peak memory
+        skip_critic = train_generator and self.opt.separate_gen_crit
+        if not skip_critic:
+            outputs["critic_loss"] = critic_loss = \
+                self.critic_loss(
+                    shared_noises,
+                    prompt_embeds,
+                    cond_latents,
+                    plucker,
+                    #
+                    clean_latents=latents if not use_self_forcing else None,
+                    #
+                    C2W=C2W,
+                    fxfycxcy=fxfycxcy,
+                    depths=depths,
+                    confs=confs,
+                    images_f=images_f,
+                    #
+                    clip_latent_lens=clip_latent_lens,
+                    #
+                    cached_pred_x0=pred_x0 if train_generator else None,
+                )
+        else:
+            critic_loss = None
 
         # Return separate losses for sequential backward passes to reduce peak memory
         # Each loss is backward-ed independently so their activation graphs don't overlap
         losses = []
         if generator_total_loss is not None:
             losses.append(generator_total_loss)
-        losses.append(self.opt.critic_loss_weight * critic_loss)
+        if critic_loss is not None:
+            losses.append(self.opt.critic_loss_weight * critic_loss)
         outputs["losses"] = losses
 
         # Scalar `loss` for logging only (detached sum)

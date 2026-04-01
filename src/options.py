@@ -171,6 +171,7 @@ class Options:
         ## DMD
     use_dmd: bool = False
     generator_train_every: int = 5
+    separate_gen_crit: bool = False  # to reduce peak memory
     fake_guidance_scale: float = 1.
     real_guidance_scale: float = 4.
     ddt_fake_score: bool = False
@@ -378,6 +379,7 @@ opt_dict["wan2.1_t2v_1.3b_dmd"] = Options(
     # use_internal_dataset=True,
     # version_2s35w=True,
     #
+    # num_input_frames=33,
     # input_res=(480, 832),
     #
     num_clips=1,
@@ -410,7 +412,7 @@ opt_dict["wan2.1_t2v_1.3b_dmd"] = Options(
     chunk_size=3,
     max_window_size=9,
     rope_outside=True,
-    use_flexattn=True,  # False
+    use_flexattn=False,  # True
     #
     # wan_dir=f"{ROOT}/.cache/huggingface/hub/Wan-AI/Wan2.1-T2V-14B",
     # real_wan_dir=f"{ROOT}/.cache/huggingface/hub/Wan-AI/Wan2.1-T2V-14B",
@@ -426,6 +428,7 @@ opt_dict["wan2.1_t2v_1.3b_dmd"] = Options(
     teacher_first_latent_cond=False,
     #
     use_dmd=True,
+    separate_gen_crit=False,  # True
     self_forcing_prob=1.,
     real_guidance_scale=4.,
     last_step_only=False,
