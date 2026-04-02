@@ -30,6 +30,8 @@ pip3 install -r settings/requirements.txt && pip3 install -U peft transformers m
 pip3 install flash-attn==2.7.4.post1 --no-build-isolation
 pip3 install --no-build-isolation git+https://github.com/facebookresearch/pytorch3d.git
 cd extensions/Depth-Anything-3 && pip3 install -e . && cd ../..
+pip3 install git+https://github.com/JayKarhade/UniCeption.git@dev/any4d  # uniception for Any4D
+cd extensions/Any4D && pip3 install --no-deps -e . && cd ../..  # any4d (--no-deps to avoid torch/opencv conflicts)
 
 sudo yum install -y mesa-libGL tmux nvtop btop
 

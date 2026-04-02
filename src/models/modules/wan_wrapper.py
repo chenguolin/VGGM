@@ -2,7 +2,6 @@
 
 from typing import *
 from torch import Tensor
-from depth_anything_3.model.da3 import DepthAnything3Net
 
 import os
 import torch
@@ -22,10 +21,6 @@ from .wan_modules.model import sinusoidal_embedding_1d
 from .ddt import DDT
 from src.utils import zero_init_module, inverse_c2w, fxfycxcy_to_intrinsics
 from src.utils.distributed import get_sp_world_size, all_gather, all_split, sync_across_sp_group
-
-from depth_anything_3.api import DepthAnything3
-from depth_anything_3.model.utils.transform import quat_to_mat
-from depth_anything_3.utils.ray_utils import get_extrinsic_from_camray
 
 
 class WanCLIPEncoderWrapper(nn.Module):
@@ -595,6 +590,9 @@ class WanDiffusionDA3Wrapper(nn.Module):
         self.max_seq_len = None  # not used, because we load videos in the same shape
 
         # Load DA3
+        from depth_anything_3.api import DepthAnything3
+        from depth_anything_3.model.da3 import DepthAnything3Net
+
         _da3 = DepthAnything3.from_pretrained(f"depth-anything/{(da3_model_name.upper())}")
         self.da3_model: DepthAnything3Net = _da3.model
         self.da3_model.backbone.pretrained.patch_size = 16  # hard-coded for Wan2.1
@@ -1090,6 +1088,9 @@ class WanDiffusionDA3Wrapper(nn.Module):
         rays, rays_conf = head_outputs["ray"], head_outputs["ray_conf"]  # (B, f, H, W, 6), (B, f, H, W)
 
         # Camera
+        from depth_anything_3.model.utils.transform import quat_to_mat
+        from depth_anything_3.utils.ray_utils import get_extrinsic_from_camray
+
         pose_enc = self.da3_model.cam_dec(feats[-1][1])  # (B, f, 9)
         with torch.no_grad():
             ## Camera decoder

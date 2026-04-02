@@ -1302,8 +1302,10 @@ class CausalWanModel(ModelMixin, ConfigMixin):
                 # correct attention output) without mutating K/V storage.
                 saved_global_end = this_kv_cache["global_end_index"].clone()
                 saved_local_end = this_kv_cache["local_end_index"].clone()
+                this_crossattn_cache = crossattn_cache[block_index] if crossattn_cache is not None else None
+                saved_crossattn_is_init = this_crossattn_cache["is_init"] if this_crossattn_cache is not None else None
 
-                def create_kv_restoring_forward(module, kvc, s_global, s_local):
+                def create_kv_restoring_forward(module, kvc, s_global, s_local, cac, s_crossattn_is_init):
                     first_call = [True]  # forward pass, not recompute
 
                     def custom_forward(*inputs, **kwargs):
@@ -1313,18 +1315,22 @@ class CausalWanModel(ModelMixin, ConfigMixin):
                         # Recompute: restore indices and skip KV cache writes
                         kvc["global_end_index"].copy_(s_global)
                         kvc["local_end_index"].copy_(s_local)
+                        if cac is not None:
+                            cac["is_init"] = s_crossattn_is_init
                         kwargs["_skip_kv_write"] = True
                         return module(*inputs, **kwargs)
                     return custom_forward
 
                 kwargs.update({
                     "kv_cache": this_kv_cache,
+                    "crossattn_cache": this_crossattn_cache,
                     "current_start": current_start,
                     "ttt_state": block_ttt_state,
                     "gdn_state": block_gdn_state,
                 })
                 ckpt_fn = create_kv_restoring_forward(
-                    block, this_kv_cache, saved_global_end, saved_local_end)
+                    block, this_kv_cache, saved_global_end, saved_local_end,
+                    this_crossattn_cache, saved_crossattn_is_init)
                 if self.use_gradient_checkpointing_offload:
                     with torch.autograd.graph.save_on_cpu():
                         x = torch.utils.checkpoint.checkpoint(
@@ -1335,7 +1341,7 @@ class CausalWanModel(ModelMixin, ConfigMixin):
             else:
                 kwargs.update({
                     "kv_cache": this_kv_cache,
-                    "crossattn_cache": crossattn_cache[block_index],
+                    "crossattn_cache": crossattn_cache[block_index] if crossattn_cache is not None else None,
                     "current_start": current_start,
                     "ttt_state": block_ttt_state,
                     "gdn_state": block_gdn_state,

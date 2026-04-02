@@ -22,3 +22,7 @@ decord
 deepspeed
 qwen-vl-utils[decord]
 flash-linear-attention
+hydra-core
+natsort
+python-box
+trimesh
