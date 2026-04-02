@@ -92,6 +92,8 @@ class Options:
     da3_down_ratio: int = 1
     da3_chunk_size: int = 8  # DPT head chunk size, not for causality
     da3_use_ray_pose: bool = False
+        ## Any4D
+    any4d_checkpoint_path: str = f"{ROOT}/.cache/any4d_4v_combined.pth"
         ## Self Geometry Forcing
     da3_loss_in_sf: bool = False
     render_loss_in_sf: bool = True

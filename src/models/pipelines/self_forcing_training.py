@@ -82,7 +82,7 @@ class SelfForcingTrainingPipeline:
 
         if cond_latents is not None:
             noises = torch.cat([cond_latents, noises[:, :, 1:, ...]], dim=2)
-        output_chunks = []  # collect per-chunk outputs, concatenate at the end to avoid pre-allocating full tensor
+        outputs = torch.zeros_like(noises)
 
         # Set KV cache
         if self.opt.is_causal:
@@ -229,7 +229,7 @@ class SelfForcingTrainingPipeline:
                     break
 
             # Record this chunk generated latents
-            output_chunks.append(pred_x0)
+            outputs[:, :, chunk_idx * self.opt.chunk_size:(chunk_idx + 1) * self.opt.chunk_size, ...] = pred_x0
             all_da3_outputs[chunk_idx] = da3_outputs
             all_timesteps.append(timesteps)
 
@@ -393,9 +393,6 @@ class SelfForcingTrainingPipeline:
             if self.opt.input_pcrender and self.opt.render_loss_in_sf:
                 render_loss = torch.cat(render_loss, dim=1).flatten(0, 1)  # (B*f,)
                 da3_outputs["render_loss"] = (da3_weights * render_loss).mean()
-
-        # Concatenate all chunks into the full output tensor
-        outputs = torch.cat(output_chunks, dim=2)
 
         if render_images is not None:
             da3_outputs["images_render"] = render_images_vis

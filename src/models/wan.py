@@ -1827,10 +1827,27 @@ class Wan(nn.Module):
             raise ValueError("Prompts should not be empty")
         if isinstance(prompts[0], list):
             B, num_clips = len(prompts), len(prompts[0])
-            flat_prompts = [p for sample in prompts for p in sample]
-            embeds = self.text_encoder(flat_prompts)
-            return embeds.reshape(B, num_clips, embeds.shape[1], embeds.shape[2])  # (B, num_clips, N=512, D')
-        return self.text_encoder(prompts)  # (B, N=512, D')
+            # Sync max num_clips across ranks so all ranks call `text_encoder` the same number
+            # of times (required for FSDP correctness when different ranks have different
+            # num_clips, e.g. when `version_action=True`)
+            if dist.is_available() and dist.is_initialized():
+                max_clips_t = torch.tensor(num_clips, device="cuda")
+                dist.all_reduce(max_clips_t, op=dist.ReduceOp.MAX)
+                max_clips = int(max_clips_t.item())
+            else:
+                max_clips = num_clips
+            # Pad prompts with the last prompt in the sample so every rank encodes
+            # `max_clips` times; padding rows will be discarded afterwards
+            embed_list = []
+            for sample in prompts:
+                padded = sample + [sample[-1]] * (max_clips - len(sample))
+                for p in padded:
+                    embed_list.append(self.text_encoder([p]))  # (1, N, D')
+            embeds = torch.cat(embed_list, dim=0)  # (B*max_clips, N, D')
+            embeds = embeds.reshape(B, max_clips, embeds.shape[1], embeds.shape[2])
+            return embeds[:, :num_clips]  # (B, num_clips, N=512, D')
+        # Encode one prompt at a time to save GPU memory
+        return torch.cat([self.text_encoder([p]) for p in prompts], dim=0)  # (B, N=512, D')
 
     def _build_negative_prompt_embeds(self, batch_size: int, num_clips: int = 1) -> Tensor:
         neg = self.text_encoder([self.opt.negative_prompt]).repeat(batch_size * num_clips, 1, 1)
