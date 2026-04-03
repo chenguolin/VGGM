@@ -356,7 +356,7 @@ opt_dict["wan2.1_t2v_1.3b"] = Options(
     use_flexattn=True,  # False
     #
     load_da3=False,  # True
-    da3_interactive=False,
+    da3_interactive=True,  # False
     da3_weight_type="inverse_timestep",
     da3_down_ratio=1,
     # only_train_da3=True,
@@ -396,7 +396,7 @@ opt_dict["wan2.1_t2v_1.3b_dmd"] = Options(
     input_plucker=True,
     #
     load_da3=False,  # True
-    da3_interactive=False,
+    da3_interactive=True,  # False
     da3_weight_type="uniform",
     da3_down_ratio=1,
     only_train_resdit=False,  # True

@@ -222,20 +222,20 @@ class Wan(nn.Module):
                 self.diffusion.da3_model.head.requires_grad_(False)
                 self.diffusion.da3_model.cam_dec.requires_grad_(False)
 
+            ## (Optional) Freeze some layers of DiT for WanDA3
+            if opt.only_train_resdit:
+                self.diffusion.requires_grad_(False)
+                for i, block in enumerate(self.diffusion.model.blocks):
+                    if i >= len(self.diffusion.model.blocks) - self.diffusion.num_da3_blocks:
+                        block.requires_grad_(True)
+            if opt.fix_shared_dit_layers:
+                for i, block in enumerate(self.diffusion.model.blocks):
+                    if i < len(self.diffusion.model.blocks) - self.diffusion.num_da3_blocks:
+                        block.requires_grad_(False)
+
             ## DA3 losses
             self.ray_loss_fn, self.depth_loss_fn, self.camera_loss_fn = \
                 XYZLoss(opt), DepthLoss(opt), CameraLoss(opt)
-
-        # (Optional) Freeze some layers of DiT
-        if opt.only_train_resdit:
-            self.diffusion.requires_grad_(False)
-            for i, block in enumerate(self.diffusion.model.blocks):
-                if i >= len(self.diffusion.model.blocks) - 24:  #  `24`: hard-coded for da3-large
-                    block.requires_grad_(True)
-        if opt.fix_shared_dit_layers:
-            for i, block in enumerate(self.diffusion.model.blocks):
-                if i < len(self.diffusion.model.blocks) - 24:  #  `24`: hard-coded for da3-large
-                    block.requires_grad_(False)
 
         if opt.generator_path is not None and not lazy:
             state_dict = torch.load(opt.generator_path, map_location="cpu", weights_only=True)
