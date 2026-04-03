@@ -378,7 +378,7 @@ opt_dict["wan2.1_t2v_1.3b"] = Options(
 opt_dict["wan2.1_t2v_1.3b_dmd"] = Options(
     eval_offline=False,  # True
     #
-    # use_internal_dataset=True,
+    use_internal_dataset=True,
     # version_2s35w=True,
     #
     # num_input_frames=33,
