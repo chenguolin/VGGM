@@ -408,7 +408,7 @@ opt_dict["wan2.1_t2v_1.3b_dmd"] = Options(
     # no_noise_for_da3=False,
     #
     is_causal=True,
-    use_teacher_forcing=True,
+    use_teacher_forcing=False,
     #
     sink_size=3,
     chunk_size=3,
