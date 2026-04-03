@@ -504,7 +504,12 @@ def main():
             train_metrics = {k: outputs[k] for k in _METRIC_KEYS if k in outputs}
 
             # Backpropagate
-            loss.backward()
+            # For DMD: sequential backward passes to reduce peak activation memory
+            if "losses" in outputs:
+                for sub_loss in outputs["losses"]:
+                    sub_loss.backward()
+            else:
+                loss.backward()
 
             # Skip the step if any rank produces NaN/Inf gradients
             local_nonfinite_grad_names = util.find_nonfinite_grad_names(model)
