@@ -328,7 +328,7 @@ opt_dict: Dict[str, Options] = {}
 
 
 # Wan2.1-T2V-1.3B
-opt_dict["wan2.1_t2v_1.3b"] = Options(
+opt_dict["wan2.1_t2v"] = Options(
     eval_offline=False,  # True
     #
     use_internal_dataset=True,
@@ -374,7 +374,7 @@ opt_dict["wan2.1_t2v_1.3b"] = Options(
 )
 
 # Self-Forcing DMD
-opt_dict["wan2.1_t2v_1.3b_dmd"] = Options(
+opt_dict["wan2.1_t2v_dmd"] = Options(
     eval_offline=False,  # True
     #
     use_internal_dataset=True,

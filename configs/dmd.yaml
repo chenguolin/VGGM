@@ -1,4 +1,4 @@
-opt_type: "wan2.1_t2v_1.3b_dmd"
+opt_type: "wan2.1_t2v_dmd"
 
 optimizer:
   name: "adamw"
