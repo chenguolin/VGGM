@@ -1143,10 +1143,6 @@ class CausalWanModel(ModelMixin, ConfigMixin):
         #
         clip_query_lens: Optional[int] = None,
         clip_context_lens: Optional[int] = None,
-        #
-        return_feat_layer_idx: Optional[int | float] = None,
-        not_head_and_unpatchify: bool = False,
-        return_ddt_inputs: bool = False,
     ):
         r"""
         Run the diffusion model with kv caching.
@@ -1225,16 +1221,6 @@ class CausalWanModel(ModelMixin, ConfigMixin):
             context_clip = self.img_emb(clip_fea)  # bs x 257 x dim
             context = torch.concat([context_clip, context], dim=1)
 
-        # Only build `ddt_inputs` when needed to avoid unnecessary `x.clone()`
-        if return_ddt_inputs:
-            ddt_inputs = dict(
-                x=x.clone(),
-                e=e,
-                context=context,
-                grid_sizes=grid_sizes,
-                seq_lens=seq_lens,
-            )
-
         # Sequence parallelism: chunk sequences across ranks
         sp_size = get_sp_world_size()
         if sp_size > 1:
@@ -1260,7 +1246,6 @@ class CausalWanModel(ModelMixin, ConfigMixin):
                 return module(*inputs, **kwargs)
             return custom_forward
 
-        inter_feats = None
         for block_index, block in enumerate(self.blocks):
             block_ttt_state = ttt_state[block_index] if ttt_state is not None else None
             block_gdn_state = gdn_state[block_index] if gdn_state is not None else None
@@ -1320,33 +1305,15 @@ class CausalWanModel(ModelMixin, ConfigMixin):
                 })
                 x = block(x, **kwargs)
 
-            if return_feat_layer_idx is not None and (
-                block_index == return_feat_layer_idx or
-                block_index == int(return_feat_layer_idx * len(self.blocks))
-            ):
-                inter_feats = x.copy()
-
         # Sequence parallelism: gather sequences before head
         if sp_size > 1:
             x = all_gather(x, dim=1)
-            if inter_feats is not None:
-                inter_feats = all_gather(inter_feats, dim=1)
 
         # head & unpatchify
-        if not not_head_and_unpatchify:  # (B, N, D) -> (B, C, f, h, w)
-            x = self.head(x, e.unflatten(0, (bt, seq_len)))
-            x = self.unpatchify(x, grid_sizes)
+        x = self.head(x, e.unflatten(0, (bt, seq_len)))
+        x = self.unpatchify(x, grid_sizes)
 
-        if return_ddt_inputs:
-            if inter_feats is None:
-                return [u.float() for u in x], ddt_inputs
-            else:
-                return [u.float() for u in x], [v.float() for v in inter_feats], ddt_inputs
-        else:
-            if inter_feats is None:
-                return [u.float() for u in x]
-            else:
-                return [u.float() for u in x], [v.float() for v in inter_feats]
+        return [u.float() for u in x]
 
     def _forward_train(
         self,
@@ -1363,10 +1330,6 @@ class CausalWanModel(ModelMixin, ConfigMixin):
         #
         clip_query_lens: Optional[Tensor] = None,
         clip_context_lens: Optional[Tensor] = None,
-        #
-        return_feat_layer_idx: Optional[int | float] = None,
-        not_head_and_unpatchify: bool = False,
-        return_ddt_inputs: bool = False,
     ):
         r"""
         Forward pass through the diffusion model
@@ -1491,18 +1454,6 @@ class CausalWanModel(ModelMixin, ConfigMixin):
             # Loop-based attention: pass parameters instead of block mask
             self.block_mask = None
 
-        # Only build `ddt_inputs` when needed to avoid unnecessary `x.clone()`
-        if return_ddt_inputs:
-            ddt_inputs = dict(
-                x=x.clone(),
-                e=torch.cat([e_clean, e], dim=1) \
-                    if clean_x is not None else e,
-                context=context,
-                grid_sizes=grid_sizes,
-                seq_lens=seq_lens,
-                block_mask=self.block_mask,
-            )
-
         # Sequence parallelism: chunk sequences across ranks
         sp_size = get_sp_world_size()
         if sp_size > 1:
@@ -1543,7 +1494,6 @@ class CausalWanModel(ModelMixin, ConfigMixin):
                 return module(*inputs, **kwargs)
             return custom_forward
 
-        inter_feats = None
         for block_index, block in enumerate(self.blocks):
 
             if self.training and self.use_gradient_checkpointing_offload:
@@ -1562,42 +1512,18 @@ class CausalWanModel(ModelMixin, ConfigMixin):
             else:
                 x = block(x, **kwargs)
 
-            if return_feat_layer_idx is not None and (
-                block_index == return_feat_layer_idx or
-                block_index == int(return_feat_layer_idx * len(self.blocks))
-            ):
-                inter_feats = x.copy()
-
         # Sequence parallelism: gather sequences before head
         if sp_size > 1:
             x = all_gather(x, dim=1)
-            if inter_feats is not None:
-                inter_feats = all_gather(inter_feats, dim=1)
 
         if clean_x is not None:
             x = x[:, x.shape[1] // 2:]
-            if inter_feats is not None:
-                inter_feats = inter_feats[:, inter_feats.shape[1] // 2:]
-            if return_ddt_inputs:
-                half = ddt_inputs["x"].shape[1] // 2
-                ddt_inputs["x"] = ddt_inputs["x"][:, half:]
-                ddt_inputs["e"] = ddt_inputs["e"][:, half:]
 
         # head & unpatchify
-        if not not_head_and_unpatchify:  # (B, N, D) -> (B, C, f, h, w)
-            x = self.head(x, e.unflatten(0, (bt, seq_len)))
-            x = self.unpatchify(x, grid_sizes)
+        x = self.head(x, e.unflatten(0, (bt, seq_len)))
+        x = self.unpatchify(x, grid_sizes)
 
-        if return_ddt_inputs:
-            if inter_feats is None:
-                return [u.float() for u in x], ddt_inputs
-            else:
-                return [u.float() for u in x], [v.float() for v in inter_feats], ddt_inputs
-        else:
-            if inter_feats is None:
-                return [u.float() for u in x]
-            else:
-                return [u.float() for u in x], [v.float() for v in inter_feats]
+        return [u.float() for u in x]
 
     def reset_parameters(self):
         # Required by FSDP to materialize meta-device parameters

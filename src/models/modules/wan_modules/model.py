@@ -6,9 +6,7 @@
     ## 5. Support frame-wise timestep inputs, i.e., (B, f)
     ## 6. Support multi-clip cross attention
     ## 7. Support sequence parallelism
-    ## 8. Support `return_feat_layer_idx`
-    ## 9. Support `not_head_and_unpatchify` and `return_ddt_inputs` for DDT
-    ## 10. Support `reset_parameters` in all modules for FSDP
+    ## 8. Support `reset_parameters` in all modules for FSDP
 
 from typing import *
 from torch import Tensor
@@ -792,10 +790,6 @@ class WanModel(ModelMixin, ConfigMixin):
         clip_query_lens: Optional[Tensor] = None,
         clip_context_lens: Optional[Tensor] = None,
         #
-        return_feat_layer_idx: Optional[int | float] = None,
-        not_head_and_unpatchify: bool = False,
-        return_ddt_inputs: bool = False,
-        #
         **kwargs  # to compatible with causal models
     ):
         r"""
@@ -871,16 +865,6 @@ class WanModel(ModelMixin, ConfigMixin):
             context_clip = self.img_emb(clip_fea)  # bs x 257 (x2) x dim
             context = torch.concat([context_clip, context], dim=1)
 
-        # Only build `ddt_inputs` when needed to avoid unnecessary `x.clone()`
-        if return_ddt_inputs:
-            ddt_inputs = dict(
-                x=x.clone(),
-                e=e,
-                context=context,
-                grid_sizes=grid_sizes,
-                seq_lens=seq_lens,
-            )
-
         # Sequence parallelism: chunk sequences across ranks
         sp_size = get_sp_world_size()
         if sp_size > 1:
@@ -906,7 +890,6 @@ class WanModel(ModelMixin, ConfigMixin):
                 return module(*inputs, **kwargs)
             return custom_forward
 
-        inter_feats = None
         for block_index, block in enumerate(self.blocks):
 
             if self.training and self.use_gradient_checkpointing_offload:
@@ -927,33 +910,15 @@ class WanModel(ModelMixin, ConfigMixin):
             else:
                 x = block(x, **kwargs)
 
-            if return_feat_layer_idx is not None and (
-                block_index == return_feat_layer_idx or
-                block_index == int(return_feat_layer_idx * len(self.blocks))
-            ):
-                inter_feats = x.clone()
-
         # Sequence parallelism: gather sequences before head
         if sp_size > 1:
             x = all_gather(x, dim=1)
-            if inter_feats is not None:
-                inter_feats = all_gather(inter_feats, dim=1)
 
         # head & unpatchify
-        if not not_head_and_unpatchify:  # (B, N, D) -> (B, C, f, h, w)
-            x = self.head(x, e.unflatten(0, (bt, seq_len)))
-            x = self.unpatchify(x, grid_sizes)
+        x = self.head(x, e.unflatten(0, (bt, seq_len)))
+        x = self.unpatchify(x, grid_sizes)
 
-        if return_ddt_inputs:
-            if inter_feats is None:
-                return [u.float() for u in x], ddt_inputs
-            else:
-                return [u.float() for u in x], [v.float() for v in inter_feats], ddt_inputs
-        else:
-            if inter_feats is None:
-                return [u.float() for u in x]
-            else:
-                return [u.float() for u in x], [v.float() for v in inter_feats]
+        return [u.float() for u in x]
 
     def unpatchify(self, x, grid_sizes):
         r"""

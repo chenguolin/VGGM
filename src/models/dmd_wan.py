@@ -13,7 +13,6 @@ from src.options import Options
 from src.models.modules import WanDiffusionWrapper, WanVAEWrapper
 from src.models.wan import Wan
 from src.models.pipelines.self_forcing_training import SelfForcingTrainingPipeline
-from src.utils.ema import EMAParams
 from src.utils import plucker_ray, colorize_depth, filter_da3_points, render_pt3d_points, mv_interpolate
 
 
@@ -57,45 +56,42 @@ class DMD_Wan(Wan):
         self.real_score.requires_grad_(False)
         self.real_score.eval()
 
-        # Fake score model for DMD (skipped when DDT[-1] replaces it)
-        if not opt.ddt_fake_score:
-            self.fake_score = WanDiffusionWrapper(
-                opt.fake_wan_dir,
-                opt.num_train_timesteps,
-                opt.num_inference_steps,
-                opt.shift,
-                0.,    # hard-coded `sigma_min`
-                True,  # hard-coded `extra_one_step`
-                #
-                opt.teacher_input_plucker,
-                opt.teacher_extra_condition_dim,
-                #
-                opt.use_gradient_checkpointing,
-                opt.use_gradient_checkpointing_offload,
-                #
-                is_causal=opt.is_teacher_causal,
-                sink_size=opt.sink_size,
-                chunk_size=opt.chunk_size,
-                max_attention_size=opt.max_attention_size,
-                #
-                skip_pretrained_weights=opt.fake_path is not None,
-            )
-            if opt.fake_path is not None and not lazy:
-                state_dict = torch.load(opt.fake_path, map_location="cpu", weights_only=True)
-                if "generator_ema" in state_dict:
-                    self.fake_score.load_state_dict(state_dict["generator_ema"])
-                elif "generator" in state_dict:
-                    self.fake_score.load_state_dict(state_dict["generator"])
-                else:
-                    self.fake_score.load_state_dict(state_dict)
-        else:
-            self.fake_score = None
+        # Fake score model for DMD
+        self.fake_score = WanDiffusionWrapper(
+            opt.fake_wan_dir,
+            opt.num_train_timesteps,
+            opt.num_inference_steps,
+            opt.shift,
+            0.,    # hard-coded `sigma_min`
+            True,  # hard-coded `extra_one_step`
+            #
+            opt.teacher_input_plucker,
+            opt.teacher_extra_condition_dim,
+            #
+            opt.use_gradient_checkpointing,
+            opt.use_gradient_checkpointing_offload,
+            #
+            is_causal=opt.is_teacher_causal,
+            sink_size=opt.sink_size,
+            chunk_size=opt.chunk_size,
+            max_attention_size=opt.max_attention_size,
+            #
+            skip_pretrained_weights=opt.fake_path is not None,
+        )
+        if opt.fake_path is not None and not lazy:
+            state_dict = torch.load(opt.fake_path, map_location="cpu", weights_only=True)
+            if "generator_ema" in state_dict:
+                self.fake_score.load_state_dict(state_dict["generator_ema"])
+            elif "generator" in state_dict:
+                self.fake_score.load_state_dict(state_dict["generator"])
+            else:
+                self.fake_score.load_state_dict(state_dict)
 
         # This will be init later with fsdp-wrapped modules
         self.inference_pipeline: SelfForcingTrainingPipeline = None
 
         # Add LoRA in the diffusion model, will freeze all parameters except LoRA layers
-        if opt.use_lora_in_fake_score and not opt.ddt_fake_score:
+        if opt.use_lora_in_fake_score:
             self._add_lora_to_fake_score(
                 target_modules=opt.lora_target_modules_in_fake_score.split(","),
                 lora_rank=opt.lora_rank_in_fake_score,
@@ -106,7 +102,7 @@ class DMD_Wan(Wan):
                 self.load_fake_score_lora_weights(lora_state_dict, strict=True)
 
         # Set other trainable parameters except LoRA layers in the diffusion model
-        if opt.more_trainable_fake_score_params is not None and not opt.ddt_fake_score:
+        if opt.more_trainable_fake_score_params is not None:
             trainble_names = opt.more_trainable_fake_score_params.split(",")
             if opt.use_lora_in_fake_score:
                 trainble_names.append("lora")
@@ -126,7 +122,6 @@ class DMD_Wan(Wan):
         train_generator: bool = True,
         is_eval: bool = False,
         vae: Optional[WanVAEWrapper] = None,
-        ema_params: Optional[EMAParams] = None,
     ):
         outputs = {}
         device = self.diffusion.model.device
@@ -517,8 +512,6 @@ class DMD_Wan(Wan):
             clean_x=clean_latents if self.opt.use_teacher_forcing else None,
             #
             clip_latent_lens=clip_latent_lens,  # for multi-clip generation
-            #
-            ddt_index=1 if self.opt.ddt_diffusion_loss else 0,  # first or second DDT head for diffusion loss
         )
         model_outputs, da3_outputs = \
             model_outputs if self.opt.load_da3 else (model_outputs, None)
@@ -641,30 +634,16 @@ class DMD_Wan(Wan):
         ).detach().unflatten(0, (B, f)).transpose(1, 2).to(dtype)  # (B, D, f, h, w)
         targets = self.diffusion.scheduler.training_target(pred_x0, critic_noises)
 
-        if self.opt.ddt_fake_score:
-            fake_model_outputs = self.diffusion(
-                noisy_latents,
-                timesteps,
-                prompt_embeds,
-                plucker=plucker,
-                #
-                clean_x=pred_x0 if self.opt.teacher_use_teacher_forcing else None,
-                #
-                clip_latent_lens=clip_latent_lens,  # for multi-clip generation
-                #
-                ddt_index=-1,  # last DDT head as fake score
-            )
-        else:
-            fake_model_outputs = self.fake_score(
-                noisy_latents,
-                timesteps,
-                prompt_embeds,
-                plucker=plucker,
-                #
-                clean_x=pred_x0 if self.opt.teacher_use_teacher_forcing else None,
-                #
-                clip_latent_lens=clip_latent_lens,  # for multi-clip generation
-            )
+        fake_model_outputs = self.fake_score(
+            noisy_latents,
+            timesteps,
+            prompt_embeds,
+            plucker=plucker,
+            #
+            clean_x=pred_x0 if self.opt.teacher_use_teacher_forcing else None,
+            #
+            clip_latent_lens=clip_latent_lens,  # for multi-clip generation
+        )
 
         # Step 3: Compute the denoising loss for the fake critic
         diffusion_loss = tF.mse_loss(fake_model_outputs.float(), targets.float(), reduction="none")  # (B, D, f, h, w)
@@ -846,57 +825,29 @@ class DMD_Wan(Wan):
         """
         Compute the KL grad (eq 7 in https://arxiv.org/abs/2311.18828).
         """
-        # Step 1: Compute the fake score (DDT[-1] or independent fake_score)
-        if self.opt.ddt_fake_score:
-            fake_model_outputs = self.diffusion(
-                noisy_latents,
-                timesteps,
-                prompt_embeds,
-                plucker=plucker,
-                #
-                clean_x=pred_x0 if self.opt.teacher_use_teacher_forcing else None,
-                #
-                clip_latent_lens=clip_latent_lens,  # for multi-clip generation
-                #
-                ddt_index=-1,  # last DDT head as fake score
-            )
-        else:
-            fake_model_outputs = self.fake_score(
-                noisy_latents,
-                timesteps,
-                prompt_embeds,
-                plucker=plucker,
-                #
-                clean_x=pred_x0 if self.opt.teacher_use_teacher_forcing else None,
-                #
-                clip_latent_lens=clip_latent_lens,  # for multi-clip generation
-            )
+        # Step 1: Compute the fake score
+        fake_model_outputs = self.fake_score(
+            noisy_latents,
+            timesteps,
+            prompt_embeds,
+            plucker=plucker,
+            #
+            clean_x=pred_x0 if self.opt.teacher_use_teacher_forcing else None,
+            #
+            clip_latent_lens=clip_latent_lens,  # for multi-clip generation
+        )
 
         if self.opt.fake_guidance_scale != 1.:
-            if self.opt.ddt_fake_score:
-                fake_model_outputs_uncond = self.diffusion(
-                    noisy_latents,
-                    timesteps,
-                    negative_prompt_embeds,
-                    plucker=plucker,
-                    #
-                    clean_x=pred_x0 if self.opt.teacher_use_teacher_forcing else None,
-                    #
-                    clip_latent_lens=clip_latent_lens,  # for multi-clip generation
-                    #
-                    ddt_index=-1,  # last DDT head as fake score
-                )
-            else:
-                fake_model_outputs_uncond = self.fake_score(
-                    noisy_latents,
-                    timesteps,
-                    negative_prompt_embeds,
-                    plucker=plucker,
-                    #
-                    clean_x=pred_x0 if self.opt.teacher_use_teacher_forcing else None,
-                    #
-                    clip_latent_lens=clip_latent_lens,  # for multi-clip generation
-                )
+            fake_model_outputs_uncond = self.fake_score(
+                noisy_latents,
+                timesteps,
+                negative_prompt_embeds,
+                plucker=plucker,
+                #
+                clean_x=pred_x0 if self.opt.teacher_use_teacher_forcing else None,
+                #
+                clip_latent_lens=clip_latent_lens,  # for multi-clip generation
+            )
             fake_model_outputs = fake_model_outputs_uncond + self.opt.fake_guidance_scale * (
                 fake_model_outputs - fake_model_outputs_uncond)
             del fake_model_outputs_uncond  # free intermediate tensors
@@ -1122,7 +1073,6 @@ class DMD_Wan(Wan):
                 clean_x=clean_latents if self.opt.use_teacher_forcing else None,
                 #
                 clip_latent_lens=clip_latent_lens,  # for multi-clip generation
-                ddt_index=0,  # the first DDT head
             )
             model_outputs, da3_outputs = \
                 model_outputs if self.opt.load_da3 else (model_outputs, None)
@@ -1178,7 +1128,6 @@ class DMD_Wan(Wan):
         self.inference_pipeline = SelfForcingTrainingPipeline(self.opt, self.diffusion, self.current_vae_decoder)
 
     def _add_lora_to_fake_score(self, target_modules: List[str], lora_rank: int, lora_alpha: Optional[int] = None):
-        assert not self.opt.ddt_fake_score  # LoRA is not supported for DDT fake score
         if lora_alpha is None:
             lora_alpha = lora_rank
 

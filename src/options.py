@@ -119,11 +119,6 @@ class Options:
     rand_pcrender_ratio: float = 1.
     min_num_points: int = 1000
     max_num_points: int = 100000
-        ## DDT
-    use_ddt: bool = False
-    only_train_ddt: bool = False
-    ddt_num_layers: int | float = 0.1  # int: number of layers; float: ratio in [0,1]
-    ddt_fusion: bool = True
         ## Causal
     is_causal: bool = False
     sink_size: int = 0
@@ -175,7 +170,6 @@ class Options:
     real_guidance_scale: float = 4.
     separate_gen_crit: bool = False  # to reduce peak memory
     real_score_offload: bool = False  # to save memory
-    ddt_fake_score: bool = False
         ## Self-forcing
     self_forcing_prob: float = 1.
     denoising_step_list: Tuple[int, ...] = (1000, 750, 500, 250)
@@ -223,18 +217,12 @@ class Options:
         ## Diffusion loss in DMD
     diffusion_loss_prob: float = 0.
     diffusion_loss_weight: float = 1.
-    ddt_diffusion_loss: bool = False
         ## DA3 losses
     conf_alpha: float = 0.2
     gradient_loss_scale: int = 4
     xyz_loss_threshold: float = 10.
     depth_loss_threshold: float = 10.
     camera_loss_threshold: float = 10.
-        ## Self-supervised loss
-    self_supervised_loss_weight: float = 0.
-    student_layer_idx: Optional[int | float] = None  # int: block index; float: ratio in [0,1]
-    teacher_layer_idx: Optional[int | float] = None  # int: block index; float: ratio in [0,1]
-    self_supervised_mask_ratio: float = 0.1
         ## LR scheduler
     name_lr_mult: Optional[str] = None
     exclude_name_lr_mult: Optional[str] = None
@@ -252,10 +240,6 @@ class Options:
 
         if self.load_da3:
             self.load_depth = True
-
-        # DDT multiple heads
-        if self.ddt_diffusion_loss or self.ddt_fake_score:
-            self.use_ddt = True
 
         # Dataset directories
         self.dataset_dir_train = {
@@ -444,17 +428,16 @@ opt_dict["wan2.1_t2v_dmd"] = Options(
     cfg_scale=(1.,),
     deterministic_inference=False,
     #
+    use_lora_in_fake_score=False,  # True
+    lora_target_modules_in_fake_score="q,k,v,o,ffn.0,ffn.2",
+    lora_rank_in_fake_score=32,
+    #
     # load_conf=True,
     # input_pcrender=True,
     # load_tae=True,
     #
     critic_loss_weight=1.,
-    ddt_fake_score=False,  # True
-    ddt_num_layers=0.1,
-    ddt_fusion=True,
-    only_train_ddt=False,  # True
     #
     diffusion_loss_prob=0.,
     diffusion_loss_weight=1.,
-    ddt_diffusion_loss=False,
 )

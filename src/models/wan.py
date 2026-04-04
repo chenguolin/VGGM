@@ -27,9 +27,8 @@ from src.models.modules import (
 )
 from src.models.modules.decoder_wrapper import ZERO_VAE_CACHE_512, ZERO_VAE_CACHE
 from src.models.losses import XYZLoss, DepthLoss, CameraLoss
-from src.utils.ema import EMAParams
 from src.utils import convert_to_buffer, plucker_ray, colorize_depth, filter_da3_points, render_pt3d_points, mv_interpolate
-from src.utils.distributed import get_sp_world_size, barrier
+from src.utils.distributed import get_sp_world_size
 
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -86,14 +85,6 @@ class Wan(nn.Module):
             self.text_encoder.eval()
         else:
             self.text_encoder = None
-
-        # Compute `num_ddts` dynamically based on DDT multi-head options
-        num_ddts = int(opt.use_ddt)
-        if opt.ddt_diffusion_loss:
-            num_ddts += 1
-        if opt.ddt_fake_score:
-            num_ddts += 1
-        self.num_ddts = num_ddts
 
         # TTT config (passed to CausalWanModel through wrapper)
         if opt.use_ttt and opt.is_causal:
@@ -159,11 +150,6 @@ class Wan(nn.Module):
                 max_attention_size=opt.max_attention_size,
                 rope_outside=opt.rope_outside,
                 use_flexattn=opt.use_flexattn,
-                #
-                feat_proj=opt.self_supervised_loss_weight > 0.,
-                num_ddts=num_ddts,
-                ddt_num_layers=opt.ddt_num_layers,
-                ddt_fusion=opt.ddt_fusion,
                 #
                 ttt_layers=ttt_layers,
                 ttt_config=ttt_config,
@@ -246,18 +232,6 @@ class Wan(nn.Module):
             else:
                 self.diffusion.load_state_dict(state_dict, strict=False)
 
-        # Initialize DDT heads with weights from `model.head`
-        if num_ddts > 0:
-            if not lazy:
-                for ddt in self.diffusion.ddts:
-                    ddt.head.load_state_dict(self.diffusion.model.head.state_dict())
-            self.diffusion.model.head = None  # replaced by DDT heads
-
-        # (Optional) Freeze everything except DDT heads
-        if opt.only_train_ddt and num_ddts > 0:
-            self.diffusion.requires_grad_(False)
-            self.diffusion.ddts.requires_grad_(True)
-
         # Add LoRA in the diffusion model, will freeze all parameters except LoRA layers
         if opt.use_lora_in_wan:
             self._add_lora_to_wan(
@@ -306,7 +280,6 @@ class Wan(nn.Module):
         dtype: torch.dtype = torch.float32,
         is_eval: bool = False,
         vae: Optional[WanVAEWrapper] = None,
-        ema_params: Optional[EMAParams] = None,
     ):
         outputs = {}
         device = self.diffusion.model.device
@@ -470,36 +443,15 @@ class Wan(nn.Module):
 
         min_t, max_t = int(self.opt.min_timestep_boundary * self.opt.num_train_timesteps), \
             int(self.opt.max_timestep_boundary * self.opt.num_train_timesteps)
-        if self.opt.self_supervised_loss_weight <= 0.:
-            if not self.opt.is_causal:
-                timesteps_id = torch.randint(min_t, max_t, (1,))  # (1,); batch share the same timestep for simpler time scheduler
-                timesteps_id = timesteps_id.unsqueeze(1).repeat(B, f)  # (B, f)
-            else:  # teacher / diffusion forcing
-                assert f % self.opt.chunk_size == 0
-                num_chunks = f // self.opt.chunk_size
-
-                timesteps_id = torch.randint(min_t, max_t, (num_chunks,))  # (num_chunks,); each chunk in different noise level
-                timesteps_id = timesteps_id.repeat_interleave(self.opt.chunk_size, dim=0).repeat(B, 1)  # (B, f); batch share the same timestep for simpler time scheduler
-        else:
-            # cf. Self-Flow: for self supervision
+        if not self.opt.is_causal:
+            timesteps_id = torch.randint(min_t, max_t, (1,))  # (1,); batch share the same timestep for simpler time scheduler
+            timesteps_id = timesteps_id.unsqueeze(1).repeat(B, f)  # (B, f)
+        else:  # teacher / diffusion forcing
             assert f % self.opt.chunk_size == 0
             num_chunks = f // self.opt.chunk_size
 
-            # Randomly select two timesteps
-            timesteps_id_pair = torch.randint(min_t, max_t, (2,))  # (2,)
-            timesteps_id_small = timesteps_id_pair.min()  # smaller timestep (less noise)
-            timesteps_id_large = timesteps_id_pair.max()  # larger timestep (more noise)
-
-            # Randomly select which chunks to mask with small timestep
-            num_masked_chunks = int(num_chunks * self.opt.self_supervised_mask_ratio)
-            mask_indices = torch.randperm(num_chunks)[:num_masked_chunks]  # randomly select chunks to mask
-
-            # Create chunk-level timestep assignment
-            chunk_timesteps = torch.full((num_chunks,), timesteps_id_large, dtype=torch.long)  # default: large timestep
-            chunk_timesteps[mask_indices] = timesteps_id_small  # masked chunks: small timestep
-
-            # Expand to frame-level: (num_chunks,) -> (f,) -> (B, f)
-            timesteps_id = chunk_timesteps.repeat_interleave(self.opt.chunk_size, dim=0).repeat(B, 1)  # (B, f)
+            timesteps_id = torch.randint(min_t, max_t, (num_chunks,))  # (num_chunks,); each chunk in different noise level
+            timesteps_id = timesteps_id.repeat_interleave(self.opt.chunk_size, dim=0).repeat(B, 1)  # (B, f); batch share the same timestep for simpler time scheduler
         timesteps = self.diffusion.scheduler.timesteps[timesteps_id].to(dtype=dtype, device=device)
         if self.opt.no_noise_for_da3:  # to train da3 in clean latents
             timesteps = torch.zeros_like(timesteps)
@@ -529,12 +481,7 @@ class Wan(nn.Module):
             clean_x=latents if self.opt.use_teacher_forcing else None,
             #
             clip_latent_lens=clip_latent_lens,  # for multi-clip generation
-            #
-            return_feat_layer_idx=self.opt.student_layer_idx,  # for self-supervise
         )
-
-        if self.opt.student_layer_idx is not None:
-            model_outputs, student_feats = model_outputs
 
         if self.opt.load_da3:
             model_outputs, da3_outputs = model_outputs
@@ -546,48 +493,6 @@ class Wan(nn.Module):
         diffusion_loss = diffusion_loss.unflatten(0, (B, f)).transpose(1, 2)  # (B, D, f, h, w)
         outputs["diffusion_loss"] = diffusion_loss.mean()
         outputs["loss"] = outputs["diffusion_loss"]
-
-        # Self-supervised loss
-        if self.opt.self_supervised_loss_weight > 0.:
-            assert ema_params is not None
-            # Store the model parameters temporarily and load the EMA parameters
-            ema_params.cache_model(cpu=False)
-            ema_params.copy_to_model()
-            barrier()  # make sure all processes have finished the above operations before evaluation
-
-            # Asymmetric noise for teacher inputs
-            teacher_timesteps_id = timesteps_id_small.unsqueeze(0).unsqueeze(1).repeat(B, f)  # (B, f)
-            teacher_timesteps = self.diffusion.scheduler.timesteps[teacher_timesteps_id].to(dtype=dtype, device=device)
-            if cond_latents is not None:
-                teacher_timesteps = torch.cat([torch.zeros_like(teacher_timesteps[:, :1]), teacher_timesteps[:, 1:]], dim=1)
-
-            teacher_noisy_latents = self.diffusion.scheduler.add_noise(
-                latents.transpose(1, 2).flatten(0, 1),  # (B*f, D, h, w)
-                noises.transpose(1, 2).flatten(0, 1),   # (B*f, D, h, w)
-                teacher_timesteps.flatten(0, 1),        # (B*f,)
-            ).detach().unflatten(0, (B, f)).transpose(1, 2).to(dtype)  # (B, D, f, h, w)
-
-            with torch.no_grad():
-                model_outputs, teacher_feats = self.diffusion(
-                    teacher_noisy_latents,
-                    teacher_timesteps,
-                    prompt_embeds,
-                    plucker=plucker if self.opt.input_plucker else None,
-                    C2W=C2W, fxfycxcy=fxfycxcy,  # for DA3
-                    extra_condition=input_extra_condition,
-                    #
-                    clean_x=latents if self.opt.use_teacher_forcing else None,
-                    #
-                    clip_latent_lens=clip_latent_lens,  # for multi-clip generation
-                    #
-                    return_feat_layer_idx=self.opt.teacher_layer_idx,  # for self-supervise
-                )
-            outputs["ss_loss"] = -tF.cosine_similarity(student_feats.float(), teacher_feats.float(), dim=-1).mean()
-            outputs["loss"] = outputs["diffusion_loss"] + self.opt.self_supervised_loss_weight * outputs["ss_loss"]
-
-            # Switch back to the original model parameters
-            ema_params.restore_model_from_cache()
-            barrier()  # make sure all processes have finished restoring the model parameters before the next training step
 
         # (Optional) DA3 loss
         if self.opt.load_da3:

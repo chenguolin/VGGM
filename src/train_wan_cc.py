@@ -318,14 +318,13 @@ def main():
             mixed_precision=args.mixed_precision,
             cpu_offload=opt.real_score_offload,
         )
-        if not opt.ddt_fake_score:
-            model.fake_score = fsdp_wrap(
-                model.fake_score,
-                sharding_strategy=args.sharding_strategy,
-                wrap_strategy=args.wrap_strategy,
-                transformer_module=transformer_blocks,
-                mixed_precision=args.mixed_precision,
-            )
+        model.fake_score = fsdp_wrap(
+            model.fake_score,
+            sharding_strategy=args.sharding_strategy,
+            wrap_strategy=args.wrap_strategy,
+            transformer_module=transformer_blocks,
+            mixed_precision=args.mixed_precision,
+        )
 
     # Prepare VAE and optionally other modules
     vae = WanVAEWrapper(opt.vae_path)
@@ -484,9 +483,9 @@ def main():
 
             if opt.use_dmd:
                 train_generator = global_update_step % opt.generator_train_every == 0
-                outputs = model(batch, dtype=dtype, train_generator=train_generator, is_eval=is_eval, vae=vae, ema_params=ema_params)
+                outputs = model(batch, dtype=dtype, train_generator=train_generator, is_eval=is_eval, vae=vae)
             else:
-                outputs = model(batch, dtype=dtype, is_eval=is_eval, vae=vae, ema_params=ema_params)
+                outputs = model(batch, dtype=dtype, is_eval=is_eval, vae=vae)
 
             loss = outputs["loss"]
 
@@ -494,7 +493,7 @@ def main():
             _METRIC_KEYS = [
                 "diffusion_loss", "critic_loss", "generator_loss", "dmd_grad_norm",
                 "depth_loss", "depth_loss_diffusion", "ray_loss", "ray_loss_diffusion",
-                "camera_loss", "camera_loss_diffusion", "render_loss", "ss_loss",
+                "camera_loss", "camera_loss_diffusion", "render_loss",
             ]
             train_metrics = {k: outputs[k] for k in _METRIC_KEYS if k in outputs}
 
