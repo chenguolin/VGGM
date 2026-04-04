@@ -10,6 +10,12 @@ from src.options import Options
 from src.data.base_dataset import BaseDataset
 
 
+class _SkipSample(Exception):
+    """Raised inside `_getitem_once` to signal that the current sample should be skipped."""
+    def __init__(self, idx: int):
+        self.idx = idx
+
+
 class InternalDataset(BaseDataset):
     def __init__(self, opt: Options, training: bool = True):
         super().__init__(opt, "internal", training)
@@ -78,6 +84,22 @@ class InternalDataset(BaseDataset):
         return len(self.valid_idxs)
 
     def __getitem__(self, idx: int) -> Dict[str, Any]:
+        # Iterative retry loop — avoids RecursionError when many samples fail consecutively
+        tried = set()
+        current_idx = idx
+        while True:
+            tried.add(current_idx)
+            try:
+                return self._getitem_once(current_idx)
+            except _SkipSample as e:
+                bad_idx = e.idx
+                if bad_idx in self.valid_idxs:
+                    self.valid_idxs.remove(bad_idx)
+                if len(self.valid_idxs) == 0:
+                    raise ValueError("No valid data in InternalDataset!")
+                current_idx = int(np.random.choice(self.valid_idxs))
+
+    def _getitem_once(self, idx: int) -> Dict[str, Any]:
         uid = self.uids[idx]
         if self.opt.version_action:
             caption_result = self.caption_data[uid]
@@ -128,7 +150,7 @@ class InternalDataset(BaseDataset):
                 return True
             valid_pairs = [(si, nc) for si, nc in valid_pairs if _pair_is_valid(si, nc)]
             if len(valid_pairs) == 0:
-                return self._skip_this_idx(idx)
+                raise _SkipSample(idx)
             start_clip_idx, num_clips = valid_pairs[np.random.randint(len(valid_pairs))]
             clip_idxs = [start_clip_idx + i for i in range(num_clips)]
             prompt = [all_captions[clip_idx] for clip_idx in clip_idxs]
@@ -146,7 +168,7 @@ class InternalDataset(BaseDataset):
                 if all((clip_idx + i) in all_clip_idx_set for i in range(num_clips))
             ]
             if len(valid_start_clip_idxs) == 0:
-                return self._skip_this_idx(idx)
+                raise _SkipSample(idx)
 
             if self.opt.version_2sdiff and 0 in valid_start_clip_idxs:
                 ### For `version_2sdiff`, always start from clip 0 because clip 0 captions have a
@@ -191,7 +213,7 @@ class InternalDataset(BaseDataset):
                 seg_start = int(round(seg["start_time"] * fps))
                 seg_end = min(int(round(seg["end_time"] * fps)), num_frames)
                 if seg_end < seg_start + min_seg_duration * fps:
-                    return self._skip_this_idx(idx)
+                    raise _SkipSample(idx)
                 seg_frame_ranges.append((seg_start, seg_end))
             seg_num_frames = [(end - start) for start, end in seg_frame_ranges]  # real frame count per segment
             total_seg_frames = sum(seg_num_frames)
@@ -229,7 +251,7 @@ class InternalDataset(BaseDataset):
             vipe_data = np.load(vipe_path, allow_pickle=True)
             C2W, fxfycxcy = vipe_data["pose"], vipe_data["intrinsics"]
             if (C2W.shape[0] != fxfycxcy.shape[0]) or (C2W.shape[0] != num_frames):
-                return self._skip_this_idx(idx)
+                raise _SkipSample(idx)
             C2W = torch.from_numpy(C2W).float()[input_frame_idxs, ...]  # (F, 4, 4)
             fxfycxcy = torch.from_numpy(fxfycxcy).float()[input_frame_idxs, ...]  # (F, 3, 3)
             fxfycxcy[:, 0] /= W
@@ -306,10 +328,3 @@ class InternalDataset(BaseDataset):
                     return_dict[key] = return_dict[key][0]
 
         return return_dict
-
-    def _skip_this_idx(self, idx: int):
-        if idx in self.valid_idxs:
-            self.valid_idxs.remove(idx)
-            if len(self.valid_idxs) == 0:
-                raise ValueError("No valid data in InternalDataset!")
-        return self.__getitem__(int(np.random.choice(self.valid_idxs)))

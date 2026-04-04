@@ -229,13 +229,10 @@ def main():
     util.set_seed(args.seed + dp_rank)  # util.set_seed(args.seed + global_rank)
 
     # Load train and validation datasets
-    if configs["opt_type"] == "sf_rep":
-        train_dataset = TextDataset()
+    if opt.use_internal_dataset:
+        train_dataset = InternalDataset(opt, training=True)
     else:
-        if opt.use_internal_dataset:
-            train_dataset = InternalDataset(opt, training=True)
-        else:
-            train_dataset = RealcamvidDataset(opt, training=True)
+        train_dataset = RealcamvidDataset(opt, training=True)
     # SP-aware sampling: ranks in the same SP group should get the same samples
     train_sampler = DistributedSampler(train_dataset, num_replicas=dp_size, rank=dp_rank, shuffle=True, seed=args.seed, drop_last=True)
     train_loader = DataLoader(
@@ -249,13 +246,11 @@ def main():
         persistent_workers=args.num_workers > 0,
         collate_fn=BaseDataset.collate_fn,
     )
-    if configs["opt_type"] == "sf_rep":
-        val_dataset = TextDataset()
+    if opt.use_internal_dataset:
+        val_dataset = InternalDataset(opt, training=False)
     else:
-        if opt.use_internal_dataset:
-            val_dataset = InternalDataset(opt, training=False)
-        else:
-            val_dataset = RealcamvidDataset(opt, training=False)
+        val_dataset = RealcamvidDataset(opt, training=False)
+    # SP-aware sampling: ranks in the same SP group should get the same samples
     val_sampler = DistributedSampler(val_dataset, num_replicas=dp_size, rank=dp_rank, shuffle=True, seed=args.seed, drop_last=False)
     val_loader = DataLoader(
         val_dataset,

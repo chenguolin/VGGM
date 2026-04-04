@@ -81,22 +81,20 @@ class Options:
     only_train_da3: bool = False
     only_train_resdit: bool = False
     no_noise_for_da3: bool = False
-    da3_interactive: bool = False
-    da3_input_cam: bool = True
+    da3_interactive: bool = True
+    da3_input_cam: bool = False
         ## Train
     da3_weight_type: Literal[
         "uniform",
         "diffusion",
         "inverse_timestep",
-    ] = "inverse_timestep"
+    ] = "uniform"
     da3_down_ratio: int = 1
     da3_chunk_size: int = 8  # DPT head chunk size, not for causality
     da3_use_ray_pose: bool = False
-        ## Any4D
-    any4d_checkpoint_path: str = f"{ROOT}/.cache/any4d_4v_combined.pth"
         ## Self Geometry Forcing
     da3_loss_in_sf: bool = False
-    render_loss_in_sf: bool = True
+    render_loss_in_sf: bool = False
 
     # VAE
     vae_path: str = f"{ROOT}/.cache/huggingface/hub/Wan-AI/Wan2.1-T2V-1.3B/Wan2.1_VAE.pth"
@@ -124,6 +122,7 @@ class Options:
     max_num_points: int = 100000
         ## DDT
     use_ddt: bool = False
+    only_train_ddt: bool = False
     ddt_num_layers: int | float = 0.1  # int: number of layers; float: ratio in [0,1]
     ddt_fusion: bool = True
         ## Causal
@@ -173,11 +172,11 @@ class Options:
         ## DMD
     use_dmd: bool = False
     generator_train_every: int = 5
-    separate_gen_crit: bool = False  # to reduce peak memory
     fake_guidance_scale: float = 1.
     real_guidance_scale: float = 4.
+    separate_gen_crit: bool = False  # to reduce peak memory
+    real_score_offload: bool = False  # to save memory
     ddt_fake_score: bool = False
-    real_score_offload: bool = False
         ## Self-forcing
     self_forcing_prob: float = 1.
     denoising_step_list: Tuple[int, ...] = (1000, 750, 500, 250)
@@ -186,7 +185,7 @@ class Options:
     context_noise: int = 0
     same_step_across_chunks: bool = True
         ## Teacher-forcing
-    use_teacher_forcing: bool = True
+    use_teacher_forcing: bool = False
         ## Noise scheduler
     num_train_timesteps: int = 1000
     num_inference_steps: int = 25
@@ -198,7 +197,7 @@ class Options:
     use_gradient_checkpointing_offload: bool = False
         ## Training and inference
     eval_offline: bool = False
-    cfg_dropout: float = 0.1
+    cfg_dropout: float = 0.
     cfg_scale: Tuple[float, ...] = (5.,)
     negative_prompt: str = "色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走"
     deterministic_inference: bool = True
@@ -255,7 +254,7 @@ class Options:
         if self.load_da3:
             self.load_depth = True
 
-        # DDT multi-head
+        # DDT multiple heads
         if self.ddt_diffusion_loss or self.ddt_fake_score:
             self.use_ddt = True
 
@@ -347,7 +346,7 @@ opt_dict["wan2.1_t2v_1.3b"] = Options(
     # generator_path=f"{ROOT}/projects/VGGM/.pth",
     #
     is_causal=False,  # True
-    use_teacher_forcing=True,
+    use_teacher_forcing=False,  # True
     #
     sink_size=3,
     chunk_size=3,
@@ -357,10 +356,11 @@ opt_dict["wan2.1_t2v_1.3b"] = Options(
     #
     load_da3=False,  # True
     da3_interactive=True,  # False
-    da3_weight_type="inverse_timestep",
+    da3_weight_type="uniform",
     da3_down_ratio=1,
     # only_train_da3=True,
     # no_noise_for_da3=True,
+    only_train_resdit=False,  # True
     #
     use_ttt=False,  # True
     #
@@ -402,7 +402,7 @@ opt_dict["wan2.1_t2v_1.3b_dmd"] = Options(
     only_train_resdit=False,  # True
     #
     da3_loss_in_sf=False,  # True
-    render_loss_in_sf=False,
+    render_loss_in_sf=False,  # True
     #
     # diffusion_loss_prob=0.,
     # no_noise_for_da3=False,
@@ -414,7 +414,7 @@ opt_dict["wan2.1_t2v_1.3b_dmd"] = Options(
     chunk_size=3,
     max_window_size=9,
     rope_outside=True,
-    use_flexattn=False,  # True
+    use_flexattn=True,  # False
     #
     # wan_dir=f"{ROOT}/.cache/huggingface/hub/Wan-AI/Wan2.1-T2V-14B",
     # real_wan_dir=f"{ROOT}/.cache/huggingface/hub/Wan-AI/Wan2.1-T2V-14B",
@@ -450,45 +450,12 @@ opt_dict["wan2.1_t2v_1.3b_dmd"] = Options(
     # load_tae=True,
     #
     critic_loss_weight=1.,
-    ddt_fake_score=False,
+    ddt_fake_score=False,  # True
     ddt_num_layers=0.1,
     ddt_fusion=True,
+    only_train_ddt=False,  # True
     #
     diffusion_loss_prob=0.,
     diffusion_loss_weight=1.,
     ddt_diffusion_loss=False,
-)
-
-# Self-Forcing reproduction
-opt_dict["sf_rep"] = Options(
-    input_res=(480, 832),
-    #
-    is_causal=True,
-    use_teacher_forcing=False,
-    #
-    sink_size=0,
-    chunk_size=3,
-    max_window_size=21,
-    rope_outside=False,
-    #
-    generator_path=f"{ROOT}/.cache/ode_init.pt",
-    real_wan_dir=f"{ROOT}/.cache/huggingface/hub/Wan-AI/Wan2.1-T2V-14B",
-    teacher_path=None,
-    is_teacher_causal=False,
-    teacher_use_teacher_forcing=False,
-    #
-    use_dmd=True,
-    self_forcing_prob=1.,
-    real_guidance_scale=4.,
-    last_step_only=False,
-    context_noise=0,
-    same_step_across_chunks=True,
-    #
-    name_lr_mult="fake_score",
-    lr_mult=0.2,
-    #
-    num_input_frames_test=81,
-    num_inference_steps=4,
-    cfg_scale=(1.,),
-    deterministic_inference=False,
 )

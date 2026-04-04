@@ -1606,6 +1606,10 @@ class CausalWanModel(ModelMixin, ConfigMixin):
             x = x[:, x.shape[1] // 2:]
             if inter_feats is not None:
                 inter_feats = inter_feats[:, inter_feats.shape[1] // 2:]
+            if return_ddt_inputs:
+                half = ddt_inputs["x"].shape[1] // 2
+                ddt_inputs["x"] = ddt_inputs["x"][:, half:]
+                ddt_inputs["e"] = ddt_inputs["e"][:, half:]
 
         # head & unpatchify
         if not not_head_and_unpatchify:  # (B, N, D) -> (B, C, f, h, w)

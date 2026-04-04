@@ -10,6 +10,12 @@ from src.data.base_dataset import BaseDataset
 from src.utils.geo_util import inverse_c2w, intrinsics_to_fxfycxcy, unproject_depth
 
 
+class _SkipSample(Exception):
+    """Raised inside `_getitem_once` to signal that the current sample should be skipped."""
+    def __init__(self, idx: int):
+        self.idx = idx
+
+
 class RealcamvidDataset(BaseDataset):
     def __init__(self, opt: Options, training: bool = True):
         super().__init__(opt, "realcamvid", training)
@@ -25,13 +31,27 @@ class RealcamvidDataset(BaseDataset):
         return len(self.valid_idxs)
 
     def __getitem__(self, idx: int) -> Dict[str, Any]:
+        # Iterative retry loop — avoids RecursionError when many samples fail consecutively
+        current_idx = idx
+        while True:
+            try:
+                return self._getitem_once(current_idx)
+            except _SkipSample as e:
+                bad_idx = e.idx
+                if bad_idx in self.valid_idxs:
+                    self.valid_idxs.remove(bad_idx)
+                if len(self.valid_idxs) == 0:
+                    raise ValueError("No valid data in RealcamvidDataset!")
+                current_idx = int(np.random.choice(self.valid_idxs))
+
+    def _getitem_once(self, idx: int) -> Dict[str, Any]:
         metadata = self.metadata[idx]
         dataset_source = metadata["dataset_source"]  # "RealEstate10K", "DL3DV-10K", "MiraData9K"
         uid = metadata["video_path"].replace("/", "_").replace(".mp4", "")
 
         if self.opt.only_static_data:
             if "Mira" in uid:
-                return self.__getitem__(np.random.choice(self.valid_idxs))
+                raise _SkipSample(idx)
 
         # Load prompt
         # if np.random.rand() < 0.75:  # TODO: make it configurable
@@ -81,7 +101,7 @@ class RealcamvidDataset(BaseDataset):
         else:
             W2C = metadata["camera_extrinsics"]
             if num_frames != W2C.shape[0]:
-                return self._skip_this_idx(idx)
+                raise _SkipSample(idx)
 
             C2W = inverse_c2w(torch.from_numpy(W2C).float())[input_frame_idxs, ...]  # (F, 4, 4)
             C2W[:, :3, 3] *= metadata["align_factor"]  # to metric scale
@@ -128,10 +148,3 @@ class RealcamvidDataset(BaseDataset):
         if self.opt.load_conf:
             return_dict["conf"] = confs  # (F, H, W)
         return return_dict
-
-    def _skip_this_idx(self, idx: int):
-        if idx in self.valid_idxs:
-            self.valid_idxs.remove(idx)
-            if len(self.valid_idxs) == 0:
-                raise ValueError("No valid data in InternalDataset!")
-        return self.__getitem__(int(np.random.choice(self.valid_idxs)))

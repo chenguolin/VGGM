@@ -253,6 +253,11 @@ class Wan(nn.Module):
                     ddt.head.load_state_dict(self.diffusion.model.head.state_dict())
             self.diffusion.model.head = None  # replaced by DDT heads
 
+        # (Optional) Freeze everything except DDT heads
+        if opt.only_train_ddt and num_ddts > 0:
+            self.diffusion.requires_grad_(False)
+            self.diffusion.ddts.requires_grad_(True)
+
         # Add LoRA in the diffusion model, will freeze all parameters except LoRA layers
         if opt.use_lora_in_wan:
             self._add_lora_to_wan(
