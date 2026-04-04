@@ -291,10 +291,6 @@ class Wan(nn.Module):
         else:
             self.lpips_loss = None
 
-        # (Optional) RIFLEx (https://arxiv.org/pdf/2502.15894) for length extrapolation
-        if opt.enable_riflex:
-            self.diffusion.model.enable_riflex()
-
         self.kv_cache_pos, self.kv_cache_neg = None, None
         self.crossattn_cache_pos, self.crossattn_cache_neg = None, None
         self.kv_cache_pos_da3, self.kv_cache_neg_da3 = None, None

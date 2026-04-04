@@ -20,7 +20,6 @@ from .model import (
     register_to_config,
     sinusoidal_embedding_1d,
     rope_params,
-    get_1d_rotary_pos_embed_riflex,
     rope_apply,
     rope_apply_sp,
 )
@@ -1123,33 +1122,6 @@ class CausalWanModel(ModelMixin, ConfigMixin):
         imageio.imwrite("temp_causal_mask.jpg", np.uint8(255. * mask))
 
         return block_mask
-
-    def enable_riflex(
-        self,
-        k=6,
-        L_test=66,
-        L_test_scale=4.886,
-    ):
-        device = self.freqs.device
-        self.freqs = torch.cat(
-            [
-                get_1d_rotary_pos_embed_riflex(1024, self.d - 4 * (self.d // 6), use_real=False, k=k, L_test=L_test, L_test_scale=L_test_scale),
-                rope_params(1024, 2 * (self.d // 6)),
-                rope_params(1024, 2 * (self.d // 6)),
-            ],
-            dim=1
-        ).to(device)
-
-    def disable_riflex(self):
-        device = self.freqs.device
-        self.freqs = torch.cat(
-            [
-                rope_params(1024, self.d - 4 * (self.d // 6)),
-                rope_params(1024, 2 * (self.d // 6)),
-                rope_params(1024, 2 * (self.d // 6)),
-            ],
-            dim=1
-        ).to(device)
 
     def _forward_inference(
         self,

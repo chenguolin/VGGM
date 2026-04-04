@@ -115,7 +115,6 @@ class Options:
     input_pcrender: bool = False
     first_latent_cond: bool = False
     random_i2v_prob: float = 1.
-    enable_riflex: bool = False
     conf_thresh_percentile: float = 0.4
     rand_pcrender_ratio: float = 1.
     min_num_points: int = 1000

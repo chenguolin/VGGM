@@ -4,15 +4,13 @@
     ## 3. Support adding input features after patch embedding
     ## 4. Support crossattn_cache in `WanT2VCrossAttention` and `WanI2VCrossAttention`
     ## 5. Support frame-wise timestep inputs, i.e., (B, f)
-    ## 6. Support RIFLEx RoPE
-    ## 7. Support multi-clip cross attention
-    ## 8. Support sequence parallelism
-    ## 9. Support `return_feat_layer_idx`
-    ## 10. Support `not_head_and_unpatchify` and `return_ddt_inputs` for DDT
-    ## 11. Support `reset_parameters` in all modules for FSDP
+    ## 6. Support multi-clip cross attention
+    ## 7. Support sequence parallelism
+    ## 8. Support `return_feat_layer_idx`
+    ## 9. Support `not_head_and_unpatchify` and `return_ddt_inputs` for DDT
+    ## 10. Support `reset_parameters` in all modules for FSDP
 
 from typing import *
-from numpy import ndarray
 from torch import Tensor
 
 
@@ -56,68 +54,6 @@ def rope_params(max_seq_len, dim, theta=10000):
                         torch.arange(0, dim, 2).to(torch.float64).div(dim)))
     freqs = torch.polar(torch.ones_like(freqs), freqs)
     return freqs
-
-
-# modified from https://github.com/thu-ml/RIFLEx/blob/main/riflex_utils.py
-@torch.amp.autocast('cuda', enabled=False)
-def get_1d_rotary_pos_embed_riflex(
-    pos: Union[ndarray, int],
-    dim: int,
-    theta: float = 10000.,
-    use_real=False,
-    k: Optional[int] = None,
-    L_test: Optional[int] = None,
-    L_test_scale: Optional[int] = None,
-):
-    """
-    RIFLEx: Precompute the frequency tensor for complex exponentials (cis) with given dimensions.
-
-    This function calculates a frequency tensor with complex exponentials using the given dimension 'dim' and the end
-    index 'end'. The 'theta' parameter scales the frequencies. The returned tensor contains complex values in complex64
-    data type.
-
-    Args:
-        dim (`int`): Dimension of the frequency tensor.
-        pos (`np.ndarray` or `int`): Position indices for the frequency tensor. [S] or scalar
-        theta (`float`, *optional*, defaults to 10000.0):
-            Scaling factor for frequency computation. Defaults to 10000.0.
-        use_real (`bool`, *optional*):
-            If True, return real part and imaginary part separately. Otherwise, return complex numbers.
-        k (`int`, *optional*, defaults to None): the index for the intrinsic frequency in RoPE
-        L_test (`int`, *optional*, defaults to None): the number of frames for inference
-    Returns:
-        `torch.Tensor`: Precomputed frequency tensor with complex exponentials. [S, D/2]
-    """
-    assert dim % 2 == 0
-
-    if isinstance(pos, int):
-        pos = torch.arange(pos)
-    if isinstance(pos, ndarray):
-        pos = torch.from_numpy(pos)  # type: ignore  # [S]
-
-    freqs = 1.0 / torch.pow(theta,
-        torch.arange(0, dim, 2).to(torch.float64).div(dim))
-
-    # === Riflex modification start ===
-    # Reduce the intrinsic frequency to stay within a single period after extrapolation (see Eq. (8)).
-    # Empirical observations show that a few videos may exhibit repetition in the tail frames.
-    # To be conservative, we multiply by 0.9 to keep the extrapolated length below 90% of a single period.
-    if k is not None:
-        freqs[k-1] = 0.9 * 2 * torch.pi / L_test
-    # === Riflex modification end ===
-    if L_test_scale is not None:
-        freqs[k-1] = freqs[k-1] / L_test_scale
-
-    freqs = torch.outer(pos, freqs)  # type: ignore   # [S, D/2]
-    if use_real:
-        freqs_cos = freqs.cos().repeat_interleave(2, dim=1).float()  # [S, D]
-        freqs_sin = freqs.sin().repeat_interleave(2, dim=1).float()  # [S, D]
-        return freqs_cos, freqs_sin
-    else:
-        # lumina
-        freqs_cis = torch.polar(torch.ones_like(freqs), freqs)  # complex64     # [S, D/2]
-        return freqs_cis
-
 
 @torch.amp.autocast('cuda', enabled=False)
 def rope_apply(x, grid_sizes, freqs):
@@ -837,33 +773,6 @@ class WanModel(ModelMixin, ConfigMixin):
 
         self.use_gradient_checkpointing = False
         self.use_gradient_checkpointing_offload = False
-
-    def enable_riflex(
-        self,
-        k=6,
-        L_test=66,
-        L_test_scale=4.886,
-    ):
-        device = self.freqs.device
-        self.freqs = torch.cat(
-            [
-                get_1d_rotary_pos_embed_riflex(1024, self.d - 4 * (self.d // 6), use_real=False, k=k, L_test=L_test, L_test_scale=L_test_scale),
-                rope_params(1024, 2 * (self.d // 6)),
-                rope_params(1024, 2 * (self.d // 6)),
-            ],
-            dim=1
-        ).to(device)
-
-    def disable_riflex(self):
-        device = self.freqs.device
-        self.freqs = torch.cat(
-            [
-                rope_params(1024, self.d - 4 * (self.d // 6)),
-                rope_params(1024, 2 * (self.d // 6)),
-                rope_params(1024, 2 * (self.d // 6)),
-            ],
-            dim=1
-        ).to(device)
 
     def reset_parameters(self):
         # Required by FSDP to materialize meta-device parameters
