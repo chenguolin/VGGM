@@ -258,6 +258,13 @@ class Wan(nn.Module):
                 if not _flag:
                     param.requires_grad_(False)
 
+        # Freeze the first N layers of `self.diffusion.model.blocks`
+        if opt.num_trainable_last_layers is not None:
+            num_blocks = len(self.diffusion.model.blocks)
+            freeze_up_to = num_blocks - opt.num_trainable_last_layers
+            for i, block in enumerate(self.diffusion.model.blocks):
+                block.requires_grad_(i >= freeze_up_to)
+
         # LPIPS for evaluation
         if self.opt.use_lpips:
             self.lpips_loss = LPIPS(net="vgg")

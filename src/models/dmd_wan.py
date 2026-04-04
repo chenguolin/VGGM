@@ -116,6 +116,13 @@ class DMD_Wan(Wan):
                 if not _flag:
                     param.requires_grad_(False)
 
+        # Freeze the first N layers of `self.fake_score.model.blocks`
+        if opt.num_trainable_last_fake_score_layers is not None:
+            num_blocks = len(self.fake_score.model.blocks)
+            freeze_up_to = num_blocks - opt.num_trainable_last_fake_score_layers
+            for i, block in enumerate(self.fake_score.model.blocks):
+                block.requires_grad_(i >= freeze_up_to)
+
     def compute_loss(self,
         data: Dict[str, Any],
         dtype: torch.dtype = torch.float32,
@@ -282,7 +289,8 @@ class DMD_Wan(Wan):
         else:
             pred_x0, pred_x0_diffusion = None, None
             da3_outputs, da3_outputs_diffusion = None, None
-            generator_loss, diffusion_loss, generator_total_loss = 0., 0., 0.
+            generator_loss, diffusion_loss = 0., 0.
+            generator_total_loss = None
 
         ## 3. Critic loss — skipped on generator steps when `separate_gen_crit=True` to reduce peak memory
         skip_critic = train_generator and self.opt.separate_gen_crit

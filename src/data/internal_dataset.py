@@ -1,6 +1,8 @@
 from typing import *
 
 import os
+import hashlib
+import pickle
 import numpy as np
 import json
 from decord import VideoReader, cpu
@@ -19,6 +21,19 @@ class _SkipSample(Exception):
 class InternalDataset(BaseDataset):
     def __init__(self, opt: Options, training: bool = True):
         super().__init__(opt, "internal", training)
+
+        # Fast path: load pre-built UID list from local /tmp cache (avoids slow remote listdir)
+        cache_path = self._cache_key(opt, self.root, training)
+        if os.path.exists(cache_path):
+            with open(cache_path, "rb") as f:
+                cached = pickle.load(f)
+            self.uids = cached["uids"]
+            if "caption_data" in cached:
+                self.caption_data = cached["caption_data"]
+            if "global_caption_data" in cached:
+                self.global_caption_data = cached["global_caption_data"]
+            self.valid_idxs = list(range(len(self.uids)))
+            return
 
         # 4. Version: action
         if self.opt.version_action:
@@ -79,6 +94,18 @@ class InternalDataset(BaseDataset):
             existing_vipe = set(os.listdir(os.path.join(self.root, "vipe")))
             self.uids = [uid for uid in self.uids if f"{uid}.npz" in existing_vipe]
         self.valid_idxs = list(range(len(self.uids)))
+
+        # Save to /tmp cache so future runs on this node skip the slow remote listdir
+        cached = {"uids": self.uids}
+        if hasattr(self, "caption_data"):
+            cached["caption_data"] = self.caption_data
+        if hasattr(self, "global_caption_data"):
+            cached["global_caption_data"] = self.global_caption_data
+        try:
+            with open(cache_path, "wb") as f:
+                pickle.dump(cached, f, protocol=4)
+        except Exception:
+            pass  # non-fatal: cache write failure is okay
 
     def __len__(self) -> int:
         return len(self.valid_idxs)
@@ -328,3 +355,18 @@ class InternalDataset(BaseDataset):
                     return_dict[key] = return_dict[key][0]
 
         return return_dict
+
+    # Cache key captures all factors that affect `self.uids`
+    @staticmethod
+    def _cache_key(opt: Options, root: str, training: bool) -> str:
+        factors = (
+            root,
+            training,
+            opt.version_action,
+            opt.version_2sdiff,
+            opt.version_2s35w,
+            opt.input_plucker,
+        )
+        key = hashlib.md5(str(factors).encode()).hexdigest()[:12]
+        split = "train" if training else "val"
+        return f"/tmp/internal_dataset_uids_{split}_{key}.pkl"

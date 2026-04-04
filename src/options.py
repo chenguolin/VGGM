@@ -202,12 +202,16 @@ class Options:
     lora_rank_in_wan: int = 32
         ## Trainable modules except LoRA layers
     more_trainable_wan_params: Optional[str] = None
+        ## Freeze the first N layers of `self.diffusion.model`; only the last layers remain trainable
+    num_trainable_last_layers: Optional[int] = None
         ## LoRA for DMD fake score model
     use_lora_in_fake_score: bool = False
     lora_target_modules_in_fake_score: str = "q,k,v,o,ffn.0,ffn.2"
     lora_rank_in_fake_score: int = 32
         ## Trainable modules except LoRA layers for DMD fake score model
     more_trainable_fake_score_params: Optional[str] = None
+        ## Freeze the first N layers of `self.fake_score.model`; only the last layers remain trainable
+    num_trainable_last_fake_score_layers: Optional[int] = None
 
     # Training
         ## Sequence parallel
@@ -428,9 +432,15 @@ opt_dict["wan2.1_t2v_dmd"] = Options(
     cfg_scale=(1.,),
     deterministic_inference=False,
     #
+    use_lora_in_wan=False,  # True
+    lora_target_modules_in_wan="q,k,v,o,ffn.0,ffn.2",
+    lora_rank_in_wan=32,
+    num_trainable_last_layers=None,  # 10
+    #
     use_lora_in_fake_score=False,  # True
     lora_target_modules_in_fake_score="q,k,v,o,ffn.0,ffn.2",
     lora_rank_in_fake_score=32,
+    num_trainable_last_fake_score_layers=None,  # 10
     #
     # load_conf=True,
     # input_pcrender=True,
