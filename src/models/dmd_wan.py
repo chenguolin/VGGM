@@ -307,7 +307,7 @@ class DMD_Wan(Wan):
                     cached_pred_x0=pred_x0 if train_generator else None,
                 )
         else:
-            critic_loss = 0.
+            critic_loss = None
 
         # Return separate losses for sequential backward passes to reduce peak memory
         # Each loss is backward-ed independently so their activation graphs don't overlap
