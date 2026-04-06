@@ -292,8 +292,10 @@ class DMD_Wan(Wan):
                 pred_x0_diffusion = None
                 da3_outputs_diffusion = None
                 diffusion_loss = 0.
-                generator_total_loss = \
-                    generator_loss + self.opt.diffusion_loss_weight * diffusion_loss
+
+            generator_total_loss = \
+                generator_loss + self.opt.diffusion_loss_weight * diffusion_loss
+
         else:
             pred_x0, pred_x0_diffusion = None, None
             da3_outputs, da3_outputs_diffusion = None, None
