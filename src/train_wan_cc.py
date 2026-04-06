@@ -503,7 +503,8 @@ def main():
                 for i, sub_loss in enumerate(outputs["losses"]):
                     sub_loss.backward()
                     if i < len(outputs["losses"]) - 1:
-                        torch.cuda.empty_cache()  # release cached memory between backward passes
+                        gc.collect()
+                        torch.cuda.empty_cache()
             else:
                 loss.backward()
 

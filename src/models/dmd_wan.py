@@ -2,6 +2,7 @@ from typing import *
 from torch import Tensor
 
 import os
+import gc
 import numpy as np
 import torch
 import torch.nn.functional as tF
@@ -17,6 +18,12 @@ from src.utils import plucker_ray, colorize_depth, filter_da3_points, render_pt3
 
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
+
+def _free_gpu_mem():
+    """Force Python GC then release CUDA cached memory."""
+    gc.collect()
+    torch.cuda.empty_cache()
 
 
 class DMD_Wan(Wan):
@@ -211,6 +218,9 @@ class DMD_Wan(Wan):
 
         self.diffusion.scheduler.set_timesteps(self.opt.num_train_timesteps, training=True)
 
+        # Free T5/VAE intermediates before DMD forward passes
+        _free_gpu_mem()
+
         # Shared noises for generator and critic to enable `pred_x0` reuse
         shared_noises = torch.randn_like(latents)
 
@@ -295,7 +305,7 @@ class DMD_Wan(Wan):
 
         # Free cached GPU memory before critic to reduce peak usage
         if train_generator:
-            torch.cuda.empty_cache()
+            _free_gpu_mem()
 
         ## 3. Critic loss — skipped on generator steps when `separate_gen_crit=True` to reduce peak memory
         skip_critic = train_generator and self.opt.separate_gen_crit
@@ -623,6 +633,9 @@ class DMD_Wan(Wan):
                     clip_latent_lens,
                 )
 
+            # Free cached GPU memory after generator forward
+            _free_gpu_mem()
+
         # Step 2: Compute the fake prediction
         min_t, max_t = int(self.opt.min_timestep_boundary * self.opt.num_train_timesteps), \
             int(self.opt.max_timestep_boundary * self.opt.num_train_timesteps)
@@ -707,7 +720,7 @@ class DMD_Wan(Wan):
         )
 
         # Free cached GPU memory after self-forcing before running fake/real score
-        torch.cuda.empty_cache()
+        _free_gpu_mem()
 
         # Step 2: Compute the DMD loss
         dmd_loss, dmd_grad_norm = \
@@ -871,7 +884,7 @@ class DMD_Wan(Wan):
         del fake_model_outputs  # free intermediate tensors
 
         # Free cached GPU memory before real_score forward
-        torch.cuda.empty_cache()
+        _free_gpu_mem()
 
         # Step 2: Compute the real score
         # We compute the conditional and unconditional prediction
