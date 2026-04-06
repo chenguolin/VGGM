@@ -118,6 +118,7 @@ class DMD_Wan(Wan):
 
         # Freeze the first N layers of `self.fake_score.model.blocks`
         if opt.num_trainable_last_fake_score_layers is not None:
+            self.fake_score.requires_grad_(False)
             num_blocks = len(self.fake_score.model.blocks)
             freeze_up_to = num_blocks - opt.num_trainable_last_fake_score_layers
             for i, block in enumerate(self.fake_score.model.blocks):
@@ -291,6 +292,10 @@ class DMD_Wan(Wan):
             da3_outputs, da3_outputs_diffusion = None, None
             generator_loss, diffusion_loss = 0., 0.
             generator_total_loss = None
+
+        # Free cached GPU memory before critic to reduce peak usage
+        if train_generator:
+            torch.cuda.empty_cache()
 
         ## 3. Critic loss — skipped on generator steps when `separate_gen_crit=True` to reduce peak memory
         skip_critic = train_generator and self.opt.separate_gen_crit
@@ -701,6 +706,9 @@ class DMD_Wan(Wan):
             clip_latent_lens,
         )
 
+        # Free cached GPU memory after self-forcing before running fake/real score
+        torch.cuda.empty_cache()
+
         # Step 2: Compute the DMD loss
         dmd_loss, dmd_grad_norm = \
             self._compute_distribution_matching_loss(
@@ -861,6 +869,9 @@ class DMD_Wan(Wan):
             del fake_model_outputs_uncond  # free intermediate tensors
         fake_pred_x0 = self.diffusion._convert_flow_pred_to_x0(fake_model_outputs, noisy_latents, timesteps)
         del fake_model_outputs  # free intermediate tensors
+
+        # Free cached GPU memory before real_score forward
+        torch.cuda.empty_cache()
 
         # Step 2: Compute the real score
         # We compute the conditional and unconditional prediction

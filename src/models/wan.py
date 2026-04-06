@@ -215,9 +215,11 @@ class Wan(nn.Module):
                     if i >= len(self.diffusion.model.blocks) - self.diffusion.num_da3_blocks:
                         block.requires_grad_(True)
             if opt.fix_shared_dit_layers:
+                self.diffusion.requires_grad_(False)
                 for i, block in enumerate(self.diffusion.model.blocks):
-                    if i < len(self.diffusion.model.blocks) - self.diffusion.num_da3_blocks:
-                        block.requires_grad_(False)
+                    if i >= len(self.diffusion.model.blocks) - self.diffusion.num_da3_blocks:
+                        block.requires_grad_(True)
+                self.diffusion.da3_model.requires_grad_(True)  # the only difference from `only_train_resdit` is this line
 
             ## DA3 losses
             self.ray_loss_fn, self.depth_loss_fn, self.camera_loss_fn = \
@@ -260,6 +262,7 @@ class Wan(nn.Module):
 
         # Freeze the first N layers of `self.diffusion.model.blocks`
         if opt.num_trainable_last_layers is not None:
+            self.diffusion.requires_grad_(False)
             num_blocks = len(self.diffusion.model.blocks)
             freeze_up_to = num_blocks - opt.num_trainable_last_layers
             for i, block in enumerate(self.diffusion.model.blocks):

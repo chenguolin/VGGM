@@ -418,6 +418,7 @@ opt_dict["wan2.1_t2v_dmd"] = Options(
     #
     use_dmd=True,
     separate_gen_crit=False,  # True
+    real_score_offload=False,  # True
     self_forcing_prob=1.,
     real_guidance_scale=4.,
     last_step_only=False,

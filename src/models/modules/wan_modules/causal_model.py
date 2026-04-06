@@ -1252,42 +1252,35 @@ class CausalWanModel(ModelMixin, ConfigMixin):
             this_kv_cache = kv_cache[block_index]
 
             if torch.is_grad_enabled() and (self.use_gradient_checkpointing_offload or self.use_gradient_checkpointing):
-                # Snapshot the two scalar indices so that the recompute wrapper
-                # can restore them before re-running the block.  K/V tensor
-                # contents are NOT cloned — we pass `_skip_kv_write=True` during
-                # recompute so the block only *reads* the cache (to produce the
-                # correct attention output) without mutating K/V storage.
+                # Save kv_cache indices for correct recompute (subsequent chunks
+                # mutate the cache between forward and backward).  Don't pass
+                # `crossattn_cache` — cross-attention will recompute K/V from
+                # `context` on the recompute pass to reduce peak memory.
                 saved_global_end = this_kv_cache["global_end_index"].clone()
                 saved_local_end = this_kv_cache["local_end_index"].clone()
-                this_crossattn_cache = crossattn_cache[block_index] if crossattn_cache is not None else None
-                saved_crossattn_is_init = this_crossattn_cache["is_init"] if this_crossattn_cache is not None else None
 
-                def create_kv_restoring_forward(module, kvc, s_global, s_local, cac, s_crossattn_is_init):
+                def create_kv_restoring_forward(module, kvc, s_global, s_local):
                     first_call = [True]  # forward pass, not recompute
 
                     def custom_forward(*inputs, **kwargs):
                         if first_call[0]:
                             first_call[0] = False
                             return module(*inputs, **kwargs)
-                        # Recompute: restore indices and skip KV cache writes
+                        # Recompute: restore kv_cache indices and skip writes
                         kvc["global_end_index"].copy_(s_global)
                         kvc["local_end_index"].copy_(s_local)
-                        if cac is not None:
-                            cac["is_init"] = s_crossattn_is_init
                         kwargs["_skip_kv_write"] = True
                         return module(*inputs, **kwargs)
                     return custom_forward
 
                 kwargs.update({
                     "kv_cache": this_kv_cache,
-                    "crossattn_cache": this_crossattn_cache,
                     "current_start": current_start,
                     "ttt_state": block_ttt_state,
                     "gdn_state": block_gdn_state,
                 })
                 ckpt_fn = create_kv_restoring_forward(
-                    block, this_kv_cache, saved_global_end, saved_local_end,
-                    this_crossattn_cache, saved_crossattn_is_init)
+                    block, this_kv_cache, saved_global_end, saved_local_end)
                 if self.use_gradient_checkpointing_offload:
                     with torch.autograd.graph.save_on_cpu():
                         x = torch.utils.checkpoint.checkpoint(
