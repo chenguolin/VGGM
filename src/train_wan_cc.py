@@ -229,7 +229,9 @@ def main():
     util.set_seed(args.seed + dp_rank)  # util.set_seed(args.seed + global_rank)
 
     # Load train and validation datasets
-    if opt.use_internal_dataset:
+    if opt.version_new_action:
+        train_dataset = InternalActionDataset(opt, training=True)
+    elif opt.use_internal_dataset:
         train_dataset = InternalDataset(opt, training=True)
     else:
         train_dataset = RealcamvidDataset(opt, training=True)
@@ -246,7 +248,9 @@ def main():
         persistent_workers=args.num_workers > 0,
         collate_fn=BaseDataset.collate_fn,
     )
-    if opt.use_internal_dataset:
+    if opt.version_new_action:
+        val_dataset = InternalActionDataset(opt, training=False)
+    elif opt.use_internal_dataset:
         val_dataset = InternalDataset(opt, training=False)
     else:
         val_dataset = RealcamvidDataset(opt, training=False)
@@ -700,20 +704,31 @@ def main():
                 for k in all_val_outputs[0].keys():
                     if "images" in k and all_val_outputs[0][k] is not None:  # for visualization
                         val_outputs[k] = torch.cat([out[k] for out in all_val_outputs], dim=0)
-                # Collect prompts and optional metadata from all validation batches
+                # Collect prompts and optional metadata from all validation batches.
+                # Each entry: (output_key, scope)
+                #   scope="sample" -> shown once per sample (first clip row only, blank for rest)
+                #   scope="clip"   -> shown per clip (indexed by clip j)
+                _META_FIELDS = [
+                    ("global_caption",   "sample"),
+                    ("control_agent",    "sample"),
+                    ("action_labels",      "clip"),
+                    ("caption_deltas",     "clip"),
+                    ("end_states",         "clip"),
+                    ("frame_ranges",       "clip"),
+                ]
                 all_val_prompts = []
-                all_val_global_captions = []
-                all_val_action_labels = []
-                all_val_frame_ranges = []
+                all_val_meta = {key: [] for key, _ in _META_FIELDS}
                 for out in all_val_outputs:
                     if "prompts" in out:
                         all_val_prompts.extend(out["prompts"])
-                    if "global_captions" in out:
-                        all_val_global_captions.extend(out["global_captions"])
-                    if "action_labels" in out:
-                        all_val_action_labels.extend(out["action_labels"])
-                    if "frame_ranges" in out:
-                        all_val_frame_ranges.extend(out["frame_ranges"])
+                    for key, _ in _META_FIELDS:
+                        if key in out:
+                            all_val_meta[key].extend(out[key])
+                # Keep only fields that have data matching `all_val_prompts` in length
+                active_fields = [
+                    (key, scope) for key, scope in _META_FIELDS
+                    if len(all_val_meta[key]) == len(all_val_prompts)
+                ]
 
                 if is_main_process:
                     # Log evaluation metrics and videos
@@ -724,36 +739,23 @@ def main():
                         val_outputs, max_res=512, fps=16)  # resize videos to `512` for logging
                     # Log evaluation captions
                     if all_val_prompts:
-                        has_global = len(all_val_global_captions) == len(all_val_prompts)
-                        has_action = len(all_val_action_labels) == len(all_val_prompts)
-                        has_frames = len(all_val_frame_ranges) == len(all_val_prompts)
-                        columns = ["sample", "clip", "caption"]
-                        if has_global:
-                            columns.append("global_caption")
-                        if has_action:
-                            columns.append("action_label")
-                        if has_frames:
-                            columns.append("frame_range")
+                        columns = ["sample", "clip", "caption"] + [key for key, _ in active_fields]
                         caption_table = wandb.Table(columns=columns)
                         for i, prompt in enumerate(all_val_prompts):
                             if isinstance(prompt, list):  # multi-clip: one row per clip
                                 for j, clip_prompt in enumerate(prompt):
                                     row = [i, j, clip_prompt]
-                                    if has_global:
-                                        row.append(all_val_global_captions[i] if j == 0 else "")
-                                    if has_action:
-                                        row.append(all_val_action_labels[i][j])
-                                    if has_frames:
-                                        row.append(str(all_val_frame_ranges[i][j]))
+                                    for key, scope in active_fields:
+                                        val = all_val_meta[key][i]
+                                        if scope == "sample":
+                                            row.append(val if j == 0 else "")
+                                        else:  # per-clip
+                                            row.append(str(val[j]))
                                     caption_table.add_data(*row)
                             else:
                                 row = [i, 0, prompt]
-                                if has_global:
-                                    row.append(all_val_global_captions[i])
-                                if has_action:
-                                    row.append(all_val_action_labels[i])
-                                if has_frames:
-                                    row.append(str(all_val_frame_ranges[i]))
+                                for key, _ in active_fields:
+                                    row.append(str(all_val_meta[key][i]))
                                 caption_table.add_data(*row)
                         val_wandb_log["validation/captions"] = caption_table
                     wandb.log(val_wandb_log, step=global_update_step)

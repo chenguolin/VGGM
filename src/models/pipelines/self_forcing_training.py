@@ -69,7 +69,9 @@ class SelfForcingTrainingPipeline:
         noises: Tensor,
         prompt_embeds: Tensor,
         cond_latents: Optional[Tensor] = None,
+        #
         plucker: Optional[Tensor] = None,
+        timestamp_embeds: Optional[Tensor] = None,
         #
         C2W: Optional[Tensor] = None,
         fxfycxcy: Optional[Tensor] = None,
@@ -136,6 +138,10 @@ class SelfForcingTrainingPipeline:
                 this_chunk_plucker = plucker[:, chunk_idx * self.opt.chunk_size:(chunk_idx + 1) * self.opt.chunk_size, ...]
             else:
                 this_chunk_plucker = None
+            if self.opt.input_timestamps and timestamp_embeds is not None:
+                this_chunk_timestamp_embeds = timestamp_embeds[:, chunk_idx * self.opt.chunk_size:(chunk_idx + 1) * self.opt.chunk_size, ...]
+            else:
+                this_chunk_timestamp_embeds = None
             if C2W is not None and fxfycxcy is not None:
                 this_chunk_C2W = C2W[:, chunk_idx * self.opt.chunk_size:(chunk_idx + 1) * self.opt.chunk_size, ...]
                 this_chunk_fxfycxcy = fxfycxcy[:, chunk_idx * self.opt.chunk_size:(chunk_idx + 1) * self.opt.chunk_size, ...]
@@ -161,7 +167,10 @@ class SelfForcingTrainingPipeline:
                             this_chunk_latents,
                             timesteps,
                             prompt_embeds,
+                            #
                             plucker=this_chunk_plucker,
+                            timestamp_embeds=this_chunk_timestamp_embeds,
+                            #
                             C2W=this_chunk_C2W, fxfycxcy=this_chunk_fxfycxcy,  # for DA3
                             extra_condition=input_extra_condition,
                             #
@@ -206,7 +215,10 @@ class SelfForcingTrainingPipeline:
                         this_chunk_latents,
                         timesteps,
                         prompt_embeds,
+                        #
                         plucker=this_chunk_plucker,
+                        timestamp_embeds=this_chunk_timestamp_embeds,
+                        #
                         C2W=this_chunk_C2W, fxfycxcy=this_chunk_fxfycxcy,  # for DA3
                         extra_condition=input_extra_condition,
                         #
@@ -249,7 +261,10 @@ class SelfForcingTrainingPipeline:
                         pred_x0,
                         context_timesteps,
                         prompt_embeds,
+                        #
                         plucker=this_chunk_plucker,
+                        timestamp_embeds=this_chunk_timestamp_embeds,
+                        #
                         C2W=this_chunk_C2W, fxfycxcy=this_chunk_fxfycxcy,  # for DA3
                         extra_condition=input_extra_condition,
                         #

@@ -66,9 +66,8 @@ class RealcamvidDataset(BaseDataset):
         # Sample frames
         video_path = os.path.join(self.root, metadata["video_path"])
         vr = VideoReader(str(video_path), ctx=cpu(0))
-        num_frames = len(vr)
+        num_frames, fps, (H, W) = len(vr), vr.get_avg_fps(), vr[0].shape[:2]
         # Re-create `vr` with lower decode resolution to save CPU memory
-        H, W = vr[0].shape[:2]
         new_H, new_W = self.opt.input_res
         scale = max(new_H / H, new_W / W)
         if scale < 1.:
@@ -76,6 +75,10 @@ class RealcamvidDataset(BaseDataset):
             vr = VideoReader(str(video_path), ctx=cpu(0), width=round(W * scale), height=round(H * scale))
         input_frame_idxs = self._frame_sample(num_frames,
             pingpong_threshold=self.opt.pingpong_threshold if "Mira" not in uid else -1)  # not reverse videos for dynamic MiraData
+
+        # Compute timestamps for all frames (in seconds)
+        timestamps = torch.tensor([fi / fps for fi in input_frame_idxs], dtype=torch.float32)  # (F,)
+        timestamps = timestamps - timestamps[0]  # shift so first frame = 0
 
         depths, confs = None, None
 
@@ -138,6 +141,7 @@ class RealcamvidDataset(BaseDataset):
         return_dict = {
             "uid": uid,            # str
             "prompt": prompt,      # str
+            "timestamps": timestamps,  # (F,) in seconds
             "C2W": C2W,            # (F, 4, 4)
             "fxfycxcy": fxfycxcy,  # (F, 4)
         }

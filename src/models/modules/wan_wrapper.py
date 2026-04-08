@@ -134,6 +134,7 @@ class WanDiffusionWrapper(nn.Module):
         extra_one_step: bool = True,
         #
         input_plucker: bool = False,
+        input_timestamps: bool = False,
         extra_condition_dim: int = 0,
         #
         use_gradient_checkpointing: bool = True,
@@ -205,6 +206,12 @@ class WanDiffusionWrapper(nn.Module):
             self.plucker_embed = nn.Conv2d(6, self.model.dim, kernel_size=16, stride=16)  # `16`: hard-coded for Wan2.1
             zero_init_module(self.plucker_embed)
 
+        # (Optional) Timestamp embedding
+        self.input_timestamps = input_timestamps
+        if input_timestamps:
+            self.timestamp_embed = nn.Conv2d(6, self.model.dim, kernel_size=16, stride=16)  # `16`: hard-coded for Wan2.1
+            zero_init_module(self.timestamp_embed)
+
         # (Optional) Extra condition
         self.extra_condition_dim = extra_condition_dim
         if extra_condition_dim > 0:
@@ -230,6 +237,8 @@ class WanDiffusionWrapper(nn.Module):
         cond_latents: Optional[Tensor] = None,  # (B, D, f, h, w)
         #
         plucker: Optional[Tensor] = None,  # (B, f, 6, H, W)
+        timestamp_embeds: Optional[Tensor] = None,  # (B, f, 6, H, W)
+        #
         extra_condition: Optional[Tensor] = None,  # (B, f, C, H, W)
         C2W: Optional[Tensor] = None,  # (B, f, 4, 4)
         fxfycxcy: Optional[Tensor] = None,  # (B, f, 4)
@@ -289,6 +298,19 @@ class WanDiffusionWrapper(nn.Module):
             plucker_embeds = rearrange(plucker_embeds, "(b f) c h w -> b c f h w", f=f)  # (B, D, f, hh, ww)
         else:
             plucker_embeds = None
+
+        # (Optional) Timestamp embedding
+        if self.input_timestamps:
+            timestamp_embeds = rearrange(timestamp_embeds, "b f c h w -> (b f) c h w").to(noisy_latents.dtype)
+            timestamp_embeds = self.timestamp_embed(timestamp_embeds)
+            timestamp_embeds = rearrange(timestamp_embeds, "(b f) c h w -> b c f h w", f=f)  # (B, D, f, hh, ww)
+            # Combine with plucker_embeds if both exist
+            if plucker_embeds is not None:
+                plucker_embeds = plucker_embeds + timestamp_embeds
+            else:
+                plucker_embeds = timestamp_embeds
+        else:
+            timestamp_embeds = None
 
         # (Optional) Extra condition embedding
         if self.extra_condition_dim > 0:
@@ -414,6 +436,7 @@ class WanDiffusionDA3Wrapper(nn.Module):
         extra_one_step: bool = True,
         #
         input_plucker: bool = False,
+        input_timestamps: bool = False,
         extra_condition_dim: int = 0,
         #
         use_gradient_checkpointing: bool = True,
@@ -477,6 +500,12 @@ class WanDiffusionDA3Wrapper(nn.Module):
         if input_plucker:
             self.plucker_embed = nn.Conv2d(6, self.model.dim, kernel_size=16, stride=16)  # `16`: hard-coded for Wan2.1
             zero_init_module(self.plucker_embed)
+
+        # (Optional) Timestamp embedding
+        self.input_timestamps = input_timestamps
+        if input_timestamps:
+            self.timestamp_embed = nn.Conv2d(6, self.model.dim, kernel_size=16, stride=16)  # `16`: hard-coded for Wan2.1
+            zero_init_module(self.timestamp_embed)
 
         # (Optional) Extra condition
         self.extra_condition_dim = extra_condition_dim
@@ -548,6 +577,8 @@ class WanDiffusionDA3Wrapper(nn.Module):
         cond_latents: Optional[Tensor] = None,  # (B, D, f, h, w)
         #
         plucker: Optional[Tensor] = None,  # (B, f, 6, H, W)
+        timestamp_embeds: Optional[Tensor] = None,  # (B, f, 6, H, W)
+        #
         extra_condition: Optional[Tensor] = None,  # (B, f, C, H, W)
         C2W: Optional[Tensor] = None,  # (B, f, 4, 4)
         fxfycxcy: Optional[Tensor] = None,  # (B, f, 4)
@@ -603,6 +634,19 @@ class WanDiffusionDA3Wrapper(nn.Module):
             plucker_embeds = rearrange(plucker_embeds, "(b f) c h w -> b c f h w", f=f)  # (B, D, f, hh, ww)
         else:
             plucker_embeds = None
+
+        # (Optional) Timestamp embedding
+        if self.input_timestamps:
+            timestamp_embeds = rearrange(timestamp_embeds, "b f c h w -> (b f) c h w").to(noisy_latents.dtype)
+            timestamp_embeds = self.timestamp_embed(timestamp_embeds)
+            timestamp_embeds = rearrange(timestamp_embeds, "(b f) c h w -> b c f h w", f=f)  # (B, D, f, hh, ww)
+            # Combine with plucker_embeds if both exist
+            if plucker_embeds is not None:
+                plucker_embeds = plucker_embeds + timestamp_embeds
+            else:
+                plucker_embeds = timestamp_embeds
+        else:
+            timestamp_embeds = None
 
         # (Optional) Camera token for DA3
         if self.da3_input_cam:

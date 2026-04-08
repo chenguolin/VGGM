@@ -5,6 +5,7 @@ from .base_dataset import BaseDataset
 from .text_dataset import TextDataset
 from .realcamvid_dataset import RealcamvidDataset
 from .internal_dataset import InternalDataset
+from .internal_action_dataset import InternalActionDataset
 
 
 # Copied from https://github.com/huggingface/pytorch-image-models/blob/main/timm/data/loader.py

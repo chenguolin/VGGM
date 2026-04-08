@@ -45,6 +45,8 @@ class Options:
     version_2s35w: bool = False
     version_2sdiff: bool = False
     version_action: bool = False
+    version_new_action: bool = False
+    action_data_path: str = "video_action_caption_70w_p1.jsonl"  # relative to dataroot
     load_global_caption: bool = False
     num_clips: int = 1
     num_clips_test: Optional[int] = None
@@ -112,6 +114,7 @@ class Options:
         ## Model
     load_text_encoder: bool = True
     input_plucker: bool = False
+    input_timestamps: bool = False
     input_pcrender: bool = False
     first_latent_cond: bool = False
     random_i2v_prob: float = 1.
@@ -161,6 +164,7 @@ class Options:
     is_teacher_causal: bool = False
     teacher_use_teacher_forcing: bool = False
     teacher_input_plucker: bool = False
+    teacher_input_timestamps: bool = False
     teacher_input_pcrender: bool = False
     teacher_first_latent_cond: bool = False
         ## DMD
@@ -320,16 +324,16 @@ opt_dict["wan2.1_t2v"] = Options(
     eval_offline=False,  # True
     #
     use_internal_dataset=True,
-    # version_2s35w=True,
+    version_new_action=True,
     #
-    # num_input_frames=33,
+    num_input_frames=81,
     # input_res=(480, 832),
     #
     num_clips=1,
     sp_size=1,
     shift=5.,
     #
-    # wan_dir=f"{ROOT}/.cache/huggingface/hub/Wan-AI/Wan2.1-T2V-14B",
+    wan_dir=f"{ROOT}/.cache/huggingface/hub/Wan-AI/Wan2.1-T2V-14B",
     # generator_path=f"{ROOT}/projects/VGGM/.pth",
     #
     is_causal=False,  # True
@@ -353,8 +357,9 @@ opt_dict["wan2.1_t2v"] = Options(
     #
     use_gdn=False,  # True
     #
-    input_plucker=True,
-    exclude_name_lr_mult="gdn_branch,ttt_branch,plucker_embed,extra_condition_embed",
+    input_plucker=False,  # True
+    input_timestamps=True,  # False
+    exclude_name_lr_mult="gdn_branch,ttt_branch,plucker_embed,timestamp_embed,extra_condition_embed",
     #
     # load_conf=True,
     # input_pcrender=True,
@@ -366,13 +371,13 @@ opt_dict["wan2.1_t2v_dmd"] = Options(
     eval_offline=False,  # True
     #
     use_internal_dataset=True,
-    # version_2s35w=True,
+    version_new_action=True,
     #
-    # num_input_frames=33,
+    num_input_frames=81,
     # input_res=(480, 832),
     #
     num_clips=1,
-    sp_size=1,
+    sp_size=8,
     shift=5.,
     #
     only_static_data=False,
@@ -380,7 +385,8 @@ opt_dict["wan2.1_t2v_dmd"] = Options(
     vidprom_prob=1.,  # 0.5
     use_short_caption=False,
     first_latent_cond=False,
-    input_plucker=True,
+    input_plucker=False,  # True
+    input_timestamps=True,  # False
     #
     load_da3=False,  # True
     da3_interactive=True,  # False
@@ -403,9 +409,9 @@ opt_dict["wan2.1_t2v_dmd"] = Options(
     rope_outside=True,
     use_flexattn=True,  # False
     #
-    # wan_dir=f"{ROOT}/.cache/huggingface/hub/Wan-AI/Wan2.1-T2V-14B",
-    # real_wan_dir=f"{ROOT}/.cache/huggingface/hub/Wan-AI/Wan2.1-T2V-14B",
-    # fake_wan_dir=f"{ROOT}/.cache/huggingface/hub/Wan-AI/Wan2.1-T2V-14B",
+    wan_dir=f"{ROOT}/.cache/huggingface/hub/Wan-AI/Wan2.1-T2V-14B",
+    real_wan_dir=f"{ROOT}/.cache/huggingface/hub/Wan-AI/Wan2.1-T2V-14B",
+    fake_wan_dir=f"{ROOT}/.cache/huggingface/hub/Wan-AI/Wan2.1-T2V-14B",
     #
     generator_path=f"{ROOT}/projects/VGGM/.pth",
     teacher_path=f"{ROOT}/projects/VGGM/.pth",

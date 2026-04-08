@@ -14,7 +14,7 @@ from src.options import Options
 from src.models.modules import WanDiffusionWrapper, WanVAEWrapper
 from src.models.wan import Wan
 from src.models.pipelines.self_forcing_training import SelfForcingTrainingPipeline
-from src.utils import plucker_ray, colorize_depth, filter_da3_points, render_pt3d_points, mv_interpolate
+from src.utils import plucker_ray, colorize_depth, filter_da3_points, render_pt3d_points, mv_interpolate, timestamp_encode
 
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -39,11 +39,12 @@ class DMD_Wan(Wan):
             0.,    # hard-coded `sigma_min`
             True,  # hard-coded `extra_one_step`
             #
-            opt.teacher_input_plucker,
-            opt.teacher_extra_condition_dim,
+            input_plucker=opt.teacher_input_plucker,
+            input_timestamps=opt.teacher_input_timestamps,
+            extra_condition_dim=opt.teacher_extra_condition_dim,
             #
-            opt.use_gradient_checkpointing,
-            opt.use_gradient_checkpointing_offload,
+            use_gradient_checkpointing=opt.use_gradient_checkpointing,
+            use_gradient_checkpointing_offload=opt.use_gradient_checkpointing_offload,
             #
             is_causal=opt.is_teacher_causal,
             sink_size=opt.sink_size,
@@ -72,11 +73,12 @@ class DMD_Wan(Wan):
             0.,    # hard-coded `sigma_min`
             True,  # hard-coded `extra_one_step`
             #
-            opt.teacher_input_plucker,
-            opt.teacher_extra_condition_dim,
+            input_plucker=opt.teacher_input_plucker,
+            input_timestamps=opt.teacher_input_timestamps,
+            extra_condition_dim=opt.teacher_extra_condition_dim,
             #
-            opt.use_gradient_checkpointing,
-            opt.use_gradient_checkpointing_offload,
+            use_gradient_checkpointing=opt.use_gradient_checkpointing,
+            use_gradient_checkpointing_offload=opt.use_gradient_checkpointing_offload,
             #
             is_causal=opt.is_teacher_causal,
             sink_size=opt.sink_size,
@@ -203,6 +205,16 @@ class DMD_Wan(Wan):
             plucker = plucker_ray(H, W, C2W.float(), fxfycxcy.float())[0].to(dtype)  # (B, f, 6, H, W)
         else:
             C2W, fxfycxcy, plucker = None, None, None
+
+        # (Optional) Timestamp embedding
+        if "timestamps" in data:
+            timestamps = data["timestamps"].to(device=device, dtype=dtype)[:, idxs, ...]  # (B, f)
+            B_ts, f_ts = timestamps.shape
+            timestamp_embeds = timestamp_encode(timestamps.reshape(-1), dim=6).reshape(B_ts, f_ts, 6)  # (B, f, 6)
+            timestamp_embeds = timestamp_embeds.unsqueeze(-1).unsqueeze(-1).expand(-1, -1, -1, H, W)  # (B, f, 6, H, W)
+        else:
+            timestamp_embeds = None
+
         if "depth" in data:
             depths = data["depth"].to(device=device, dtype=dtype)[:, idxs, ...]  # (B, f, H, W)
         else:
@@ -230,7 +242,9 @@ class DMD_Wan(Wan):
                     prompt_embeds,
                     negative_prompt_embeds,
                     cond_latents,
-                    plucker,
+                    #
+                    plucker=plucker,
+                    timestamp_embeds=timestamp_embeds,
                     #
                     clean_latents=latents if not use_self_forcing else None,
                     #
@@ -266,7 +280,9 @@ class DMD_Wan(Wan):
                         latents,
                         prompt_embeds,
                         cond_latents,
-                        plucker,
+                        #
+                        plucker=plucker,
+                        timestamp_embeds=timestamp_embeds,
                         #
                         C2W=C2W,
                         fxfycxcy=fxfycxcy,
@@ -314,7 +330,9 @@ class DMD_Wan(Wan):
                     torch.randn_like(latents),
                     prompt_embeds,
                     cond_latents,
-                    plucker,
+                    #
+                    plucker=plucker,
+                    timestamp_embeds=timestamp_embeds,
                     #
                     clean_latents=latents if not use_self_forcing else None,
                     #
@@ -374,7 +392,9 @@ class DMD_Wan(Wan):
         clean_latents: Tensor,
         prompt_embeds: Tensor,
         cond_latents: Optional[Tensor] = None,
+        #
         plucker: Optional[Tensor] = None,
+        timestamp_embeds: Optional[Tensor] = None,
         #
         C2W: Optional[Tensor] = None,
         fxfycxcy: Optional[Tensor] = None,
@@ -525,7 +545,10 @@ class DMD_Wan(Wan):
             noisy_latents,
             timesteps,
             prompt_embeds,
-            plucker=plucker,
+            #
+            plucker=plucker if self.opt.input_plucker else None,
+            timestamp_embeds=timestamp_embeds if self.opt.input_timestamps else None,
+            #
             C2W=C2W, fxfycxcy=fxfycxcy,  # for DA3
             extra_condition=input_extra_condition,
             #
@@ -585,7 +608,9 @@ class DMD_Wan(Wan):
         noises: Tensor,
         prompt_embeds: Tensor,
         cond_latents: Optional[Tensor] = None,
+        #
         plucker: Optional[Tensor] = None,
+        timestamp_embeds: Optional[Tensor] = None,
         #
         clean_latents: Optional[Tensor] = None,
         #
@@ -612,7 +637,9 @@ class DMD_Wan(Wan):
                 noises,
                 prompt_embeds,
                 cond_latents,
+                #
                 plucker,
+                timestamp_embeds,
                 #
                 clean_latents,
                 #
@@ -656,7 +683,9 @@ class DMD_Wan(Wan):
             noisy_latents,
             timesteps,
             prompt_embeds,
-            plucker=plucker,
+            #
+            plucker=plucker if self.opt.teacher_input_plucker else None,
+            timestamp_embeds=timestamp_embeds if self.opt.teacher_input_timestamps else None,
             #
             clean_x=pred_x0 if self.opt.teacher_use_teacher_forcing else None,
             #
@@ -675,7 +704,9 @@ class DMD_Wan(Wan):
         prompt_embeds: Tensor,
         negative_prompt_embeds: Tensor,
         cond_latents: Optional[Tensor] = None,
+        #
         plucker: Optional[Tensor] = None,
+        timestamp_embeds: Optional[Tensor] = None,
         #
         clean_latents: Optional[Tensor] = None,
         #
@@ -698,7 +729,9 @@ class DMD_Wan(Wan):
             noises,
             prompt_embeds,
             cond_latents,
+            #
             plucker,
+            timestamp_embeds,
             #
             clean_latents,
             #
@@ -722,7 +755,9 @@ class DMD_Wan(Wan):
                 negative_prompt_embeds,
                 gradient_mask,
                 cond_latents,
+                #
                 plucker,
+                timestamp_embeds,
                 #
                 clip_latent_lens,
             )
@@ -771,7 +806,9 @@ class DMD_Wan(Wan):
         negative_prompt_embeds: Tensor,
         gradient_mask: Optional[Tensor] = None,
         cond_latents: Optional[Tensor] = None,
+        #
         plucker: Optional[Tensor] = None,
+        timestamp_embeds: Optional[Tensor] = None,
         #
         clip_latent_lens: Optional[Tensor] = None,  # (B=1, num_clips); for multi-clip generation
     ):
@@ -811,7 +848,9 @@ class DMD_Wan(Wan):
                 timesteps,
                 prompt_embeds,
                 negative_prompt_embeds,
+                #
                 plucker,
+                timestamp_embeds,
                 #
                 clip_latent_lens,
             )
@@ -837,7 +876,9 @@ class DMD_Wan(Wan):
         timesteps: Tensor,
         prompt_embeds: Tensor,
         negative_prompt_embeds: Tensor,
+        #
         plucker: Optional[Tensor] = None,
+        timestamp_embeds: Optional[Tensor] = None,
         #
         clip_latent_lens: Optional[Tensor] = None,
         #
@@ -851,7 +892,9 @@ class DMD_Wan(Wan):
             noisy_latents,
             timesteps,
             prompt_embeds,
-            plucker=plucker,
+            #
+            plucker=plucker if self.opt.teacher_input_plucker else None,
+            timestamp_embeds=timestamp_embeds if self.opt.teacher_input_timestamps else None,
             #
             clean_x=pred_x0 if self.opt.teacher_use_teacher_forcing else None,
             #
@@ -863,7 +906,9 @@ class DMD_Wan(Wan):
                 noisy_latents,
                 timesteps,
                 negative_prompt_embeds,
-                plucker=plucker,
+                #
+                plucker=plucker if self.opt.teacher_input_plucker else None,
+                timestamp_embeds=timestamp_embeds if self.opt.teacher_input_timestamps else None,
                 #
                 clean_x=pred_x0 if self.opt.teacher_use_teacher_forcing else None,
                 #
@@ -885,7 +930,9 @@ class DMD_Wan(Wan):
             noisy_latents,
             timesteps,
             prompt_embeds,
-            plucker=plucker,
+            #
+            plucker=plucker if self.opt.teacher_input_plucker else None,
+            timestamp_embeds=timestamp_embeds if self.opt.teacher_input_timestamps else None,
             #
             clean_x=pred_x0 if self.opt.teacher_use_teacher_forcing else None,
             #
@@ -896,7 +943,9 @@ class DMD_Wan(Wan):
                 noisy_latents,
                 timesteps,
                 negative_prompt_embeds,
-                plucker=plucker,
+                #
+                plucker=plucker if self.opt.teacher_input_plucker else None,
+                timestamp_embeds=timestamp_embeds if self.opt.teacher_input_timestamps else None,
                 #
                 clean_x=pred_x0 if self.opt.teacher_use_teacher_forcing else None,
                 #
@@ -929,7 +978,9 @@ class DMD_Wan(Wan):
         noises: Tensor,
         prompt_embeds: Tensor,
         cond_latents: Optional[Tensor] = None,
+        #
         plucker: Optional[Tensor] = None,
+        timestamp_embeds: Optional[Tensor] = None,
         #
         clean_latents: Optional[Tensor] = None,
         #
@@ -952,7 +1003,9 @@ class DMD_Wan(Wan):
                 noises,
                 prompt_embeds,
                 cond_latents,
+                #
                 plucker,
+                timestamp_embeds,
                 #
                 C2W,
                 fxfycxcy,
@@ -1090,7 +1143,10 @@ class DMD_Wan(Wan):
                 noisy_latents,
                 timesteps,
                 prompt_embeds,
-                plucker=plucker,
+                #
+                plucker=plucker if self.opt.input_plucker else None,
+                timestamp_embeds=timestamp_embeds if self.opt.input_timestamps else None,
+                #
                 C2W=C2W, fxfycxcy=fxfycxcy,  # for DA3
                 extra_condition=input_extra_condition,
                 #
@@ -1117,7 +1173,9 @@ class DMD_Wan(Wan):
         noises: Tensor,
         prompt_embeds: Tensor,
         cond_latents: Optional[Tensor] = None,
+        #
         plucker: Optional[Tensor] = None,
+        timestamp_embeds: Optional[Tensor] = None,
         #
         C2W: Optional[Tensor] = None,
         fxfycxcy: Optional[Tensor] = None,
@@ -1135,7 +1193,9 @@ class DMD_Wan(Wan):
             noises,
             prompt_embeds,
             cond_latents,
+            #
             plucker,
+            timestamp_embeds,
             #
             C2W,
             fxfycxcy,

@@ -159,7 +159,7 @@ class InternalDataset(BaseDataset):
             for si in range(n_segs):
                 cum_dur = 0.
                 for length in range(1, n_segs - si + 1):
-                    cum_dur += segments[si + length - 1]["end_time"] - segments[si + length - 1]["start_time"]
+                    cum_dur += float(segments[si + length - 1]["end_time"]) - float(segments[si + length - 1]["start_time"])
                     if cum_dur > max_duration * length:
                         break  # adding more segments won't help
                     if min_duration * length <= cum_dur <= max_duration * length:
@@ -172,7 +172,7 @@ class InternalDataset(BaseDataset):
                     return False
                 for k in range(nc):
                     seg = segments[si + k]
-                    if seg["end_time"] - seg["start_time"] < min_seg_duration:
+                    if float(seg["end_time"]) - float(seg["start_time"]) < min_seg_duration:
                         return False
                 return True
             valid_pairs = [(si, nc) for si, nc in valid_pairs if _pair_is_valid(si, nc)]
@@ -237,8 +237,8 @@ class InternalDataset(BaseDataset):
             ## Per-segment proportional frame allocation and independent uniform sampling
             seg_frame_ranges = []  # (seg_start_frame, seg_end_frame) for each segment
             for seg in selected_segments:
-                seg_start = int(round(seg["start_time"] * fps))
-                seg_end = min(int(round(seg["end_time"] * fps)), num_frames)
+                seg_start = int(round(float(seg["start_time"]) * fps))
+                seg_end = min(int(round(float(seg["end_time"]) * fps)), num_frames)
                 if seg_end < seg_start + min_seg_duration * fps:
                     raise _SkipSample(idx)
                 seg_frame_ranges.append((seg_start, seg_end))
@@ -269,6 +269,10 @@ class InternalDataset(BaseDataset):
                 end_frame_idx=end_frame_idx,
                 target_num_frames=total_frames,
             )
+
+        # Compute timestamps for all frames (in seconds)
+        timestamps = torch.tensor([fi / fps for fi in input_frame_idxs], dtype=torch.float32)  # (F,)
+        timestamps = timestamps - timestamps[0]  # shift so first frame = 0
 
         depths, confs = None, None  # no depth and conf for InternalDataset
 
@@ -317,6 +321,7 @@ class InternalDataset(BaseDataset):
                 clip_end_frame_idx = clip_start_frame_idx + int(round(clip_duration * fps))  # may exceed video length
                 num_frames_per_clip.append(len([idx for idx in input_frame_idxs if clip_start_frame_idx <= idx < clip_end_frame_idx]))
         assert sum(num_frames_per_clip) == len(input_frame_idxs) and len(num_frames_per_clip) == len(prompt)
+        timestamps = torch.split(timestamps, num_frames_per_clip, dim=0)  # List of (F_i,)
         if C2W is not None:
             C2W = torch.split(C2W, num_frames_per_clip, dim=0)  # List of (F_i, 4, 4)
         if fxfycxcy is not None:
@@ -327,6 +332,7 @@ class InternalDataset(BaseDataset):
         return_dict = {
             "uid": uid,            # str
             "prompt": prompt,      # List[str]
+            "timestamps": timestamps,  # List[Tensor(F_i,)] in seconds
         }
         if self.opt.load_image:
             return_dict["image"] = images  # List[(F, 3, H, W)] in [0, 1]

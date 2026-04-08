@@ -2,8 +2,40 @@ from typing import *
 from torch import Tensor
 from torch.nn import Module
 
+import torch
 import torch.nn.functional as tF
 from einops import rearrange
+
+
+def timestamp_encode(timestamps: Tensor, dim: int = 6) -> Tensor:
+    """Encode scalar timestamps into sinusoidal positional embeddings.
+
+    Uses raw timestamps in seconds (no normalization) so the encoding reflects
+    absolute physical time. This allows the model to generalize from short videos
+    to longer ones — e.g., `t=2.5s` always produces the same embedding regardless
+    of total video duration.
+
+    Inputs:
+        - `timestamps`: (F,) tensor of frame times in seconds (first frame = 0)
+        - `dim`: output dimension (default 6 to match plucker's 6 channels)
+
+    Outputs:
+        - `encoding`: (F, dim) tensor of sinusoidal positional encodings
+    """
+    F = timestamps.shape[0]
+    device = timestamps.device
+    dtype = timestamps.dtype
+
+    # Sinusoidal positional encoding on raw seconds
+    # PE(t, 2i) = sin(t * pi / 10000^(2i/d))
+    # PE(t, 2i+1) = cos(t * pi / 10000^(2i/d))
+    half = dim // 2
+    freqs = torch.pow(10000., torch.arange(half, dtype=dtype, device=device) * 2 / dim)  # (dim//2,)
+    angles = timestamps[:, None] * torch.pi / freqs[None, :]  # (F, dim//2)
+    pe = torch.stack([angles.sin(), angles.cos()], dim=-1).reshape(F, -1)  # (F, dim)
+    if dim % 2 == 1:  # handle odd dim
+        pe = torch.cat([pe, torch.zeros(F, 1, dtype=dtype, device=device)], dim=-1)
+    return pe
 
 
 def mv_interpolate(x: Tensor, *args, **kwargs) -> Tensor:

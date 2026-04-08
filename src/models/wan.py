@@ -27,7 +27,7 @@ from src.models.modules import (
 )
 from src.models.modules.decoder_wrapper import ZERO_VAE_CACHE_512, ZERO_VAE_CACHE
 from src.models.losses import XYZLoss, DepthLoss, CameraLoss
-from src.utils import convert_to_buffer, plucker_ray, colorize_depth, filter_da3_points, render_pt3d_points, mv_interpolate
+from src.utils import convert_to_buffer, plucker_ray, colorize_depth, filter_da3_points, render_pt3d_points, mv_interpolate, timestamp_encode
 from src.utils.distributed import get_sp_world_size
 
 
@@ -138,11 +138,12 @@ class Wan(nn.Module):
                 0.,    # hard-coded `sigma_min`
                 True,  # hard-coded `extra_one_step`
                 #
-                opt.input_plucker,
-                opt.extra_condition_dim,
+                input_plucker=opt.input_plucker,
+                input_timestamps=opt.input_timestamps,
+                extra_condition_dim=opt.extra_condition_dim,
                 #
-                opt.use_gradient_checkpointing,
-                opt.use_gradient_checkpointing_offload,
+                use_gradient_checkpointing=opt.use_gradient_checkpointing,
+                use_gradient_checkpointing_offload=opt.use_gradient_checkpointing_offload,
                 #
                 is_causal=opt.is_causal,
                 sink_size=opt.sink_size,
@@ -170,11 +171,12 @@ class Wan(nn.Module):
                 0.,    # hard-coded `sigma_min`
                 True,  # hard-coded `extra_one_step`
                 #
-                opt.input_plucker,
-                opt.extra_condition_dim,
+                input_plucker=opt.input_plucker,
+                input_timestamps=opt.input_timestamps,
+                extra_condition_dim=opt.extra_condition_dim,
                 #
-                opt.use_gradient_checkpointing,
-                opt.use_gradient_checkpointing_offload,
+                use_gradient_checkpointing=opt.use_gradient_checkpointing,
+                use_gradient_checkpointing_offload=opt.use_gradient_checkpointing_offload,
                 #
                 is_causal=opt.is_causal,
                 sink_size=opt.sink_size,
@@ -318,6 +320,15 @@ class Wan(nn.Module):
             plucker = plucker_ray(H, W, C2W.float(), fxfycxcy.float())[0].to(dtype)  # (B, f, 6, H, W)
         else:
             C2W, fxfycxcy, plucker = None, None, None
+
+        # (Optional) Timestamp embedding
+        if "timestamps" in data:
+            timestamps = data["timestamps"].to(device=device, dtype=dtype)[:, idxs, ...]  # (B, f)
+            B_ts, f_ts = timestamps.shape
+            timestamp_embeds = timestamp_encode(timestamps.reshape(-1), dim=6).reshape(B_ts, f_ts, 6)  # (B, f, 6)
+            timestamp_embeds = timestamp_embeds.unsqueeze(-1).unsqueeze(-1).expand(-1, -1, -1, H, W)  # (B, f, 6, H, W)
+        else:
+            timestamp_embeds = None
 
         # Text encoder
         if self.text_encoder is not None:
@@ -484,7 +495,10 @@ class Wan(nn.Module):
             noisy_latents,
             timesteps,
             prompt_embeds,
+            #
             plucker=plucker if self.opt.input_plucker else None,
+            timestamp_embeds=timestamp_embeds if self.opt.input_timestamps else None,
+            #
             C2W=C2W, fxfycxcy=fxfycxcy,  # for DA3
             extra_condition=input_extra_condition,
             #
@@ -599,6 +613,16 @@ class Wan(nn.Module):
             plucker = plucker_ray(H, W, C2W.float(), fxfycxcy.float())[0].to(dtype)  # (B, f, 6, H, W)
         else:
             C2W, fxfycxcy, plucker = None, None, None
+
+        # (Optional) Timestamp embedding
+        if "timestamps" in data:
+            timestamps = data["timestamps"].to(device=device, dtype=dtype)[:, idxs, ...]  # (B, f)
+            B_ts, f_ts = timestamps.shape
+            timestamp_embeds = timestamp_encode(timestamps.reshape(-1), dim=6).reshape(B_ts, f_ts, 6)  # (B, f, 6)
+            timestamp_embeds = timestamp_embeds.unsqueeze(-1).unsqueeze(-1).expand(-1, -1, -1, H, W)  # (B, f, 6, H, W)
+        else:
+            timestamp_embeds = None
+
         if "depth" in data:
             depths = data["depth"].to(device=device, dtype=dtype)[:, idxs, ...]  # (B, f, H, W)
         else:
@@ -684,7 +708,10 @@ class Wan(nn.Module):
                     latents,
                     timesteps,
                     prompt_embeds,
+                    #
                     plucker=plucker if self.opt.input_plucker else None,
+                    timestamp_embeds=timestamp_embeds if self.opt.input_timestamps else None,
+                    #
                     C2W=C2W, fxfycxcy=fxfycxcy,  # for DA3
                     extra_condition=input_extra_condition,
                     #
@@ -697,7 +724,10 @@ class Wan(nn.Module):
                         latents,
                         timesteps,
                         negative_prompt_embeds,  # torch.zeros_like(prompt_embeds)
+                        #
                         plucker=plucker if self.opt.input_plucker else None,
+                        timestamp_embeds=timestamp_embeds if self.opt.input_timestamps else None,
+                        #
                         C2W=C2W, fxfycxcy=fxfycxcy,  # for DA3
                         extra_condition=input_extra_condition,
                         #
@@ -787,12 +817,13 @@ class Wan(nn.Module):
 
         # Save prompts for logging
         outputs["prompts"] = prompts
-        if "global_caption" in data:
-            outputs["global_captions"] = data["global_caption"]
-        if "action_labels" in data:
-            outputs["action_labels"] = data["action_labels"]
-        if "frame_ranges" in data:
-            outputs["frame_ranges"] = data["frame_ranges"]
+        _META_FIELDS = [
+            "global_caption", "control_agent",
+            "action_labels", "caption_deltas", "end_states", "frame_ranges"
+        ]
+        for key in _META_FIELDS:
+            if key in data:
+                outputs[key] = data[key]
 
         return outputs
 
@@ -832,6 +863,16 @@ class Wan(nn.Module):
             plucker = plucker_ray(H, W, C2W.float(), fxfycxcy.float())[0].to(dtype)  # (B, f, 6, H, W)
         else:
             C2W, fxfycxcy, plucker = None, None, None
+
+        # (Optional) Timestamp embedding
+        if "timestamps" in data:
+            timestamps = data["timestamps"].to(device=device, dtype=dtype)[:, idxs, ...]  # (B, f)
+            B_ts, f_ts = timestamps.shape
+            timestamp_embeds = timestamp_encode(timestamps.reshape(-1), dim=6).reshape(B_ts, f_ts, 6)  # (B, f, 6)
+            timestamp_embeds = timestamp_embeds.unsqueeze(-1).unsqueeze(-1).expand(-1, -1, -1, H, W)  # (B, f, 6, H, W)
+        else:
+            timestamp_embeds = None
+
         if "depth" in data:
             depths = data["depth"].to(device=device, dtype=dtype)[:, idxs, ...]  # (B, f, H, W)
         else:
@@ -941,6 +982,10 @@ class Wan(nn.Module):
                     this_chunk_plucker = plucker[:, chunk_idx * self.opt.chunk_size:(chunk_idx + 1) * self.opt.chunk_size, ...]
                 else:
                     this_chunk_plucker = None
+                if self.opt.input_timestamps:
+                    this_chunk_timestamp_embeds = timestamp_embeds[:, chunk_idx * self.opt.chunk_size:(chunk_idx + 1) * self.opt.chunk_size, ...]
+                else:
+                    this_chunk_timestamp_embeds = None
                 if C2W is not None and fxfycxcy is not None:
                     this_chunk_C2W = C2W[:, chunk_idx * self.opt.chunk_size:(chunk_idx + 1) * self.opt.chunk_size, ...]
                     this_chunk_fxfycxcy = fxfycxcy[:, chunk_idx * self.opt.chunk_size:(chunk_idx + 1) * self.opt.chunk_size, ...]
@@ -959,7 +1004,10 @@ class Wan(nn.Module):
                         this_chunk_latents,
                         timesteps,
                         prompt_embeds,
+                        #
                         plucker=this_chunk_plucker,
+                        timestamp_embeds=this_chunk_timestamp_embeds,
+                        #
                         C2W=this_chunk_C2W, fxfycxcy=this_chunk_fxfycxcy,  # for DA3
                         extra_condition=input_extra_condition,
                         #
@@ -982,7 +1030,10 @@ class Wan(nn.Module):
                             this_chunk_latents,
                             timesteps,
                             negative_prompt_embeds,  # torch.zeros_like(prompt_embeds)
+                            #
                             plucker=this_chunk_plucker,
+                            timestamp_embeds=this_chunk_timestamp_embeds,
+                            #
                             C2W=this_chunk_C2W, fxfycxcy=this_chunk_fxfycxcy,  # for DA3
                             extra_condition=input_extra_condition,
                             #
@@ -1037,7 +1088,10 @@ class Wan(nn.Module):
                     this_chunk_latents,
                     timesteps * 0.,
                     prompt_embeds,
+                    #
                     plucker=this_chunk_plucker,
+                    timestamp_embeds=this_chunk_timestamp_embeds,
+                    #
                     C2W=this_chunk_C2W, fxfycxcy=this_chunk_fxfycxcy,  # for DA3
                     extra_condition=input_extra_condition,
                     #
@@ -1059,7 +1113,10 @@ class Wan(nn.Module):
                         this_chunk_latents,
                         timesteps * 0.,
                         negative_prompt_embeds,  # torch.zeros_like(prompt_embeds)
+                        #
                         plucker=this_chunk_plucker,
+                        timestamp_embeds=this_chunk_timestamp_embeds,
+                        #
                         C2W=this_chunk_C2W, fxfycxcy=this_chunk_fxfycxcy,  # for DA3
                         extra_condition=input_extra_condition,
                         #
@@ -1239,12 +1296,13 @@ class Wan(nn.Module):
 
         # Save prompts for logging
         outputs["prompts"] = prompts
-        if "global_caption" in data:
-            outputs["global_captions"] = data["global_caption"]
-        if "action_labels" in data:
-            outputs["action_labels"] = data["action_labels"]
-        if "frame_ranges" in data:
-            outputs["frame_ranges"] = data["frame_ranges"]
+        _META_FIELDS = [
+            "global_caption", "control_agent",
+            "action_labels", "caption_deltas", "end_states", "frame_ranges"
+        ]
+        for key in _META_FIELDS:
+            if key in data:
+                outputs[key] = data[key]
 
         return outputs
 
@@ -1257,6 +1315,7 @@ class Wan(nn.Module):
         #
         C2W: Optional[Tensor] = None,  # (B, f, 4, 4)
         fxfycxcy: Optional[Tensor] = None,  # (B, f, 4)
+        timestamps: Optional[Tensor] = None,  # (B, f) in seconds
         #
         images: Optional[Tensor] = None,  # (B, 1, 3, H, W)
         depths: Optional[Tensor] = None,  # (B, 1, H, W)
@@ -1293,6 +1352,14 @@ class Wan(nn.Module):
             plucker = plucker_ray(H, W, C2W.float(), fxfycxcy.float())[0].to(dtype)  # (B, f, 6, H, W)
         else:
             C2W, fxfycxcy, plucker = None, None, None
+        # (Optional) Timestamp embedding
+        if timestamps is not None and self.opt.input_timestamps:
+            timestamps = timestamps.to(dtype)  # (B, f)
+            B_ts, f_ts = timestamps.shape
+            timestamp_embeds = timestamp_encode(timestamps.reshape(-1), dim=6).reshape(B_ts, f_ts, 6)  # (B, f, 6)
+            timestamp_embeds = timestamp_embeds.unsqueeze(-1).unsqueeze(-1).expand(-1, -1, -1, H, W)  # (B, f, 6, H, W)
+        else:
+            timestamp_embeds = None
         if depths is not None:
             depths = depths.to(dtype)  # (B, 1, H, W)
         if confs is not None:
@@ -1392,7 +1459,10 @@ class Wan(nn.Module):
                 cond_latents,
                 torch.zeros((B, self.opt.chunk_size), device=device, dtype=dtype),
                 prompt_embeds,
+                #
                 plucker=plucker[:, 0:1, ...].repeat(1, self.opt.chunk_size, 1, 1, 1) if plucker is not None else None,
+                timestamp_embeds=timestamp_embeds[:, 0:1, ...].repeat(1, self.opt.chunk_size, 1, 1, 1) if timestamp_embeds is not None else None,
+                #
                 C2W=C2W[:, 0:1, ...].repeat(1, self.opt.chunk_size, 1, 1) if C2W is not None else None,  # for DA3
                 fxfycxcy=fxfycxcy[:, 0:1, ...].repeat(1, self.opt.chunk_size, 1) if fxfycxcy is not None else None,  # for DA3
                 extra_condition=torch.zeros_like(input_extra_condition) \
@@ -1415,7 +1485,10 @@ class Wan(nn.Module):
                     cond_latents,
                     torch.zeros((B, self.opt.chunk_size), device=device, dtype=dtype),
                     negative_prompt_embeds,  # torch.zeros_like(prompt_embeds)
+                    #
                     plucker=plucker[:, 0:1, ...].repeat(1, self.opt.chunk_size, 1, 1, 1) if plucker is not None else None,
+                    timestamp_embeds=timestamp_embeds[:, 0:1, ...].repeat(1, self.opt.chunk_size, 1, 1, 1) if timestamp_embeds is not None else None,
+                    #
                     C2W=C2W[:, 0:1, ...].repeat(1, self.opt.chunk_size, 1, 1) if C2W is not None else None,  # for DA3
                     fxfycxcy=fxfycxcy[:, 0:1, ...].repeat(1, self.opt.chunk_size, 1) if fxfycxcy is not None else None,  # for DA3
                     extra_condition=torch.zeros_like(input_extra_condition) \
@@ -1445,6 +1518,10 @@ class Wan(nn.Module):
                 this_chunk_plucker = plucker[:, chunk_idx * self.opt.chunk_size:(chunk_idx + 1) * self.opt.chunk_size, ...]
             else:
                 this_chunk_plucker = None
+            if self.opt.input_timestamps and timestamp_embeds is not None:
+                this_chunk_timestamp_embeds = timestamp_embeds[:, chunk_idx * self.opt.chunk_size:(chunk_idx + 1) * self.opt.chunk_size, ...]
+            else:
+                this_chunk_timestamp_embeds = None
             if C2W is not None and fxfycxcy is not None:
                 this_chunk_C2W = C2W[:, chunk_idx * self.opt.chunk_size:(chunk_idx + 1) * self.opt.chunk_size, ...]
                 this_chunk_fxfycxcy = fxfycxcy[:, chunk_idx * self.opt.chunk_size:(chunk_idx + 1) * self.opt.chunk_size, ...]
@@ -1463,7 +1540,10 @@ class Wan(nn.Module):
                     this_chunk_latents,
                     timesteps,
                     prompt_embeds,
+                    #
                     plucker=this_chunk_plucker,
+                    timestamp_embeds=this_chunk_timestamp_embeds,
+                    #
                     C2W=this_chunk_C2W, fxfycxcy=this_chunk_fxfycxcy,  # for DA3
                     extra_condition=input_extra_condition,
                     #
@@ -1486,7 +1566,10 @@ class Wan(nn.Module):
                         this_chunk_latents,
                         timesteps,
                         negative_prompt_embeds,  # torch.zeros_like(prompt_embeds)
+                        #
                         plucker=this_chunk_plucker,
+                        timestamp_embeds=this_chunk_timestamp_embeds,
+                        #
                         C2W=this_chunk_C2W, fxfycxcy=this_chunk_fxfycxcy,  # for DA3
                         extra_condition=input_extra_condition,
                         #
@@ -1541,7 +1624,10 @@ class Wan(nn.Module):
                 this_chunk_latents,
                 timesteps * 0.,
                 prompt_embeds,
+                #
                 plucker=this_chunk_plucker,
+                timestamp_embeds=this_chunk_timestamp_embeds,
+                #
                 C2W=this_chunk_C2W, fxfycxcy=this_chunk_fxfycxcy,  # for DA3
                 extra_condition=input_extra_condition,
                 #
@@ -1563,7 +1649,10 @@ class Wan(nn.Module):
                     this_chunk_latents,
                     timesteps * 0.,
                     negative_prompt_embeds,  # torch.zeros_like(prompt_embeds)
+                    #
                     plucker=this_chunk_plucker,
+                    timestamp_embeds=this_chunk_timestamp_embeds,
+                    #
                     C2W=this_chunk_C2W, fxfycxcy=this_chunk_fxfycxcy,  # for DA3
                     extra_condition=input_extra_condition,
                     #
@@ -1703,12 +1792,12 @@ class Wan(nn.Module):
 
         # Support dynamic num_clips: only support batch_size=1
         assert len(prompts) == 1
-        if not self.opt.version_action:
+        if not self.opt.version_action and not self.opt.version_new_action:
             assert len(prompts[0]) <= self.opt.num_clips
 
         new_data = dict(data)
         clip_frame_lens = []
-        for key in ["image", "C2W", "fxfycxcy", "depth", "conf"]:
+        for key in ["image", "C2W", "fxfycxcy", "depth", "conf", "timestamps"]:
             if key not in data:
                 continue
             value = data[key]  # a list (batch) of tuple (clip)
