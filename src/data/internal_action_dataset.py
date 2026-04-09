@@ -56,9 +56,9 @@ class InternalActionDataset(BaseDataset):
         # Train/val split (95/5)
         indices = np.random.RandomState(seed=42).permutation(len(uids))
         if training:
-            self.uids = [uids[i] for i in indices[:int(.95 * len(uids))]]
+            self.uids = [uids[i] for i in indices[:int(0.95 * len(uids))]]
         else:
-            self.uids = [uids[i] for i in indices[int(.95 * len(uids)):]]
+            self.uids = [uids[i] for i in indices[int(0.95 * len(uids)):]]
 
         # Filter UIDs: one `listdir` + set lookup instead of many `os.path.exists` calls
         existing_videos = set(os.listdir(os.path.join(self.root, "video")))
