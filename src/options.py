@@ -47,6 +47,7 @@ class Options:
     version_action: bool = False
     version_new_action: bool = False
     action_data_path: str = "video_action_caption_70w_p1.jsonl"  # relative to dataroot
+    use_caption_abs: bool = False  # use `caption_abs` or `caption_delta` in prompt
     load_global_caption: bool = False
     num_clips: int = 1
     num_clips_test: Optional[int] = None

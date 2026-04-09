@@ -819,7 +819,7 @@ class Wan(nn.Module):
         outputs["prompts"] = prompts
         _META_FIELDS = [
             "global_caption", "control_agent",
-            "action_labels", "caption_deltas", "end_states", "frame_ranges"
+            "caption_abs", "caption_deltas", "action_labels", "end_states", "frame_ranges",
         ]
         for key in _META_FIELDS:
             if key in data:
@@ -1298,7 +1298,7 @@ class Wan(nn.Module):
         outputs["prompts"] = prompts
         _META_FIELDS = [
             "global_caption", "control_agent",
-            "action_labels", "caption_deltas", "end_states", "frame_ranges"
+            "caption_abs", "caption_deltas", "action_labels", "end_states", "frame_ranges",
         ]
         for key in _META_FIELDS:
             if key in data:
@@ -1828,31 +1828,50 @@ class Wan(nn.Module):
         return new_data, clip_latent_lens
 
     def _encode_prompt_batch(self, prompts: List[str] | List[List[str]]) -> Tensor:
+        """Encode prompts with FSDP-safe synchronization.
+
+        When `text_encoder` is FSDP-wrapped, every rank must call it the same
+        number of times.  With dynamic `num_clips` (e.g. `version_action`),
+        different ranks may have different clip counts.  We all-reduce the max
+        and loop-encode one prompt at a time, padding short ranks with a dummy
+        call so all ranks stay in lock-step.
+        """
         if len(prompts) == 0:
             raise ValueError("Prompts should not be empty")
-        if isinstance(prompts[0], list):
-            B, num_clips = len(prompts), len(prompts[0])
-            # Sync max num_clips across ranks so all ranks call `text_encoder` the same number
-            # of times (required for FSDP correctness when different ranks have different
-            # num_clips, e.g. when `version_action=True`)
-            if dist.is_available() and dist.is_initialized():
-                max_clips_t = torch.tensor(num_clips, device="cuda")
-                dist.all_reduce(max_clips_t, op=dist.ReduceOp.MAX)
-                max_clips = int(max_clips_t.item())
-            else:
-                max_clips = num_clips
-            # Pad prompts with the last prompt in the sample so every rank encodes
-            # `max_clips` times; padding rows will be discarded afterwards
-            embed_list = []
-            for sample in prompts:
-                padded = sample + [sample[-1]] * (max_clips - len(sample))
-                for p in padded:
-                    embed_list.append(self.text_encoder([p]))  # (1, N, D')
-            embeds = torch.cat(embed_list, dim=0)  # (B*max_clips, N, D')
-            embeds = embeds.reshape(B, max_clips, embeds.shape[1], embeds.shape[2])
-            return embeds[:, :num_clips]  # (B, num_clips, N=512, D')
-        # Encode one prompt at a time to save GPU memory
-        return torch.cat([self.text_encoder([p]) for p in prompts], dim=0)  # (B, N=512, D')
+
+        # Normalize to multi-clip format: List[List[str]]
+        is_single_clip = not isinstance(prompts[0], list)
+        if is_single_clip:
+            prompts = [[p] for p in prompts]  # wrap each str into a 1-element list
+
+        B = len(prompts)
+        num_clips = len(prompts[0])
+
+        # Sync `num_clips` across ranks so every rank loops the same number of
+        # times through the FSDP-wrapped `text_encoder`
+        if dist.is_available() and dist.is_initialized():
+            max_clips_t = torch.tensor(num_clips, device="cuda")
+            dist.all_reduce(max_clips_t, op=dist.ReduceOp.MAX)
+            max_clips = int(max_clips_t.item())
+        else:
+            max_clips = num_clips
+
+        # Encode one prompt per iteration (memory-friendly); pad with last
+        # prompt so short ranks still call `text_encoder` on every iteration
+        embed_list = []
+        for i in range(max_clips):
+            batch_prompts = [
+                sample[i] if i < len(sample) else sample[-1]
+                for sample in prompts
+            ]
+            embed_list.append(self.text_encoder(batch_prompts))  # (B, N, D')
+
+        embeds = torch.stack(embed_list, dim=1)  # (B, max_clips, N, D')
+        embeds = embeds[:, :num_clips]  # discard padding columns
+
+        if is_single_clip:
+            return embeds.squeeze(1)  # (B, N, D')
+        return embeds  # (B, num_clips, N, D')
 
     def _build_negative_prompt_embeds(self, batch_size: int, num_clips: int = 1) -> Tensor:
         neg = self.text_encoder([self.opt.negative_prompt]).repeat(batch_size * num_clips, 1, 1)

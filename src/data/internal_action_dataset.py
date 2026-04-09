@@ -98,13 +98,20 @@ class InternalActionDataset(BaseDataset):
     def _getitem_once(self, idx: int) -> Dict[str, Any]:
         uid = self.uids[idx]
         caption_result = self.caption_data[uid]
-        segments = caption_result["segments"]
 
-        # Extract structured captions per segment
-        all_captions_abs = [seg["caption"]["caption_abs"] for seg in segments]
-        all_action_labels = [seg["action_label"] for seg in segments]
-        all_caption_deltas = [seg["caption"]["caption_delta"] for seg in segments]
-        all_end_states = [seg["caption"]["end_state"] for seg in segments]
+        try:
+            # Extract global caption and control agent
+            global_caption = caption_result["global_caption"]
+            control_agent = caption_result["control_agent"]
+
+            # Extract structured captions per segment
+            segments = caption_result["segments"]
+            all_captions_abs = [seg["caption"]["caption_abs"] for seg in segments]
+            all_caption_deltas = [seg["caption"]["caption_delta"] for seg in segments]
+            all_action_labels = [seg["action_label"] for seg in segments]
+            all_end_states = [seg["caption"]["end_state"] for seg in segments]
+        except KeyError:  # missing keys
+            raise _SkipSample(idx)
 
         # Dynamic `num_clips`: randomly pick a start segment, then greedily extend
         # until duration falls in [min_duration, max_duration]
@@ -143,10 +150,14 @@ class InternalActionDataset(BaseDataset):
         start_clip_idx, num_clips = valid_pairs[np.random.randint(len(valid_pairs))]
         clip_idxs = [start_clip_idx + i for i in range(num_clips)]
 
-        # Prompts: use `caption_abs` as the DiT prompt
-        prompt = [all_captions_abs[ci] for ci in clip_idxs]
-        action_labels = [all_action_labels[ci] for ci in clip_idxs]
+        # Build structured prompts from template
+        prompt = self._build_prompts(
+            clip_idxs, global_caption, control_agent,
+            all_captions_abs, all_caption_deltas, all_action_labels, all_end_states,
+        )
+        captions_abs = [all_captions_abs[ci] for ci in clip_idxs]
         caption_deltas = [all_caption_deltas[ci] for ci in clip_idxs]
+        action_labels = [all_action_labels[ci] for ci in clip_idxs]
         end_states = [all_end_states[ci] for ci in clip_idxs]
 
         # Sample frames
@@ -252,14 +263,15 @@ class InternalActionDataset(BaseDataset):
             images = torch.split(images, num_frames_per_clip, dim=0)  # List of (F_i, 3, H, W)
 
         return_dict = {
-            "uid": uid,                                      # str
-            "prompt": prompt,                                # List[str] (caption_abs)
-            "action_labels": action_labels,                  # List[str]
-            "caption_deltas": caption_deltas,                # List[str]
-            "end_states": end_states,                        # List[str]
-            "global_caption": caption_result["global_caption"],  # str
-            "control_agent": caption_result["control_agent"],    # str
-            "timestamps": timestamps,                        # List[Tensor(F_i,)] in seconds
+            "uid": uid,                        # str
+            "prompt": prompt,                  # List[str]
+            "captions_abs": captions_abs,      # List[str]
+            "caption_deltas": caption_deltas,  # List[str]
+            "action_labels": action_labels,    # List[str]
+            "end_states": end_states,          # List[str]
+            "global_caption": global_caption,  # str
+            "control_agent": control_agent,    # str
+            "timestamps": timestamps,          # List[Tensor(F_i,)] in seconds
         }
         if self.opt.load_image:
             return_dict["image"] = images  # List[(F, 3, H, W)] in [0, 1]
@@ -295,3 +307,43 @@ class InternalActionDataset(BaseDataset):
         key = hashlib.md5(str(factors).encode()).hexdigest()[:12]
         split = "train" if training else "val"
         return f"/tmp/internal_action_dataset_uids_{split}_{key}.pkl"
+
+    def _build_prompts(
+        self,
+        clip_idxs: List[int],
+        global_caption: str,
+        control_agent: str,
+        captions_abs: List[str],
+        caption_deltas: List[str],
+        action_labels: List[str],
+        end_states: List[str],
+    ) -> List[str]:
+        """Build structured prompt for each clip from the template.
+
+        Template per clip::
+
+            {global_caption}
+            Control Agent: {control_agent}
+            Action: {action_label}
+            Environment: {caption_delta or caption_abs}
+            End State: {end_state}
+
+        The first clip always uses `caption_abs` to establish the initial scene.
+        Subsequent clips use `caption_delta` by default (falling back to
+        `caption_abs` when empty).  Set `opt.use_caption_abs` to always use
+        `caption_abs` for every clip.
+        """
+        prompts: List[str] = []
+        for j, ci in enumerate(clip_idxs):
+            parts = [global_caption, f"Control Agent: {control_agent}"]
+            parts.append(f"Action: {action_labels[ci]}")
+            # First clip or `opt.use_caption_abs` -> use `caption_abs`;
+            # otherwise use `caption_delta` (fallback to `caption_abs` if empty)
+            if j == 0 or self.opt.use_caption_abs:
+                parts.append(f"Environment: {captions_abs[ci]}")
+            else:
+                scene = caption_deltas[ci] if caption_deltas[ci] else captions_abs[ci]
+                parts.append(f"Environment: {scene}")
+            parts.append(f"End State: {end_states[ci]}")
+            prompts.append("\n".join(parts))
+        return prompts

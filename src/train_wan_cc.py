@@ -711,8 +711,9 @@ def main():
                 _META_FIELDS = [
                     ("global_caption",   "sample"),
                     ("control_agent",    "sample"),
-                    ("action_labels",      "clip"),
+                    ("caption_abs",        "clip"),
                     ("caption_deltas",     "clip"),
+                    ("action_labels",      "clip"),
                     ("end_states",         "clip"),
                     ("frame_ranges",       "clip"),
                 ]

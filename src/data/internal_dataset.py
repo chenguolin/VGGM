@@ -330,8 +330,8 @@ class InternalDataset(BaseDataset):
             images = torch.split(images, num_frames_per_clip, dim=0)  # List of (F_i, 3, H, W)
 
         return_dict = {
-            "uid": uid,            # str
-            "prompt": prompt,      # List[str]
+            "uid": uid,                # str
+            "prompt": prompt,          # List[str]
             "timestamps": timestamps,  # List[Tensor(F_i,)] in seconds
         }
         if self.opt.load_image:
