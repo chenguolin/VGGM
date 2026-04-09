@@ -106,7 +106,7 @@ class InternalActionDataset(BaseDataset):
 
             # Extract structured captions per segment
             segments = caption_result["segments"]
-            all_captions_abs = [seg["caption"]["caption_abs"] for seg in segments]
+            all_caption_abs = [seg["caption"]["caption_abs"] for seg in segments]
             all_caption_deltas = [seg["caption"]["caption_delta"] for seg in segments]
             all_action_labels = [seg["action_label"] for seg in segments]
             all_end_states = [seg["caption"]["end_state"] for seg in segments]
@@ -153,9 +153,9 @@ class InternalActionDataset(BaseDataset):
         # Build structured prompts from template
         prompt = self._build_prompts(
             clip_idxs, global_caption, control_agent,
-            all_captions_abs, all_caption_deltas, all_action_labels, all_end_states,
+            all_caption_abs, all_caption_deltas, all_action_labels, all_end_states,
         )
-        captions_abs = [all_captions_abs[ci] for ci in clip_idxs]
+        caption_abs = [all_caption_abs[ci] for ci in clip_idxs]
         caption_deltas = [all_caption_deltas[ci] for ci in clip_idxs]
         action_labels = [all_action_labels[ci] for ci in clip_idxs]
         end_states = [all_end_states[ci] for ci in clip_idxs]
@@ -265,7 +265,7 @@ class InternalActionDataset(BaseDataset):
         return_dict = {
             "uid": uid,                        # str
             "prompt": prompt,                  # List[str]
-            "captions_abs": captions_abs,      # List[str]
+            "caption_abs": caption_abs,      # List[str]
             "caption_deltas": caption_deltas,  # List[str]
             "action_labels": action_labels,    # List[str]
             "end_states": end_states,          # List[str]
@@ -313,7 +313,7 @@ class InternalActionDataset(BaseDataset):
         clip_idxs: List[int],
         global_caption: str,
         control_agent: str,
-        captions_abs: List[str],
+        caption_abs: List[str],
         caption_deltas: List[str],
         action_labels: List[str],
         end_states: List[str],
@@ -340,9 +340,9 @@ class InternalActionDataset(BaseDataset):
             # First clip or `opt.use_caption_abs` -> use `caption_abs`;
             # otherwise use `caption_delta` (fallback to `caption_abs` if empty)
             if j == 0 or self.opt.use_caption_abs:
-                parts.append(f"Environment: {captions_abs[ci]}")
+                parts.append(f"Environment: {caption_abs[ci]}")
             else:
-                scene = caption_deltas[ci] if caption_deltas[ci] else captions_abs[ci]
+                scene = caption_deltas[ci] if caption_deltas[ci] else caption_abs[ci]
                 parts.append(f"Environment: {scene}")
             parts.append(f"End State: {end_states[ci]}")
             prompts.append("\n".join(parts))
