@@ -49,6 +49,7 @@ class Options:
     action_data_path: Union[str, List[str]] = "video_action_caption_70w_p1.jsonl"  # relative to dataroot; comma-separated or list for multi-file
     # action_data_path: Union[str, List[str]] = "video_action_caption_70w_qwen35.jsonl,video_action_caption_AAAGames_qwen35.jsonl,video_action_caption_ct_qwen35.jsonl"
     use_caption_abs: bool = False  # use `caption_abs` or `caption_delta` in prompt
+    global_caption_first_only: bool = False  # only include `global_caption` + `control_agent` in the first clip's prompt
     load_global_caption: bool = False
     num_clips: int = 1
     num_clips_test: Optional[int] = None

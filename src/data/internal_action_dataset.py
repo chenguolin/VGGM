@@ -348,13 +348,19 @@ class InternalActionDataset(BaseDataset):
     ) -> List[str]:
         """Build structured prompt for each clip from the template.
 
-        Template per clip::
+        When `opt.global_caption_first_only` is False (default), every clip
+        gets the full template::
 
             {global_caption}
             Control Agent: {control_agent}
             Action: {action_label}
             Environment: {caption_delta or caption_abs}
             End State: {end_state}
+
+        When True, only the first clip includes `global_caption` and
+        `control_agent`; subsequent clips contain only the per-clip fields
+        so that the unique action/environment/end_state information is not
+        diluted by repeated shared context.
 
         The first clip always uses `caption_abs` to establish the initial scene.
         Subsequent clips use `caption_delta` by default (falling back to
@@ -363,7 +369,11 @@ class InternalActionDataset(BaseDataset):
         """
         prompts: List[str] = []
         for j, ci in enumerate(clip_idxs):
-            parts = [global_caption, f"Control Agent: {control_agent}"]
+            parts = []
+            # Include global context only in the first clip when `global_caption_first_only` is set
+            if j == 0 or not self.opt.global_caption_first_only:
+                parts.append(global_caption)
+                parts.append(f"Control Agent: {control_agent}")
             parts.append(f"Action: {action_labels[ci]}")
             # First clip or `opt.use_caption_abs` -> use `caption_abs`;
             # otherwise use `caption_delta` (fallback to `caption_abs` if empty)
