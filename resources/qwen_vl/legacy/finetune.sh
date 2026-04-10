@@ -1,12 +1,5 @@
 #!/bin/bash
-# Fine-tune Qwen3-VL for structured caption prediction (multi-task).
-#
-# Multi-task: each sample has its own system prompt in messages[0],
-# so we do NOT pass a global --system flag to ms-swift.
-#
-# Tasks trained jointly:
-#   1. Next-segment prediction (caption + duration estimation)
-#   2. Action completion judge
+# Fine-tune Qwen3-VL for next-caption prediction using ms-swift.
 #
 # Usage:
 #   bash resources/qwen_vl/finetune.sh <data_jsonl> <output_dir> [options]
@@ -19,27 +12,19 @@
 #   --freeze_aligner       Freeze aligner (default: true for lora, false for full)
 #   --no_freeze_aligner    Unfreeze aligner
 #   --num_gpus N           Number of GPUs (default: 1)
-#   --epochs N             Number of training epochs (default: 3)
-#   --grad_accum N         Gradient accumulation steps (default: 16)
-#   --save_steps N         Save checkpoint every N steps (default: 500)
-#   --lr RATE              Override learning rate
-#   --lora_rank N          LoRA rank (default: 16)
 #
 # Examples:
-#   # Prepare data first
-#   python resources/qwen_vl/prepare_sft_data.py \
-#       --output_dir /tmp/qwen_vl_sft --training_split --num_workers 8
+#   # LoRA on 2B (default, ~20GB VRAM)
+#   bash resources/qwen_vl/finetune.sh data.jsonl out/ft_lora
 #
-#   # LoRA on 2B (default, ~8GB VRAM)
-#   bash resources/qwen_vl/finetune.sh /tmp/qwen_vl_sft/train.jsonl out/ft_lora
-#
-#   # LoRA on 8B, 2 GPUs
-#   bash resources/qwen_vl/finetune.sh /tmp/qwen_vl_sft/train.jsonl out/ft_8b \
-#       --model_size 8B --num_gpus 2
+#   # LoRA on 8B
+#   bash resources/qwen_vl/finetune.sh data.jsonl out/ft_lora_8b --model_size 8B --num_gpus 2
 #
 #   # Full fine-tuning on 2B, freeze ViT + aligner (only train LLM)
-#   bash resources/qwen_vl/finetune.sh /tmp/qwen_vl_sft/train.jsonl out/ft_full \
-#       --tuner full --freeze_vit --freeze_aligner
+#   bash resources/qwen_vl/finetune.sh data.jsonl out/ft_full --tuner full --freeze_vit --freeze_aligner
+#
+#   # Full fine-tuning on 4B, train everything
+#   bash resources/qwen_vl/finetune.sh data.jsonl out/ft_full_4b --model_size 4B --tuner full --num_gpus 2
 
 set -euo pipefail
 
@@ -57,11 +42,6 @@ MODEL_SIZE="2B"
 FREEZE_VIT=""
 FREEZE_ALN=""
 NUM_GPUS=1
-NUM_EPOCHS=3
-GRAD_ACCUM=16
-SAVE_STEPS=500
-LR_OVERRIDE=""
-LORA_RANK=16
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -72,11 +52,6 @@ while [ $# -gt 0 ]; do
         --freeze_aligner)    FREEZE_ALN="true"; shift ;;
         --no_freeze_aligner) FREEZE_ALN="false"; shift ;;
         --num_gpus)      NUM_GPUS="$2"; shift 2 ;;
-        --epochs)        NUM_EPOCHS="$2"; shift 2 ;;
-        --grad_accum)    GRAD_ACCUM="$2"; shift 2 ;;
-        --save_steps)    SAVE_STEPS="$2"; shift 2 ;;
-        --lr)            LR_OVERRIDE="$2"; shift 2 ;;
-        --lora_rank)     LORA_RANK="$2"; shift 2 ;;
         *) echo "Unknown option: $1"; exit 1 ;;
     esac
 done
@@ -117,11 +92,15 @@ if [ -d "$SNAPSHOT_DIR" ]; then
 else
     MODEL_PATH="$MODEL_BASE"
 fi
+echo "Model path: $MODEL_PATH"
+
+# ── System prompt (must match next_caption_predictor.py) ───────────
+SYSTEM_PROMPT="You are a video understanding and prediction assistant. Given a description (caption) of the current video clip -- and optionally some visual frames, the video itself, or an overall video summary -- your task is to predict what will most likely happen in the NEXT video clip. Output ONLY the predicted caption for the next clip. The caption should be a single, concise paragraph (1-3 sentences) describing the visual content, actions, and scene of the next clip. Do NOT repeat the current caption; predict what comes next."
 
 # ── Multi-GPU ──────────────────────────────────────────────────────
-# ms-swift uses NPROC_PER_NODE env var (not CLI arg) for multi-GPU
+NPROC_ARGS=""
 if [ "$NUM_GPUS" -gt 1 ]; then
-    export NPROC_PER_NODE="$NUM_GPUS"
+    NPROC_ARGS="--nproc_per_node $NUM_GPUS"
 fi
 
 # ── Tuner-specific arguments ───────────────────────────────────────
@@ -129,16 +108,16 @@ TUNER_ARGS=()
 if [ "$TUNER_TYPE" = "lora" ]; then
     TUNER_ARGS+=(
         --tuner_type lora
-        --lora_rank "$LORA_RANK"
-        --lora_alpha $(( LORA_RANK * 2 ))
+        --lora_rank 16
+        --lora_alpha 32
         --target_modules all-linear
-        --learning_rate "${LR_OVERRIDE:-1e-4}"
+        --learning_rate 1e-4
     )
 else
     # Full fine-tuning: lower LR for stability
     TUNER_ARGS=(
         --tuner_type full
-        --learning_rate "${LR_OVERRIDE:-1e-5}"
+        --learning_rate 1e-5
     )
 fi
 
@@ -149,24 +128,23 @@ echo "Output: $OUTPUT_DIR"
 echo "Tuner: $TUNER_TYPE"
 echo "freeze_vit: $FREEZE_VIT, freeze_aligner: $FREEZE_ALN"
 echo "GPUs: $NUM_GPUS"
-echo "Epochs: $NUM_EPOCHS, grad_accum: $GRAD_ACCUM, save_steps: $SAVE_STEPS"
 
-# NOTE: no --system flag -- each sample carries its own system prompt
-# in messages[0], enabling multi-task training (prediction + judge).
-MAX_PIXELS=$((256 * 28 * 28)) \
+MAX_PIXELS=$((512 * 28 * 28)) \
 swift sft \
+    $NPROC_ARGS \
     --model "$MODEL_PATH" \
     --dataset "$DATA_JSONL" \
+    --system "$SYSTEM_PROMPT" \
     "${TUNER_ARGS[@]}" \
     --freeze_vit "$FREEZE_VIT" \
     --freeze_aligner "$FREEZE_ALN" \
     --torch_dtype bfloat16 \
-    --num_train_epochs "$NUM_EPOCHS" \
+    --num_train_epochs 3 \
     --per_device_train_batch_size 1 \
-    --gradient_accumulation_steps "$GRAD_ACCUM" \
+    --gradient_accumulation_steps 16 \
     --gradient_checkpointing true \
     --output_dir "$OUTPUT_DIR" \
-    --save_steps "$SAVE_STEPS" \
+    --save_steps 500 \
     --save_total_limit 3 \
     --logging_steps 10 \
     --check_model false
