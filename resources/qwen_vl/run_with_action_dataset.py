@@ -256,12 +256,14 @@ def evaluate_judge_sample(
     prompts = sample["prompt"]
     if isinstance(prompts, str):
         gt_captions_abs = [sample.get("captions_abs", "")]
+        gt_caption_deltas = [sample.get("caption_deltas", "")]
         gt_action_labels = [sample.get("action_labels", "")]
         gt_end_states = [sample.get("end_states", "")]
         clip_images = [sample.get("image")]
     else:
         num_clips = len(prompts)
         gt_captions_abs = sample.get("captions_abs", [""] * num_clips)
+        gt_caption_deltas = sample.get("caption_deltas", [""] * num_clips)
         gt_action_labels = sample.get("action_labels", [""] * num_clips)
         gt_end_states = sample.get("end_states", [""] * num_clips)
         clip_images = sample.get("image", [None] * num_clips)
@@ -274,9 +276,8 @@ def evaluate_judge_sample(
         if frames is None or frames.numel() == 0 or frames.shape[0] < 4:
             continue  # need enough frames to sample different positions
 
+        # Judge only needs `end_state`
         intended = {
-            "action_label": gt_action_labels[ci] if ci < len(gt_action_labels) else "",
-            "caption_abs": gt_captions_abs[ci] if ci < len(gt_captions_abs) else "",
             "end_state": gt_end_states[ci] if ci < len(gt_end_states) else "",
         }
 
@@ -387,7 +388,7 @@ def build_opt(num_clips: int) -> Options:
 # Evaluation
 # ──────────────────────────────────────────────────────────────────────
 
-STRUCTURED_FIELDS = ["action_label", "caption_abs", "caption_delta", "end_state"]
+PREDICTED_FIELDS = ["action_label", "caption_delta", "end_state"]
 GLOBAL_FIELDS = ["global_caption", "control_agent"]
 
 
@@ -451,39 +452,47 @@ def evaluate_sample(
             images_per_segment.append(None)
             videos_per_segment.append(None)
 
-    # Run prediction
+    # Run prediction — use GT `global_caption`, `control_agent`, and seg0
+    # as `initial_context` (these are user-provided in the real T2V
+    # pipeline, not predicted by the VLM).
+    initial_context = {
+        "global_caption": gt_global_caption,
+        "control_agent": gt_control_agent,
+        "segment": {
+            "action_label": gt_action_labels[0] if gt_action_labels else "",
+            "caption_abs": gt_captions_abs[0] if gt_captions_abs else "",
+            "end_state": gt_end_states[0] if gt_end_states else "",
+        },
+    }
     prediction = predictor.predict_sequence(
         images_per_segment=images_per_segment if not use_video else None,
         videos_per_segment=videos_per_segment if use_video else None,
+        initial_context=initial_context,
         history_vision=history_vision,
         temperature=temperature,
         enable_thinking=enable_thinking,
     )
 
-    # Compare global fields
-    global_metrics = {}
-    for field in GLOBAL_FIELDS:
-        gt_val = gt_global_caption if field == "global_caption" else gt_control_agent
-        pred_val = prediction.get(field, "")
-        if gt_val:
-            global_metrics[field] = compute_similarity(gt_val, pred_val)
-
-    # Compare per-segment fields
+    # Compare per-segment fields (skip seg0 which is user-provided)
     segment_metrics = []
     pred_segments = prediction.get("segments", [])
     for si in range(num_clips):
         seg_result = {}
+        if si == 0:
+            # Seg0 is user-provided, no prediction to evaluate
+            segment_metrics.append(seg_result)
+            continue
+
         pred_seg = pred_segments[si] if si < len(pred_segments) else {}
 
         # Build GT segment dict for comparison
         gt_seg = {
             "action_label": gt_action_labels[si] if si < len(gt_action_labels) else "",
-            "caption_abs": gt_captions_abs[si] if si < len(gt_captions_abs) else "",
             "caption_delta": gt_caption_deltas[si] if si < len(gt_caption_deltas) else "",
             "end_state": gt_end_states[si] if si < len(gt_end_states) else "",
         }
 
-        for field in STRUCTURED_FIELDS:
+        for field in PREDICTED_FIELDS:
             gt_val = gt_seg.get(field, "")
             pred_val = pred_seg.get(field, "")
             if gt_val:  # only compute metrics when GT is non-empty
@@ -499,7 +508,6 @@ def evaluate_sample(
         "uid": uid,
         "num_clips": num_clips,
         "prediction": prediction,
-        "global_metrics": global_metrics,
         "segment_metrics": segment_metrics,
     }
 
@@ -515,25 +523,11 @@ def print_summary(results: list[dict]):
     print(f"Summary: {n} samples evaluated")
     print(f"{'=' * 70}")
 
-    # Global field metrics
-    for field in GLOBAL_FIELDS:
-        values = {}
-        for r in results:
-            if field in r["global_metrics"]:
-                for mk, mv in r["global_metrics"][field].items():
-                    values.setdefault(mk, []).append(mv)
-        if values:
-            print(f"\n  {field}:")
-            for mk in ["bleu1", "rouge_l", "word_overlap"]:
-                if mk in values:
-                    vals = values[mk]
-                    print(f"    {mk:15s}  mean={np.mean(vals):.4f}  std={np.std(vals):.4f}")
-
-    # Per-segment field metrics (aggregated across all segments)
+    # Per-segment field metrics (seg0 is user-provided, seg1+ are predicted)
     max_segs = max(r["num_clips"] for r in results)
-    for si in range(max_segs):
-        print(f"\n  Segment {si}:")
-        for field in STRUCTURED_FIELDS:
+    for si in range(1, max_segs):
+        print(f"\n  Segment {si} (predicted):")
+        for field in PREDICTED_FIELDS:
             values = {}
             for r in results:
                 if si < len(r["segment_metrics"]):
@@ -576,7 +570,8 @@ def main():
     parser.add_argument("--num_clips", type=int, default=3,
                         help="Number of clips (segments) per sample.")
     parser.add_argument("--model_size", type=str, default="2B",
-                        choices=["2B", "4B", "8B"],
+                        choices=["2B", "4B", "8B",
+                                 "3.5-0.8B", "3.5-2B", "3.5-4B", "3.5-9B"],
                         help="Qwen3-VL model size.")
     parser.add_argument("--device", type=str, default="cuda")
     parser.add_argument("--num_samples", type=int, default=10,

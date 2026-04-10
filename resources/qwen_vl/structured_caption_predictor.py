@@ -50,9 +50,15 @@ ROOT = os.environ.get("ROOT", "/apdcephfs_sgfd/share_303967936/cglin")
 HF_CACHE = os.path.join(ROOT, ".cache/huggingface/hub")
 
 MODEL_PATHS = {
+    # Qwen3-VL
     "2B": os.path.join(HF_CACHE, "models--Qwen--Qwen3-VL-2B-Instruct"),
     "4B": os.path.join(HF_CACHE, "models--Qwen--Qwen3-VL-4B-Instruct"),
     "8B": os.path.join(HF_CACHE, "models--Qwen--Qwen3-VL-8B-Instruct"),
+    # Qwen3.5 (omni VL, no "-VL" suffix in HF name)
+    "3.5-0.8B": os.path.join(HF_CACHE, "models--Qwen--Qwen3.5-0.8B"),
+    "3.5-2B": os.path.join(HF_CACHE, "models--Qwen--Qwen3.5-2B"),
+    "3.5-4B": os.path.join(HF_CACHE, "models--Qwen--Qwen3.5-4B"),
+    "3.5-9B": os.path.join(HF_CACHE, "models--Qwen--Qwen3.5-9B"),
 }
 
 SYSTEM_PROMPT_INITIAL = """\
@@ -93,15 +99,16 @@ the next segment will last.
 Output ONLY valid JSON. No markdown fences, no extra text."""
 
 SYSTEM_PROMPT_JUDGE = """\
-You are a video generation quality judge. Given frames from a video segment \
-and the intended structured caption describing what SHOULD happen, decide \
-whether to stop, continue, or regenerate.
+You are a video generation quality judge. Given frames from a video \
+segment and the intended end state describing what the scene SHOULD \
+look like when the action is complete, decide whether to stop, \
+continue, or regenerate.
 
 You must output a JSON object with exactly two fields, in this order:
 - "reason": One sentence explaining your reasoning.
-- "verdict": "stop" if the intended action is complete and the visual \
-quality is acceptable, "continue" if the action is still in progress, \
-"regenerate" if the content is wrong or quality is poor.
+- "verdict": "stop" if the intended end state has been reached and \
+the visual quality is acceptable, "continue" if the action is still \
+in progress, "regenerate" if the content is wrong or quality is poor.
 
 Output ONLY valid JSON. No markdown fences, no extra text."""
 
@@ -363,10 +370,14 @@ class StructuredCaptionPredictor:
                             "min_pixels": 64 * 28 * 28,
                             "max_pixels": self.max_pixels,
                         })
-                # History text
+                # History text: seg1 uses `caption_abs`, seg2+ uses `caption_delta`
+                if i == 0:
+                    scene = seg.get("caption_abs", "N/A")
+                else:
+                    scene = seg.get("caption_delta", "") or seg.get("caption_abs", "N/A")
                 seg_desc = (
                     f"Segment {i + 1}: [{seg.get('action_label', 'N/A')}] "
-                    f"{seg.get('caption_abs', 'N/A')}"
+                    f"{scene}"
                 )
                 end = seg.get("end_state", "")
                 if end:
@@ -435,17 +446,15 @@ class StructuredCaptionPredictor:
         visual_content = self._build_image_content(images, video)
 
         caption_json = _json.dumps({
-            "action_label": intended_caption.get("action_label", ""),
-            "caption_abs": intended_caption.get("caption_abs", ""),
             "end_state": intended_caption.get("end_state", ""),
-            "control_agent": control_agent,
         }, ensure_ascii=False)
 
         user_content = visual_content + [{
             "type": "text",
             "text": (
-                f"Intended caption:\n{caption_json}\n\n"
-                "Evaluate this video segment against the intended caption."
+                f"Intended end state:\n{caption_json}\n\n"
+                "Evaluate whether this video segment has reached "
+                "the intended end state."
             ),
         }]
 

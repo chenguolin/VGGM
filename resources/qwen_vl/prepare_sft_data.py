@@ -210,6 +210,7 @@ def build_judge_sample(
     seg: dict,
     frame_image_paths: list[str],
     label: dict,
+    seg_index: int = 0,
 ) -> dict:
     """Build an SFT sample for the action completion judge task.
 
@@ -218,20 +219,21 @@ def build_judge_sample(
         seg: Segment dict with ``action_label``, ``caption``, etc.
         frame_image_paths: Paths to the frames being judged.
         label: Dict with ``verdict`` and ``reason``.
+        seg_index: 0-based segment index (unused after simplification,
+            kept for API compatibility).
     """
     image_tags = "".join("<image>" for _ in frame_image_paths)
 
-    intended_caption = json.dumps({
-        "action_label": seg["action_label"],
-        "caption_abs": seg["caption"]["caption_abs"],
+    # Judge only needs `end_state` to decide stop/continue/regenerate
+    intended = json.dumps({
         "end_state": seg["caption"]["end_state"],
-        "control_agent": control_agent,
     }, ensure_ascii=False)
 
     user_text = (
         f"{image_tags}\n"
-        f"Intended caption:\n{intended_caption}\n\n"
-        "Evaluate this video segment against the intended caption."
+        f"Intended end state:\n{intended}\n\n"
+        "Evaluate whether this video segment has reached "
+        "the intended end state."
     )
 
     response = json.dumps(label, ensure_ascii=False)
@@ -293,9 +295,16 @@ def build_next_sample(
                 user_parts.append("<image>")
                 all_image_paths.append(path)
 
+        # Seg1 uses `caption_abs` (no prior segment to diff against);
+        # seg2+ uses `caption_delta` (describes change from previous seg)
+        if i == 0:
+            scene = seg["caption"]["caption_abs"]
+        else:
+            scene = seg["caption"].get("caption_delta", "") or seg["caption"]["caption_abs"]
+
         seg_desc = (
             f"Segment {i + 1}: [{seg['action_label']}] "
-            f"{seg['caption']['caption_abs']}"
+            f"{scene}"
         )
         end_state = seg["caption"].get("end_state", "")
         if end_state:
@@ -470,7 +479,7 @@ def process_one_uid(args_tuple):
                     else:
                         continue
 
-                    sample = build_judge_sample(control_agent, seg, paths, label)
+                    sample = build_judge_sample(control_agent, seg, paths, label, seg_index=si)
                     judge_lines.append(json.dumps(sample, ensure_ascii=False))
                 except Exception:
                     continue

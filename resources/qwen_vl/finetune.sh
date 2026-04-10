@@ -88,11 +88,6 @@ if [[ "$TUNER_TYPE" != "lora" && "$TUNER_TYPE" != "full" ]]; then
     exit 1
 fi
 
-if [[ "$MODEL_SIZE" != "2B" && "$MODEL_SIZE" != "4B" && "$MODEL_SIZE" != "8B" ]]; then
-    echo "Error: --model_size must be '2B', '4B', or '8B', got '$MODEL_SIZE'"
-    exit 1
-fi
-
 # Apply defaults based on tuner type if not explicitly set
 if [ -z "$FREEZE_VIT" ]; then
     if [ "$TUNER_TYPE" = "lora" ]; then FREEZE_VIT="true"; else FREEZE_VIT="false"; fi
@@ -112,7 +107,18 @@ export ftp_proxy="http://star-proxy.oa.com:3128"
 export no_proxy=".woa.com,mirrors.cloud.tencent.com,tlinux-mirror.tencent-cloud.com,tlinux-mirrorlist.tencent-cloud.com,localhost,127.0.0.1,mirrors-tlinux.tencentyun.com,.oa.com,.local,.3gqq.com,.7700.org,.ad.com,.ada_sixjoy.com,.addev.com,.app.local,.apps.local,.aurora.com,.autotest123.com,.bocaiwawa.com,.boss.com,.cdc.com,.cdn.com,.cds.com,.cf.com,.cjgc.local,.cm.com,.code.com,.datamine.com,.dvas.com,.dyndns.tv,.ecc.com,.expochart.cn,.expovideo.cn,.fms.com,.great.com,.hadoop.sec,.heme.com,.home.com,.hotbar.com,.ibg.com,.ied.com,.ieg.local,.ierd.com,.imd.com,.imoss.com,.isd.com,.isoso.com,.itil.com,.kao5.com,.kf.com,.kitty.com,.lpptp.com,.m.com,.matrix.cloud,.matrix.net,.mickey.com,.mig.local,.mqq.com,.oiweb.com,.okbuy.isddev.com,.oss.com,.otaworld.com,.paipaioa.com,.qqbrowser.local,.qqinternal.com,.qqwork.com,.rtpre.com,.sc.oa.com,.sec.com,.server.com,.service.com,.sjkxinternal.com,.sllwrnm5.cn,.sng.local,.soc.com,.t.km,.tcna.com,.teg.local,.tencentvoip.com,.tenpayoa.com,.test.air.tenpay.com,.tr.com,.tr_autotest123.com,.vpn.com,.wb.local,.webdev.com,.webdev2.com,.wizard.com,.wqq.com,.wsd.com,.sng.com,.music.lan,.mnet2.com,.tencentb2.com,.tmeoa.com,.pcg.com,www.wip3.adobe.com,www-mm.wip3.adobe.com,mirrors.tencent.com,csighub.tencentyun.com"
 
 # ── Resolve model path ─────────────────────────────────────────────
-MODEL_BASE="$HF_HOME/hub/models--Qwen--Qwen3-VL-${MODEL_SIZE}-Instruct"
+# Support Qwen3-VL (2B/4B/8B) and Qwen3.5 (3.5-0.8B/3.5-2B/3.5-4B/3.5-9B)
+case "$MODEL_SIZE" in
+    3.5-*)
+        # Qwen3.5: e.g. "3.5-9B" -> "Qwen3.5-9B"
+        QWEN35_SIZE="${MODEL_SIZE#3.5-}"
+        MODEL_BASE="$HF_HOME/hub/models--Qwen--Qwen3.5-${QWEN35_SIZE}"
+        ;;
+    *)
+        # Qwen3-VL: e.g. "2B" -> "Qwen3-VL-2B-Instruct"
+        MODEL_BASE="$HF_HOME/hub/models--Qwen--Qwen3-VL-${MODEL_SIZE}-Instruct"
+        ;;
+esac
 SNAPSHOT_DIR="$MODEL_BASE/snapshots"
 if [ -d "$SNAPSHOT_DIR" ]; then
     MODEL_PATH="$SNAPSHOT_DIR/$(ls "$SNAPSHOT_DIR" | head -1)"
