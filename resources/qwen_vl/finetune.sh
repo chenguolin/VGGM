@@ -62,6 +62,7 @@ GRAD_ACCUM=16
 SAVE_STEPS=500
 LR_OVERRIDE=""
 LORA_RANK=16
+MAX_STEPS=""
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -77,6 +78,7 @@ while [ $# -gt 0 ]; do
         --save_steps)    SAVE_STEPS="$2"; shift 2 ;;
         --lr)            LR_OVERRIDE="$2"; shift 2 ;;
         --lora_rank)     LORA_RANK="$2"; shift 2 ;;
+        --max_steps)     MAX_STEPS="$2"; shift 2 ;;
         *) echo "Unknown option: $1"; exit 1 ;;
     esac
 done
@@ -149,7 +151,13 @@ echo "Output: $OUTPUT_DIR"
 echo "Tuner: $TUNER_TYPE"
 echo "freeze_vit: $FREEZE_VIT, freeze_aligner: $FREEZE_ALN"
 echo "GPUs: $NUM_GPUS"
-echo "Epochs: $NUM_EPOCHS, grad_accum: $GRAD_ACCUM, save_steps: $SAVE_STEPS"
+echo "Epochs: $NUM_EPOCHS, grad_accum: $GRAD_ACCUM, save_steps: $SAVE_STEPS, max_steps: ${MAX_STEPS:-auto}"
+
+# Build optional args
+EXTRA_ARGS=()
+if [ -n "$MAX_STEPS" ]; then
+    EXTRA_ARGS+=(--max_steps "$MAX_STEPS")
+fi
 
 # NOTE: no --system flag -- each sample carries its own system prompt
 # in messages[0], enabling multi-task training (prediction + judge).
@@ -169,6 +177,7 @@ swift sft \
     --save_steps "$SAVE_STEPS" \
     --save_total_limit 3 \
     --logging_steps 10 \
-    --check_model false
+    --check_model false \
+    "${EXTRA_ARGS[@]}"
 
 echo "Fine-tuning complete. Checkpoints saved to: $OUTPUT_DIR"

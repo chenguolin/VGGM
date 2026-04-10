@@ -607,6 +607,9 @@ def main():
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--lora_path", type=str, default=None,
                         help="Path to LoRA adapter.")
+    parser.add_argument("--model_path", type=str, default=None,
+                        help="Path to full fine-tuned model checkpoint "
+                             "(overrides --model_size HF cache path).")
     parser.add_argument("--eval_judge", action="store_true",
                         help="Also evaluate the action completion judge task.")
     parser.add_argument("--no_eval_predict", action="store_true",
@@ -631,7 +634,8 @@ def main():
     # Load predictor
     predictor = StructuredCaptionPredictor(
         model_size=args.model_size, device=args.device,
-        lora_path=args.lora_path, max_pixels=args.max_pixels,
+        lora_path=args.lora_path, model_path=args.model_path,
+        max_pixels=args.max_pixels,
     )
 
     # Process samples

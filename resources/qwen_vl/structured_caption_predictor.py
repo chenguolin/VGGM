@@ -124,20 +124,22 @@ class StructuredCaptionPredictor:
         model_size: str = "8B",
         device: str = "cuda",
         lora_path: Optional[str] = None,
+        model_path: Optional[str] = None,
         max_pixels: int = 256 * 28 * 28,
     ):
         self.model_size = model_size
         self.device = device
         self.max_pixels = max_pixels  # ~200K -> ~450x450 -> ~196 tokens/image
 
-        model_path = self._resolve_model_path(model_size)
-        print(f"Loading Qwen3-VL-{model_size} from {model_path} ...")
+        # `model_path` overrides the default HF cache path (for full FT checkpoints)
+        base_path = model_path or self._resolve_model_path(model_size)
+        print(f"Loading Qwen3-VL-{model_size} from {base_path} ...")
 
         self.processor = AutoProcessor.from_pretrained(
-            model_path, trust_remote_code=True,
+            base_path, trust_remote_code=True,
         )
         self.model = AutoModelForImageTextToText.from_pretrained(
-            model_path,
+            base_path,
             dtype=torch.bfloat16,
             device_map=device,
             trust_remote_code=True,
