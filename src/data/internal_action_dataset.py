@@ -110,7 +110,7 @@ class InternalActionDataset(BaseDataset):
             all_caption_deltas = [seg["caption"]["caption_delta"] for seg in segments]
             all_action_labels = [seg["action_label"] for seg in segments]
             all_end_states = [seg["caption"]["end_state"] for seg in segments]
-        except KeyError:  # missing keys
+        except:  # missing keys or malformed data
             raise _SkipSample(idx)
 
         # Dynamic `num_clips`: randomly pick a start segment, then greedily extend
