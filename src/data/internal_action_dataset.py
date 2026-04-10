@@ -3,6 +3,7 @@ from typing import *
 import os
 import hashlib
 import pickle
+from collections import defaultdict
 import numpy as np
 import json
 from decord import VideoReader, cpu
@@ -34,42 +35,69 @@ class InternalActionDataset(BaseDataset):
     def __init__(self, opt: Options, training: bool = True):
         super().__init__(opt, "internal", training)
 
+        # Normalize `action_data_path` to a list of paths
+        paths = opt.action_data_path
+        if isinstance(paths, str):
+            paths = [p.strip() for p in paths.split(",")]
+        self._action_data_paths = paths
+
         # Fast path: load pre-built UID list from local /tmp cache
-        cache_path = self._cache_key(opt, self.root, training)
+        cache_path = self._cache_key(opt, self.root, training, paths)
         if os.path.exists(cache_path):
             with open(cache_path, "rb") as f:
                 cached = pickle.load(f)
             self.uids = cached["uids"]
             self.caption_data = cached["caption_data"]
+            self.video_paths = cached["video_paths"]
             self.valid_idxs = list(range(len(self.uids)))
             return
 
-        # Load JSONL data
-        data_path = os.path.join(self.root, opt.action_data_path)
-        with open(data_path, "r", encoding="utf-8") as f:
-            data = [json.loads(line) for line in f]
+        # Load and merge all JSONL files
+        all_data = []
+        for p in paths:
+            data_path = os.path.join(self.root, p) if not os.path.isabs(p) else p
+            with open(data_path, "r", encoding="utf-8") as f:
+                all_data.extend(json.loads(line) for line in f)
 
-        # Build caption data: uid -> caption_result dict
-        self.caption_data = {item["filename"]: item["caption_result"] for item in data}
+        # Build caption data and video paths: uid -> caption_result / video_path
+        self.caption_data = {item["filename"]: item["caption_result"] for item in all_data}
+        self.video_paths: Dict[str, str] = {}
+        for item in all_data:
+            uid = item["filename"]
+            # Use `video_path` from JSONL if available; fall back to legacy convention
+            self.video_paths[uid] = item.get("video_path", os.path.join(self.root, "video", f"{uid}.mp4"))
         uids = list(self.caption_data.keys())
 
-        # Train/val split (95/5)
+        # Shuffle before train/val split so multi-source data is well-mixed
         indices = np.random.RandomState(seed=42).permutation(len(uids))
         if training:
             self.uids = [uids[i] for i in indices[:int(0.95 * len(uids))]]
         else:
             self.uids = [uids[i] for i in indices[int(0.95 * len(uids)):]]
 
-        # Filter UIDs: one `listdir` + set lookup instead of many `os.path.exists` calls
-        existing_videos = set(os.listdir(os.path.join(self.root, "video")))
-        self.uids = [uid for uid in self.uids if f"{uid}.mp4" in existing_videos]
+        # Filter UIDs by video existence — group by directory for fast batch `listdir`
+        dir_to_uids: Dict[str, List[Tuple[str, str]]] = defaultdict(list)
+        for uid in self.uids:
+            vp = self.video_paths[uid]
+            dir_to_uids[os.path.dirname(vp)].append((uid, os.path.basename(vp)))
+        valid_uids = []
+        for d, items in dir_to_uids.items():
+            try:
+                existing = set(os.listdir(d))
+            except FileNotFoundError:
+                continue
+            for uid, basename in items:
+                if basename in existing:
+                    valid_uids.append(uid)
+        self.uids = valid_uids
+
         if self.opt.input_plucker:
             existing_vipe = set(os.listdir(os.path.join(self.root, "vipe")))
             self.uids = [uid for uid in self.uids if f"{uid}.npz" in existing_vipe]
         self.valid_idxs = list(range(len(self.uids)))
 
         # Save to /tmp cache so future runs on this node skip the slow remote listdir
-        cached = {"uids": self.uids, "caption_data": self.caption_data}
+        cached = {"uids": self.uids, "caption_data": self.caption_data, "video_paths": self.video_paths}
         try:
             with open(cache_path, "wb") as f:
                 pickle.dump(cached, f, protocol=4)
@@ -161,7 +189,7 @@ class InternalActionDataset(BaseDataset):
         end_states = [all_end_states[ci] for ci in clip_idxs]
 
         # Sample frames
-        video_path = os.path.join(self.root, "video", f"{uid}.mp4")
+        video_path = self.video_paths[uid]
         vr = VideoReader(str(video_path), ctx=cpu(0))
         num_frames, fps, (H, W) = len(vr), vr.get_avg_fps(), vr[0].shape[:2]
 
@@ -296,12 +324,12 @@ class InternalActionDataset(BaseDataset):
         return return_dict
 
     @staticmethod
-    def _cache_key(opt: Options, root: str, training: bool) -> str:
+    def _cache_key(opt: Options, root: str, training: bool, paths: List[str]) -> str:
         """Cache key captures all factors that affect `self.uids`."""
         factors = (
             root,
             training,
-            opt.action_data_path,
+            tuple(paths),
             opt.input_plucker,
         )
         key = hashlib.md5(str(factors).encode()).hexdigest()[:12]
