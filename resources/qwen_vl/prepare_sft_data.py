@@ -609,6 +609,10 @@ def main():
                         help="Optional cap on number of UIDs.")
     parser.add_argument("--num_workers", type=int, default=8,
                         help="Parallel workers.")
+    parser.add_argument("--resume", action="store_true",
+                        help="Resume from a previous interrupted run. Scans "
+                             "existing JSONL for already-processed UIDs and "
+                             "skips them. Appends new results to the JSONL.")
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 
@@ -642,20 +646,44 @@ def main():
     # Build work items
     build_judge = not args.no_judge
     judge_per_seg = min(args.judge_per_seg, 4)
+
+    # Resume: scan existing JSONL for already-processed UIDs
+    jsonl_path = os.path.join(args.output_dir, f"{split_name}.jsonl")
+    done_uids: set[str] = set()
+    if args.resume and os.path.exists(jsonl_path):
+        # Each line has an "images" field with paths like ".../images/{uid}_s0_f0.jpg"
+        # Extract UIDs from image paths to find completed UIDs
+        import re
+        uid_pattern = re.compile(r'/([^/]+)_s\d+')
+        with open(jsonl_path, "r") as f:
+            for line in f:
+                try:
+                    sample = json.loads(line)
+                    imgs = sample.get("images", [])
+                    if imgs:
+                        m = uid_pattern.search(imgs[0])
+                        if m:
+                            done_uids.add(m.group(1))
+                except (json.JSONDecodeError, IndexError):
+                    continue
+        print(f"  Resume: {len(done_uids)} UIDs already processed, skipping")
+
+    remaining_uids = [uid for uid in uids if uid not in done_uids]
+
     work_items = [
         (uid, uid_to_data[uid], args.frame_strategy, args.num_frames,
          images_dir, args.history_vision, args.history_window, build_judge, judge_per_seg)
-        for uid in uids
+        for uid in remaining_uids
     ]
 
     # Process
-    jsonl_path = os.path.join(args.output_dir, f"{split_name}.jsonl")
     num_caption, num_judge = 0, 0
+    file_mode = "a" if args.resume and done_uids else "w"
 
     print(f"Processing {len(work_items)} UIDs with {args.num_workers} workers ...")
     print(f"  Tasks: next-segment prediction"
           f"{' + action completion judge' if build_judge else ''}")
-    with open(jsonl_path, "w") as f_out:
+    with open(jsonl_path, file_mode) as f_out:
         if args.num_workers <= 1:
             for i, item in enumerate(work_items):
                 if (i + 1) % 100 == 0:
