@@ -134,30 +134,6 @@ class Options:
     rope_outside: bool = False
     use_flexattn: bool = True  # set to False to save memory; `block_mask` in flex_attn takes so much memory!
     prefill_image: bool = True
-        ## TTT
-    use_ttt: bool = False
-    ttt_layers: Optional[str] = None  # e.g. "0,2,4,6,8"; None means all layers when `use_ttt=True`
-    ttt_num_fw_heads: int = 8
-    ttt_fw_head_dim: Optional[int] = None  # None = same as attention `head_dim`
-    ttt_chunk_size: Optional[int] = None  # None = `frame_seqlen * chunk_size`
-    ttt_w0_w2_low_rank: int = 32
-    ttt_use_muon: bool = True
-    ttt_use_momentum: bool = True
-    ttt_prenorm: bool = True
-    ttt_use_conv: bool = False
-    ttt_conv_kernel: int = 3
-        ## GatedDeltaNet
-    use_gdn: bool = False
-    gdn_layers: Optional[str] = None  # e.g. "0,2,4,6,8"; None means all layers when `use_gdn=True`
-    gdn_num_heads: int = 8
-    gdn_head_qk_dim: Optional[int] = None  # None = same as attention `head_dim`
-    gdn_head_v_dim: Optional[int] = None   # None = same as `gdn_head_qk_dim`
-    gdn_causal_mode: Literal["bidirectional", "causal"] = "bidirectional"
-    gdn_chunk_size: Optional[int] = None  # None = `frame_seqlen * chunk_size`
-    gdn_use_conv: bool = False
-    gdn_conv_kernel: int = 3
-        ## Attention gate (for progressive GDN/TTT-only transition)
-    attn_gate_layers: Optional[str] = None  # e.g. "0,2,4,6,8"; layers where attention output gets a learnable gate (init 1.)
         ## Load pre-trained models
     generator_path: Optional[str] = None
     lora_path: Optional[str] = None
@@ -278,7 +254,8 @@ class Options:
         if self.max_window_size is None:
             self.max_window_size = (self.num_input_frames - 1) // self.compression_ratio[0] + 1 - self.sink_size
         if self.max_kvcache_size is None:
-            self.max_kvcache_size = self.max_window_size + self.sink_size
+            # self.max_kvcache_size = self.max_window_size + self.sink_size
+            self.max_kvcache_size = (self.num_input_frames - 1) // self.compression_ratio[0] + 1  # to avoid errors in gradient checkpointing when self-forcing training
         self.frame_seqlen = (
             self.input_res[0] // self.compression_ratio[1] // 2 *  # `2`: patch size in DiT is hard-coded to 2
             self.input_res[1] // self.compression_ratio[2] // 2
@@ -287,35 +264,6 @@ class Options:
         self.da3_max_attention_size = (self.max_window_size + self.sink_size) * (self.frame_seqlen // (self.da3_down_ratio * self.da3_down_ratio) + 1)  # `+1` for camera token
         self.max_kvcache_attention_size = self.max_kvcache_size * self.frame_seqlen
         self.da3_max_kvcache_attention_size = self.max_kvcache_size * (self.frame_seqlen // (self.da3_down_ratio * self.da3_down_ratio) + 1)  # `+1` for camera token
-
-        # TTT
-        if self.use_ttt:
-            if self.ttt_chunk_size is None:
-                self.ttt_chunk_size = self.frame_seqlen * self.chunk_size
-            # Parse `ttt_layers` from comma-separated string to list of ints
-            if self.ttt_layers is not None:
-                self.ttt_layers_list = [int(x) for x in self.ttt_layers.split(",")]
-            else:
-                self.ttt_layers_list = None  # will be resolved after model is loaded
-        else:
-            self.ttt_layers_list = None
-
-        # GatedDeltaNet
-        if self.use_gdn:
-            if self.gdn_chunk_size is None:
-                self.gdn_chunk_size = self.frame_seqlen * self.chunk_size
-            if self.gdn_layers is not None:
-                self.gdn_layers_list = [int(x) for x in self.gdn_layers.split(",")]
-            else:
-                self.gdn_layers_list = None  # will be resolved after model is loaded
-        else:
-            self.gdn_layers_list = None
-
-        # Attention gate
-        if self.attn_gate_layers is not None:
-            self.attn_gate_layers_list = [int(x) for x in self.attn_gate_layers.split(",")]
-        else:
-            self.attn_gate_layers_list = None
 
 
 # Set all options for different tasks and models
@@ -356,13 +304,9 @@ opt_dict["wan2.1_t2v"] = Options(
     # no_noise_for_da3=True,
     only_train_resdit=False,  # True
     #
-    use_ttt=False,  # True
-    #
-    use_gdn=False,  # True
-    #
     input_plucker=False,  # True
     input_timestamps=True,  # False
-    exclude_name_lr_mult="gdn_branch,ttt_branch,plucker_embed,timestamp_embed,extra_condition_embed",
+    exclude_name_lr_mult="plucker_embed,timestamp_embed,extra_condition_embed",
     #
     # load_conf=True,
     # input_pcrender=True,

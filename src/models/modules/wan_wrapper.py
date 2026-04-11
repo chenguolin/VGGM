@@ -147,14 +147,6 @@ class WanDiffusionWrapper(nn.Module):
         rope_outside: bool = False,
         use_flexattn: bool = True,
         #
-        ttt_layers: Optional[str] = None,
-        ttt_config: Optional[dict] = None,
-        #
-        gdn_layers: Optional[list] = None,
-        gdn_config: Optional[dict] = None,
-        #
-        attn_gate_layers: Optional[list] = None,
-        #
         skip_pretrained_weights: bool = False,
         #
         **kwargs,  # for compatibility
@@ -182,13 +174,6 @@ class WanDiffusionWrapper(nn.Module):
                     rope_outside=rope_outside,
                     use_flexattn=use_flexattn,
                 )
-            # Inject TTT branches after pretrained weights are loaded, so that
-            # TTT parameters don't interfere with `from_pretrained`
-            self.model.inject_ttt(ttt_layers=ttt_layers, ttt_config=ttt_config)
-            # Inject GDN branches (same pattern as TTT)
-            self.model.inject_gdn(gdn_layers=gdn_layers, gdn_config=gdn_config)
-            # Inject attention gates for progressive SWA → GDN/TTT transition
-            self.model.inject_attn_gate(attn_gate_layers=attn_gate_layers)
         else:
             if skip_pretrained_weights:
                 # Skip loading pretrained weights — instantiate architecture only
@@ -246,10 +231,6 @@ class WanDiffusionWrapper(nn.Module):
         kv_cache: Optional[List[Dict[str, Any]]] = None,
         crossattn_cache: Optional[List[Dict[str, Any]]] = None,
         current_start: Optional[int] = 0,
-        #
-        ttt_state: Optional[list] = None,
-        #
-        gdn_state: Optional[list] = None,
         #
         kv_cache_da3: Optional[List[Dict[str, Any]]] = None,  # not used; for compatibility
         current_start_da3: Optional[int] = 0,  # not used; for compatibility
@@ -339,10 +320,6 @@ class WanDiffusionWrapper(nn.Module):
                 kv_cache=kv_cache,
                 crossattn_cache=crossattn_cache,
                 current_start=current_start,
-                #
-                ttt_state=ttt_state,
-                #
-                gdn_state=gdn_state,
                 #
                 clip_query_lens=clip_query_lens,
                 clip_context_lens=clip_context_lens,

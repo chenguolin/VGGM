@@ -38,8 +38,6 @@ class SelfForcingTrainingPipeline:
         self.kv_cache_pos = None
         self.crossattn_cache_pos = None
         self.kv_cache_pos_da3 = None
-        self.ttt_state_pos = None
-        self.gdn_state_pos = None
 
         self.ray_loss_fn, self.camera_loss_fn = XYZLoss(opt), CameraLoss(opt)
 
@@ -178,9 +176,6 @@ class SelfForcingTrainingPipeline:
                             crossattn_cache=self.crossattn_cache_pos,
                             current_start=chunk_idx * self.opt.chunk_size * frame_seqlen,
                             #
-                            ttt_state=self.ttt_state_pos,
-                            gdn_state=self.gdn_state_pos,
-                            #
                             kv_cache_da3=self.kv_cache_pos_da3,
                             current_start_da3=chunk_idx * self.opt.chunk_size * (frame_seqlen // (self.opt.da3_down_ratio * self.opt.da3_down_ratio) + 1),  # `+1` for camera token
                             #
@@ -226,8 +221,6 @@ class SelfForcingTrainingPipeline:
                         crossattn_cache=self.crossattn_cache_pos,
                         current_start=chunk_idx * self.opt.chunk_size * frame_seqlen,
                         #
-                        ttt_state=self.ttt_state_pos,
-                        #
                         kv_cache_da3=self.kv_cache_pos_da3,
                         current_start_da3=chunk_idx * self.opt.chunk_size * (frame_seqlen // (self.opt.da3_down_ratio * self.opt.da3_down_ratio) + 1),  # `+1` for camera token
                         #
@@ -271,8 +264,6 @@ class SelfForcingTrainingPipeline:
                         kv_cache=self.kv_cache_pos,
                         crossattn_cache=self.crossattn_cache_pos,
                         current_start=chunk_idx * self.opt.chunk_size * frame_seqlen,
-                        #
-                        ttt_state=self.ttt_state_pos,
                         #
                         kv_cache_da3=self.kv_cache_pos_da3,
                         current_start_da3=chunk_idx * self.opt.chunk_size * (frame_seqlen // (self.opt.da3_down_ratio * self.opt.da3_down_ratio) + 1),  # `+1` for camera token
@@ -435,38 +426,6 @@ class SelfForcingTrainingPipeline:
                 "local_end_index": torch.tensor([0], dtype=torch.long, device=device),
             })
         self.kv_cache_pos = kv_cache_pos  # always store the clean cache
-
-        # TTT state initialization
-        if self.opt.use_ttt and self.diffusion.model.use_ttt:
-            from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
-            # `init_state` reads TTT fast weight parameters which may be sharded
-            # by FSDP; summon full params so we get the correct shapes
-            ctx = FSDP.summon_full_params(self.diffusion) \
-                if isinstance(self.diffusion, FSDP) else nullcontext()
-            with ctx:
-                ttt_state_pos = []
-                for block in self.diffusion.model.blocks:
-                    if hasattr(block.self_attn, "ttt_branch"):
-                        ttt_state_pos.append(
-                            block.self_attn.ttt_branch.init_state(batch_size, device, dtype))
-                    else:
-                        ttt_state_pos.append(None)
-            self.ttt_state_pos = ttt_state_pos
-        else:
-            self.ttt_state_pos = None
-
-        # GDN state initialization
-        if self.opt.use_gdn and self.diffusion.model.use_gdn:
-            gdn_state_pos = []
-            for block in self.diffusion.model.blocks:
-                if hasattr(block.self_attn, "gdn_branch"):
-                    gdn_state_pos.append(
-                        block.self_attn.gdn_branch.init_state(batch_size, device, dtype))
-                else:
-                    gdn_state_pos.append(None)
-            self.gdn_state_pos = gdn_state_pos
-        else:
-            self.gdn_state_pos = None
 
         if self.opt.load_da3:
             num_da3_blocks = len(self.diffusion.da3_model.backbone.pretrained.blocks)

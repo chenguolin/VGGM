@@ -177,13 +177,7 @@ class CausalWanSelfAttention(nn.Module):
                  use_flexattn=True,
                  #
                  qk_norm=True,
-                 eps=1e-6,
-                 #
-                 use_ttt=False,
-                 ttt_config=None,
-                 #
-                 use_gdn=False,
-                 gdn_config=None):
+                 eps=1e-6):
         assert dim % num_heads == 0
         super().__init__()
         self.dim = dim
@@ -205,32 +199,6 @@ class CausalWanSelfAttention(nn.Module):
         self.o = nn.Linear(dim, dim)
         self.norm_q = WanRMSNorm(dim, eps=eps) if qk_norm else nn.Identity()
         self.norm_k = WanRMSNorm(dim, eps=eps) if qk_norm else nn.Identity()
-
-        # (Optional) TTT branch
-        self.use_ttt = use_ttt
-        if use_ttt:
-            from .ttt import TTTBranch
-            ttt_config = ttt_config or {}
-            self.ttt_branch = TTTBranch(
-                dim=dim, num_heads=num_heads, **ttt_config)
-
-        # (Optional) GatedDeltaNet branch
-        self.use_gdn = use_gdn
-        if use_gdn:
-            from .gdn import GDNBranch
-            gdn_config = gdn_config or {}
-            self.gdn_branch = GDNBranch(
-                dim=dim, num_heads=num_heads, **gdn_config)
-
-        # (Optional) Attention gate for progressive SWA -> GDN/TTT transition.
-        # Learnable scalar that scales attention output; init to 1. (identity).
-        # When trained toward 0., attention is effectively removed for this layer.
-        self.use_attn_gate = False  # set to True via `inject_attn_gate()`
-
-    def enable_attn_gate(self):
-        """Enable a learnable gate on attention output (init 1.)."""
-        self.use_attn_gate = True
-        self.attn_gate = nn.Parameter(torch.ones(1))
 
     def _loop_attention(self, q, k, v, loop_attn_params):
         """Dispatch to diffusion forcing or teacher forcing loop attention."""
@@ -401,10 +369,6 @@ class CausalWanSelfAttention(nn.Module):
         current_start=0,  # use with `kv_cache`
         #
         loop_attn_params=None,
-        #
-        ttt_state=None,
-        #
-        gdn_state=None,
     ):
         r"""
         Args:
@@ -416,9 +380,6 @@ class CausalWanSelfAttention(nn.Module):
         b, s, n, d = *x.shape[:2], self.num_heads, self.head_dim
         sp_size = get_sp_world_size()
 
-        # Save input for TTT branch projections
-        hidden_states = x
-
         # query, key, value function
         def qkv_fn(x):
             q = self.norm_q(self.q(x)).view(b, s, n, d)
@@ -427,13 +388,6 @@ class CausalWanSelfAttention(nn.Module):
             return q, k, v
 
         q, k, v = qkv_fn(x)
-
-        # Save pre-RoPE Q/K/V for TTT / GDN before the KV-cache path may
-        # all-to-all them into head-parallel layout
-        if self.use_ttt:
-            ttt_q, ttt_k, ttt_v = q, k, v
-        if self.use_gdn:
-            gdn_q, gdn_k, gdn_v = q, k, v
 
         # No KV cache
         if kv_cache is None:
@@ -584,53 +538,8 @@ class CausalWanSelfAttention(nn.Module):
                 # Scatter sequence, gather heads
                 x = all_to_all(x, scatter_dim=1, gather_dim=2)
 
-        # (Optional) TTT branch (parallel with attention, uses pre-RoPE Q/K/V)
-        # Always uses the original seq-parallel Q/K/V saved above; TTT handles
-        # its own Ulysses-style all-to-all internally when `sp_size > 1`.
-
-        # Compute grid sizes for short conv (latent patch dims)
-        conv_grid = None
-        if (self.use_ttt and self.ttt_branch.use_conv) or \
-           (self.use_gdn and self.gdn_branch.use_conv):
-            _gs = grid_sizes[0]  # assume uniform batch
-            conv_grid = (_gs[0].item(), _gs[1].item(), _gs[2].item())
-
-        if self.use_ttt:
-            # Detect teacher forcing: sequence has [clean, noisy] layout
-            tf_clean_len = None
-            if kv_cache is None and (s == seq_lens[0].item() * 2 // sp_size):
-                tf_clean_len = seq_lens[0].item()  # total clean tokens (pre-SP)
-
-            # `ttt_state` is mutated in-place (like KV-cache)
-            ttt_output = self.ttt_branch(
-                ttt_q, ttt_k, ttt_v, hidden_states, ttt_state=ttt_state,
-                teacher_forcing_clean_len=tf_clean_len,
-                grid_sizes=conv_grid,
-            )
-
-        # (Optional) GDN branch (parallel with attention, uses pre-RoPE Q/K/V)
-        # Always uses the original seq-parallel Q/K/V saved above; GDN handles
-        # its own Ulysses-style all-to-all internally when `sp_size > 1`.
-        if self.use_gdn:
-            tf_clean_len = None
-            if kv_cache is None and (s == seq_lens[0].item() * 2 // sp_size):
-                tf_clean_len = seq_lens[0].item()
-
-            # `gdn_state` is mutated in-place (like KV-cache)
-            gdn_output = self.gdn_branch(
-                gdn_q, gdn_k, gdn_v, hidden_states, gdn_state=gdn_state,
-                teacher_forcing_clean_len=tf_clean_len,
-                grid_sizes=conv_grid,
-            )
-
         # output
         x = x.flatten(2)
-        if self.use_attn_gate:
-            x = self.attn_gate * x
-        if self.use_ttt:
-            x = x + ttt_output
-        if self.use_gdn:
-            x = x + gdn_output
         x = self.o(x)
         return x
 
@@ -650,13 +559,7 @@ class CausalWanAttentionBlock(nn.Module):
                  #
                  qk_norm=True,
                  cross_attn_norm=False,
-                 eps=1e-6,
-                 #
-                 use_ttt=False,
-                 ttt_config=None,
-                 #
-                 use_gdn=False,
-                 gdn_config=None):
+                 eps=1e-6):
         super().__init__()
         self.dim = dim
         self.ffn_dim = ffn_dim
@@ -674,8 +577,7 @@ class CausalWanAttentionBlock(nn.Module):
         self.norm1 = WanLayerNorm(dim, eps)
         self.self_attn = CausalWanSelfAttention(
             dim, num_heads, sink_size, max_attention_size, rope_outside, use_flexattn,
-            qk_norm, eps, use_ttt=use_ttt, ttt_config=ttt_config,
-            use_gdn=use_gdn, gdn_config=gdn_config)
+            qk_norm, eps)
         self.norm3 = WanLayerNorm(
             dim, eps,
             elementwise_affine=True) if cross_attn_norm else nn.Identity()
@@ -711,10 +613,6 @@ class CausalWanAttentionBlock(nn.Module):
         #
         loop_attn_params=None,
         #
-        ttt_state=None,
-        #
-        gdn_state=None,
-        #
         clip_query_lens=None,
         clip_context_lens=None,
         #
@@ -741,8 +639,6 @@ class CausalWanAttentionBlock(nn.Module):
             seq_lens, grid_sizes, freqs,
             block_mask, kv_cache, current_start,
             loop_attn_params=loop_attn_params,
-            ttt_state=ttt_state,
-            gdn_state=gdn_state,
         )
         # with torch.amp.autocast('cuda', dtype=torch.float32):
         x = x + y * e[2]
@@ -897,9 +793,6 @@ class CausalWanModel(ModelMixin, ConfigMixin):
         self.time_embedding = nn.Sequential(
             nn.Linear(freq_dim, dim), nn.SiLU(), nn.Linear(dim, dim))
         self.time_projection = nn.Sequential(nn.SiLU(), nn.Linear(dim, dim * 6))
-
-        self.use_ttt = False
-        self.use_gdn = False
 
         # blocks
         cross_attn_type = 't2v_cross_attn' if model_type == 't2v' else 'i2v_cross_attn'
@@ -1129,10 +1022,6 @@ class CausalWanModel(ModelMixin, ConfigMixin):
         crossattn_cache: dict = None,
         current_start: int = 0,
         #
-        ttt_state: list = None,
-        #
-        gdn_state: list = None,
-        #
         clip_query_lens: Optional[int] = None,
         clip_context_lens: Optional[int] = None,
     ):
@@ -1239,16 +1128,12 @@ class CausalWanModel(ModelMixin, ConfigMixin):
             return custom_forward
 
         for block_index, block in enumerate(self.blocks):
-            block_ttt_state = ttt_state[block_index] if ttt_state is not None else None
-            block_gdn_state = gdn_state[block_index] if gdn_state is not None else None
             this_kv_cache = kv_cache[block_index]
 
             if torch.is_grad_enabled() and self.use_gradient_checkpointing_offload:
                 kwargs.update({
                     "kv_cache": this_kv_cache,
                     "current_start": current_start,
-                    "ttt_state": block_ttt_state,
-                    "gdn_state": block_gdn_state,
                 })
                 with torch.autograd.graph.save_on_cpu():
                     x = torch.utils.checkpoint.checkpoint(
@@ -1258,8 +1143,6 @@ class CausalWanModel(ModelMixin, ConfigMixin):
                 kwargs.update({
                     "kv_cache": this_kv_cache,
                     "current_start": current_start,
-                    "ttt_state": block_ttt_state,
-                    "gdn_state": block_gdn_state,
                 })
                 x = torch.utils.checkpoint.checkpoint(
                     create_custom_forward(block),
@@ -1269,8 +1152,6 @@ class CausalWanModel(ModelMixin, ConfigMixin):
                     "kv_cache": this_kv_cache,
                     "crossattn_cache": crossattn_cache[block_index] if crossattn_cache is not None else None,
                     "current_start": current_start,
-                    "ttt_state": block_ttt_state,
-                    "gdn_state": block_gdn_state,
                 })
                 x = block(x, **kwargs)
 
@@ -1507,8 +1388,6 @@ class CausalWanModel(ModelMixin, ConfigMixin):
         if kwargs.get("kv_cache", None) is not None:
             return self._forward_inference(*args, **kwargs)
         else:
-            kwargs.pop("ttt_state", None)  # not used in training forward
-            kwargs.pop("gdn_state", None)  # not used in training forward
             return self._forward_train(*args, **kwargs)
 
     def unpatchify(self, x, grid_sizes):
@@ -1559,93 +1438,3 @@ class CausalWanModel(ModelMixin, ConfigMixin):
 
         # init output layer
         nn.init.zeros_(self.head.head.weight)
-
-    def inject_ttt(self, ttt_layers=None, ttt_config=None):
-        """
-        Inject TTTBranch into specified attention blocks AFTER pretrained weights
-        have been loaded. This avoids TTT parameters interfering with
-        `from_pretrained` / `load_state_dict`.
-
-        Args:
-            ttt_layers: List of layer indices to inject TTT into. If None and
-                `ttt_config` is provided, inject into all layers.
-            ttt_config: Dict of TTTBranch kwargs. If None, no injection is done.
-        """
-        if ttt_config is None and ttt_layers is None:
-            return
-
-        # Determine which layers get TTT
-        if ttt_layers is None and ttt_config is not None:
-            ttt_layer_set = set(range(self.num_layers))
-        elif ttt_layers is not None:
-            ttt_layer_set = set(ttt_layers)
-        else:
-            ttt_layer_set = set()
-
-        if len(ttt_layer_set) == 0:
-            return
-
-        self.use_ttt = True
-        ttt_config = ttt_config or {}
-
-        from .ttt import TTTBranch
-        for i in ttt_layer_set:
-            block = self.blocks[i]
-            sa = block.self_attn
-            sa.use_ttt = True
-            sa.ttt_branch = TTTBranch(
-                dim=sa.dim, num_heads=sa.num_heads, **ttt_config)
-
-    def inject_gdn(self, gdn_layers=None, gdn_config=None):
-        """
-        Inject GDNBranch into specified attention blocks AFTER pretrained weights
-        have been loaded. This avoids GDN parameters interfering with
-        `from_pretrained` / `load_state_dict`.
-
-        Args:
-            gdn_layers: List of layer indices to inject GDN into. If None and
-                `gdn_config` is provided, inject into all layers.
-            gdn_config: Dict of GDNBranch kwargs. If None, no injection is done.
-        """
-        if gdn_config is None and gdn_layers is None:
-            return
-
-        # Determine which layers get GDN
-        if gdn_layers is None and gdn_config is not None:
-            gdn_layer_set = set(range(self.num_layers))
-        elif gdn_layers is not None:
-            gdn_layer_set = set(gdn_layers)
-        else:
-            gdn_layer_set = set()
-
-        if len(gdn_layer_set) == 0:
-            return
-
-        self.use_gdn = True
-        gdn_config = gdn_config or {}
-
-        from .gdn import GDNBranch
-        for i in gdn_layer_set:
-            block = self.blocks[i]
-            sa = block.self_attn
-            sa.use_gdn = True
-            sa.gdn_branch = GDNBranch(
-                dim=sa.dim, num_heads=sa.num_heads, **gdn_config)
-
-    def inject_attn_gate(self, attn_gate_layers=None):
-        """
-        Inject learnable attention gates into specified layers AFTER pretrained
-        weights have been loaded. Each gate is a scalar parameter initialized
-        to 1. that multiplies the attention output before adding TTT/GDN output.
-
-        Used for progressive SWA -> GDN/TTT transition: train the gate toward 0
-        to let GDN/TTT take over, then remove attention computation entirely.
-
-        Args:
-            attn_gate_layers: List of layer indices. If None, no injection.
-        """
-        if attn_gate_layers is None:
-            return
-
-        for i in attn_gate_layers:
-            self.blocks[i].self_attn.enable_attn_gate()

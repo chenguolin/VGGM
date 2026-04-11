@@ -86,48 +86,6 @@ class Wan(nn.Module):
         else:
             self.text_encoder = None
 
-        # TTT config (passed to CausalWanModel through wrapper)
-        if opt.use_ttt and opt.is_causal:
-            num_layers = None  # will be resolved from pretrained config
-            if opt.ttt_layers_list is not None:
-                ttt_layers = opt.ttt_layers_list
-            else:
-                ttt_layers = None  # default: all layers (resolved in CausalWanModel)
-            ttt_layers=ttt_layers
-            ttt_config=dict(
-                num_fw_heads=opt.ttt_num_fw_heads,
-                fw_head_dim=opt.ttt_fw_head_dim,
-                ttt_chunk_size=opt.ttt_chunk_size,
-                w0_w2_low_rank=opt.ttt_w0_w2_low_rank,
-                use_muon=opt.ttt_use_muon,
-                use_momentum=opt.ttt_use_momentum,
-                prenorm=opt.ttt_prenorm,
-                use_conv=opt.ttt_use_conv,
-                conv_kernel_size=opt.ttt_conv_kernel,
-            )
-        else:
-            ttt_layers = None
-            ttt_config = None
-
-        # GDN config (passed to CausalWanModel through wrapper)
-        if opt.use_gdn and opt.is_causal:
-            if opt.gdn_layers_list is not None:
-                gdn_layers = opt.gdn_layers_list
-            else:
-                gdn_layers = None  # default: all layers (resolved in CausalWanModel)
-            gdn_config = dict(
-                num_gdn_heads=opt.gdn_num_heads,
-                head_qk_dim=opt.gdn_head_qk_dim,
-                head_v_dim=opt.gdn_head_v_dim,
-                causal_mode=opt.gdn_causal_mode,
-                chunk_size=opt.gdn_chunk_size,
-                use_conv=opt.gdn_use_conv,
-                conv_kernel_size=opt.gdn_conv_kernel,
-            )
-        else:
-            gdn_layers = None
-            gdn_config = None
-
         # Diffusion model
         if not opt.load_da3:
             self.diffusion = WanDiffusionWrapper(
@@ -151,14 +109,6 @@ class Wan(nn.Module):
                 max_attention_size=opt.max_attention_size,
                 rope_outside=opt.rope_outside,
                 use_flexattn=opt.use_flexattn,
-                #
-                ttt_layers=ttt_layers,
-                ttt_config=ttt_config,
-                #
-                gdn_layers=gdn_layers,
-                gdn_config=gdn_config,
-                #
-                attn_gate_layers=opt.attn_gate_layers_list,
                 #
                 skip_pretrained_weights=opt.generator_path is not None,
             )
@@ -280,8 +230,6 @@ class Wan(nn.Module):
         self.kv_cache_pos, self.kv_cache_neg = None, None
         self.crossattn_cache_pos, self.crossattn_cache_neg = None, None
         self.kv_cache_pos_da3, self.kv_cache_neg_da3 = None, None
-        self.ttt_state_pos, self.ttt_state_neg = None, None
-        self.gdn_state_pos, self.gdn_state_neg = None, None
 
     def forward(self, *args, func_name="compute_loss", **kwargs):
         # To support different forward functions for models wrapped by `accelerate`
@@ -1015,8 +963,6 @@ class Wan(nn.Module):
                         crossattn_cache=self.crossattn_cache_pos,
                         current_start=chunk_idx * self.opt.chunk_size * frame_seqlen,
                         #
-                        ttt_state=self.ttt_state_pos,
-                        gdn_state=self.gdn_state_pos,
                         #
                         kv_cache_da3=self.kv_cache_pos_da3,
                         current_start_da3=chunk_idx * self.opt.chunk_size * (frame_seqlen // (self.opt.da3_down_ratio * self.opt.da3_down_ratio) + 1),  # `+1` for camera token
@@ -1041,8 +987,6 @@ class Wan(nn.Module):
                             crossattn_cache=self.crossattn_cache_neg,
                             current_start=chunk_idx * self.opt.chunk_size * frame_seqlen,
                             #
-                            ttt_state=self.ttt_state_neg,
-                            gdn_state=self.gdn_state_neg,
                             #
                             kv_cache_da3=self.kv_cache_neg_da3,
                             current_start_da3=chunk_idx * self.opt.chunk_size * (frame_seqlen // (self.opt.da3_down_ratio * self.opt.da3_down_ratio) + 1),  # `+1` for camera token
@@ -1099,8 +1043,6 @@ class Wan(nn.Module):
                     crossattn_cache=self.crossattn_cache_pos,
                     current_start=chunk_idx * self.opt.chunk_size * frame_seqlen,
                     #
-                    ttt_state=self.ttt_state_pos,
-                    gdn_state=self.gdn_state_pos,
                     #
                     kv_cache_da3=self.kv_cache_pos_da3,
                     current_start_da3=chunk_idx * self.opt.chunk_size * (frame_seqlen // (self.opt.da3_down_ratio * self.opt.da3_down_ratio) + 1),  # `+1` for camera token
@@ -1124,8 +1066,6 @@ class Wan(nn.Module):
                         crossattn_cache=self.crossattn_cache_neg,
                         current_start=chunk_idx * self.opt.chunk_size * frame_seqlen,
                         #
-                        ttt_state=self.ttt_state_neg,
-                        gdn_state=self.gdn_state_neg,
                         #
                         kv_cache_da3=self.kv_cache_neg_da3,
                         current_start_da3=chunk_idx * self.opt.chunk_size * (frame_seqlen // (self.opt.da3_down_ratio * self.opt.da3_down_ratio) + 1),  # `+1` for camera token
@@ -1472,9 +1412,6 @@ class Wan(nn.Module):
                 crossattn_cache=self.crossattn_cache_pos,
                 current_start=0,
                 #
-                ttt_state=self.ttt_state_pos,
-                gdn_state=self.gdn_state_pos,
-                #
                 kv_cache_da3=self.kv_cache_pos_da3,
                 current_start_da3=0,
                 #
@@ -1497,9 +1434,6 @@ class Wan(nn.Module):
                     kv_cache=self.kv_cache_neg,
                     crossattn_cache=self.crossattn_cache_neg,
                     current_start=0,
-                    #
-                    ttt_state=self.ttt_state_neg,
-                    gdn_state=self.gdn_state_neg,
                     #
                     kv_cache_da3=self.kv_cache_neg_da3,
                     current_start_da3=0,
@@ -1551,8 +1485,6 @@ class Wan(nn.Module):
                     crossattn_cache=self.crossattn_cache_pos,
                     current_start=(cache_start_chunk_idx + chunk_idx) * self.opt.chunk_size * frame_seqlen,
                     #
-                    ttt_state=self.ttt_state_pos,
-                    gdn_state=self.gdn_state_pos,
                     #
                     kv_cache_da3=self.kv_cache_pos_da3,
                     current_start_da3=(cache_start_chunk_idx + chunk_idx) * self.opt.chunk_size * (frame_seqlen // (self.opt.da3_down_ratio * self.opt.da3_down_ratio) + 1),  # `+1` for camera token
@@ -1577,8 +1509,6 @@ class Wan(nn.Module):
                         crossattn_cache=self.crossattn_cache_neg,
                         current_start=(cache_start_chunk_idx + chunk_idx) * self.opt.chunk_size * frame_seqlen,
                         #
-                        ttt_state=self.ttt_state_neg,
-                        gdn_state=self.gdn_state_neg,
                         #
                         kv_cache_da3=self.kv_cache_neg_da3,
                         current_start_da3=(cache_start_chunk_idx + chunk_idx) * self.opt.chunk_size * (frame_seqlen // (self.opt.da3_down_ratio * self.opt.da3_down_ratio) + 1),  # `+1` for camera token
@@ -1635,9 +1565,6 @@ class Wan(nn.Module):
                 crossattn_cache=self.crossattn_cache_pos,
                 current_start=(cache_start_chunk_idx + chunk_idx) * self.opt.chunk_size * frame_seqlen,
                 #
-                ttt_state=self.ttt_state_pos,
-                gdn_state=self.gdn_state_pos,
-                #
                 kv_cache_da3=self.kv_cache_pos_da3,
                 current_start_da3=(cache_start_chunk_idx + chunk_idx) * self.opt.chunk_size * (frame_seqlen // (self.opt.da3_down_ratio * self.opt.da3_down_ratio) + 1),  # `+1` for camera token
                 #
@@ -1659,9 +1586,6 @@ class Wan(nn.Module):
                     kv_cache=self.kv_cache_neg,
                     crossattn_cache=self.crossattn_cache_neg,
                     current_start=(cache_start_chunk_idx + chunk_idx) * self.opt.chunk_size * frame_seqlen,
-                    #
-                    ttt_state=self.ttt_state_neg,
-                    gdn_state=self.gdn_state_neg,
                     #
                     kv_cache_da3=self.kv_cache_neg_da3,
                     current_start_da3=(cache_start_chunk_idx + chunk_idx) * self.opt.chunk_size * (frame_seqlen // (self.opt.da3_down_ratio * self.opt.da3_down_ratio) + 1),  # `+1` for camera token
@@ -1907,50 +1831,6 @@ class Wan(nn.Module):
             })
         self.kv_cache_pos = kv_cache_pos  # always store the clean cache
         self.kv_cache_neg = kv_cache_neg  # always store the clean cache
-
-        # TTT state initialization
-        if self.opt.use_ttt and self.diffusion.model.use_ttt:
-            from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
-            # `init_state` reads TTT fast weight parameters which may be sharded
-            # by FSDP; summon full params per-block to avoid unsharding the entire
-            # model at once (which OOMs on large models like 14B)
-            is_fsdp = isinstance(self.diffusion, FSDP)
-            ttt_state_pos, ttt_state_neg = [], []
-            for block in self.diffusion.model.blocks:
-                if hasattr(block.self_attn, "ttt_branch"):
-                    ctx = FSDP.summon_full_params(block) \
-                        if is_fsdp else nullcontext()
-                    with ctx:
-                        ttt_state_pos.append(
-                            block.self_attn.ttt_branch.init_state(batch_size, device, dtype))
-                        ttt_state_neg.append(
-                            block.self_attn.ttt_branch.init_state(batch_size, device, dtype))
-                else:
-                    ttt_state_pos.append(None)
-                    ttt_state_neg.append(None)
-            self.ttt_state_pos = ttt_state_pos
-            self.ttt_state_neg = ttt_state_neg
-        else:
-            self.ttt_state_pos = None
-            self.ttt_state_neg = None
-
-        # GDN state initialization
-        if self.opt.use_gdn and self.diffusion.model.use_gdn:
-            gdn_state_pos, gdn_state_neg = [], []
-            for block in self.diffusion.model.blocks:
-                if hasattr(block.self_attn, "gdn_branch"):
-                    gdn_state_pos.append(
-                        block.self_attn.gdn_branch.init_state(batch_size, device, dtype))
-                    gdn_state_neg.append(
-                        block.self_attn.gdn_branch.init_state(batch_size, device, dtype))
-                else:
-                    gdn_state_pos.append(None)
-                    gdn_state_neg.append(None)
-            self.gdn_state_pos = gdn_state_pos
-            self.gdn_state_neg = gdn_state_neg
-        else:
-            self.gdn_state_pos = None
-            self.gdn_state_neg = None
 
         if self.opt.load_da3:
             num_da3_blocks = len(self.diffusion.da3_model.backbone.pretrained.blocks)
