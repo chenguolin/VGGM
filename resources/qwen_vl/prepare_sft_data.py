@@ -115,11 +115,26 @@ def save_pil_images(images: list, out_dir: str, prefix: str) -> list[str]:
 # Data loading
 # ──────────────────────────────────────────────────────────────────────
 
-def load_action_data(data_path: str) -> dict:
-    """Load JSONL and return {uid: caption_result}."""
-    with open(data_path, "r", encoding="utf-8") as f:
-        data = [json.loads(line) for line in f]
-    return {item["filename"]: item["caption_result"] for item in data}
+def load_action_data(data_paths: list[str]) -> dict:
+    """Load one or more JSONL files and return {uid: {caption_result, video_path}}.
+
+    Each JSONL line must have ``filename``, ``caption_result``, and optionally
+    ``video_path``.  When ``video_path`` is absent, falls back to
+    ``DATAROOT/video/<uid>.mp4``.
+    """
+    uid_to_data = {}
+    for data_path in data_paths:
+        with open(data_path, "r", encoding="utf-8") as f:
+            for line in f:
+                item = json.loads(line)
+                uid = item["filename"]
+                vp = item.get("video_path",
+                              os.path.join(DATAROOT, "video", f"{uid}.mp4"))
+                uid_to_data[uid] = {
+                    "caption_result": item["caption_result"],
+                    "video_path": vp,
+                }
+    return uid_to_data
 
 
 def split_uids(uid_to_data: dict, training: bool) -> list[str]:
@@ -132,10 +147,22 @@ def split_uids(uid_to_data: dict, training: bool) -> list[str]:
     else:
         uids = [uids[i] for i in indices[split_idx:]]
 
-    video_dir = os.path.join(DATAROOT, "video")
-    existing_videos = set(os.listdir(video_dir))
-    uids = [uid for uid in uids if f"{uid}.mp4" in existing_videos]
-    return uids
+    # Filter by video existence — group by directory for fast batch listdir
+    dir_to_uids: dict[str, list[tuple[str, str]]] = {}
+    for uid in uids:
+        vp = uid_to_data[uid]["video_path"]
+        d = os.path.dirname(vp)
+        dir_to_uids.setdefault(d, []).append((uid, os.path.basename(vp)))
+    valid = []
+    for d, items in dir_to_uids.items():
+        try:
+            existing = set(os.listdir(d))
+        except FileNotFoundError:
+            continue
+        for uid, basename in items:
+            if basename in existing:
+                valid.append(uid)
+    return valid
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -248,6 +275,25 @@ def build_judge_sample(
     }
 
 
+def _build_seg_text(seg: dict, seg_idx: int) -> str:
+    """Format a single history segment as text (no images)."""
+    if seg_idx == 0:
+        scene = seg["caption"]["caption_abs"]
+    else:
+        scene = seg["caption"].get("caption_delta", "") or seg["caption"]["caption_abs"]
+    hist_frames = _estimate_frames(
+        float(seg["start_time"]), float(seg["end_time"]))
+    desc = (
+        f"Segment {seg_idx + 1} ({hist_frames} frames): "
+        f"[{seg['action_label']}] "
+        f"{scene}"
+    )
+    end_state = seg["caption"].get("end_state", "")
+    if end_state:
+        desc += f" End state: {end_state}"
+    return desc
+
+
 def build_next_sample(
     global_caption: str,
     control_agent: str,
@@ -256,6 +302,7 @@ def build_next_sample(
     next_seg: dict,
     estimated_frames: int,
     history_vision: str = "all",
+    history_window: int = 0,
 ) -> dict:
     """Build an SFT sample for the next-segment prediction task.
 
@@ -270,6 +317,11 @@ def build_next_sample(
         estimated_frames: GT frame count for the target segment.
         history_vision: ``"none"``, ``"last"``, or ``"all"`` — controls which
             history segments include their key frames in the training sample.
+        history_window: Max number of recent history segments to include in
+            full detail.  When the history exceeds this, seg0 is kept as a
+            *sink*, middle segments are compressed into an action-label chain,
+            and only the last ``history_window`` segments keep full text +
+            frames.  0 (default) disables windowing — all history is included.
     """
     all_image_paths = []  # accumulate in order
     user_parts = []
@@ -280,14 +332,53 @@ def build_next_sample(
         f"Main character: {control_agent}"
     )
 
-    # History segments: interleave key frames and text
+    # ── Apply sliding window if needed ────────────────────────────
+    # Partition history into: [sink] + [skipped...] + [window...]
+    n_hist = len(history_segs)
+    use_window = history_window > 0 and n_hist > history_window + 1  # +1 for sink
+
+    if use_window:
+        sink_idx = [0]
+        window_start = n_hist - history_window
+        skipped_idx = list(range(1, window_start))
+        window_idx = list(range(window_start, n_hist))
+    else:
+        # No windowing — include everything
+        sink_idx = []
+        skipped_idx = []
+        window_idx = list(range(n_hist))
+
+    # ── Build history text ────────────────────────────────────────
     user_parts.append("Previous segments:")
-    for i, seg in enumerate(history_segs):
-        # Decide whether to include this segment's frames
+
+    # Sink segment (seg0): always include full text + frames
+    for i in sink_idx:
+        seg = history_segs[i]
+        if history_vision in ("all", "last") and i < len(history_image_paths) and history_image_paths[i]:
+            for path in history_image_paths[i]:
+                user_parts.append("<image>")
+                all_image_paths.append(path)
+        user_parts.append(_build_seg_text(seg, i))
+
+    # Skipped segments: compress into action-label chain
+    if skipped_idx:
+        labels = [
+            f"{history_segs[i]['action_label']} ({_estimate_frames(float(history_segs[i]['start_time']), float(history_segs[i]['end_time']))}f)"
+            for i in skipped_idx
+        ]
+        user_parts.append(
+            f"[Segments {skipped_idx[0] + 1}-{skipped_idx[-1] + 1} summary: "
+            + " → ".join(labels) + "]"
+        )
+
+    # Window segments: full text + frames
+    for i in window_idx:
+        seg = history_segs[i]
+        # Decide whether to include frames
         include_frames = False
         if history_vision == "all":
             include_frames = True
-        elif history_vision == "last" and i == len(history_segs) - 1:
+        elif history_vision == "last" and i == n_hist - 1:
             include_frames = True
 
         if include_frames and i < len(history_image_paths) and history_image_paths[i]:
@@ -295,21 +386,7 @@ def build_next_sample(
                 user_parts.append("<image>")
                 all_image_paths.append(path)
 
-        # Seg1 uses `caption_abs` (no prior segment to diff against);
-        # seg2+ uses `caption_delta` (describes change from previous seg)
-        if i == 0:
-            scene = seg["caption"]["caption_abs"]
-        else:
-            scene = seg["caption"].get("caption_delta", "") or seg["caption"]["caption_abs"]
-
-        seg_desc = (
-            f"Segment {i + 1}: [{seg['action_label']}] "
-            f"{scene}"
-        )
-        end_state = seg["caption"].get("end_state", "")
-        if end_state:
-            seg_desc += f" End state: {end_state}"
-        user_parts.append(seg_desc)
+        user_parts.append(_build_seg_text(seg, i))
 
     # Instruction: predict the next segment (no next-segment frames given)
     user_parts.append(
@@ -345,7 +422,10 @@ def build_next_sample(
 
 def process_one_uid(args_tuple):
     """Process a single UID: extract frames, build SFT samples."""
-    uid, caption_result, strategy, num_frames, images_dir, history_vision, max_segs, build_judge, judge_per_seg = args_tuple
+    uid, uid_data, strategy, num_frames, images_dir, history_vision, history_window, build_judge, judge_per_seg = args_tuple
+
+    caption_result = uid_data["caption_result"]
+    video_path = uid_data["video_path"]
 
     global_caption = caption_result.get("global_caption", "")
     control_agent = caption_result.get("control_agent", "")
@@ -354,12 +434,10 @@ def process_one_uid(args_tuple):
     if len(segments) < 2:
         return {"caption": [], "judge": []}
 
-    video_path = os.path.join(DATAROOT, "video", f"{uid}.mp4")
     if not os.path.exists(video_path):
         return {"caption": [], "judge": []}
 
-    # Limit number of segments to process
-    n_segs = min(len(segments), max_segs)
+    n_segs = len(segments)
 
     # Extract and save frames for each segment (using the configured strategy)
     seg_image_paths = []
@@ -394,6 +472,7 @@ def process_one_uid(args_tuple):
                 next_seg=segments[si],
                 estimated_frames=est_frames,
                 history_vision=history_vision,
+                history_window=history_window,
             )
             caption_lines.append(json.dumps(sample, ensure_ascii=False))
         except (KeyError, IndexError):
@@ -495,9 +574,14 @@ def main():
     parser = argparse.ArgumentParser(
         description="Prepare SFT data for Qwen3-VL structured caption prediction."
     )
-    parser.add_argument("--data_path", type=str,
-                        default="video_action_caption_70w_p1.jsonl",
-                        help="JSONL filename relative to DATAROOT.")
+    parser.add_argument("--data_path", type=str, nargs="+",
+                        default=[
+                            "video_action_caption/video_action_caption_70w_qwen35.jsonl",
+                            "video_action_caption/video_action_caption_AAAGames_qwen35.jsonl",
+                            "video_action_caption/video_action_caption_ct_qwen35.jsonl",
+                        ],
+                        help="JSONL file(s). Paths relative to DATAROOT or "
+                             "absolute. Multiple files are merged.")
     parser.add_argument("--output_dir", type=str,
                         default="/tmp/qwen_vl_sft_structured",
                         help="Output directory for images and JSONL.")
@@ -509,8 +593,11 @@ def main():
     parser.add_argument("--history_vision", type=str, default="all",
                         choices=["none", "last", "all"],
                         help="Visual history mode for next-segment samples.")
-    parser.add_argument("--max_segs", type=int, default=8,
-                        help="Max segments per video to process.")
+    parser.add_argument("--history_window", type=int, default=24,
+                        help="Sliding window size for history segments. "
+                             "When > 0, only seg0 (sink) + last W segments "
+                             "are kept in full; middle segments are compressed "
+                             "into an action-label chain. 0 = no windowing.")
     parser.add_argument("--no_judge", action="store_true",
                         help="Skip judge (action completion) samples.")
     parser.add_argument("--judge_per_seg", type=int, default=1,
@@ -530,10 +617,17 @@ def main():
     images_dir = os.path.join(args.output_dir, "images")
     os.makedirs(images_dir, exist_ok=True)
 
-    # Load caption data
-    data_path = os.path.join(DATAROOT, args.data_path)
-    print(f"Loading captions from {data_path} ...")
-    uid_to_data = load_action_data(data_path)
+    # Load caption data (support multiple files)
+    data_paths = []
+    for p in args.data_path:
+        if os.path.isabs(p):
+            data_paths.append(p)
+        else:
+            data_paths.append(os.path.join(DATAROOT, p))
+    print(f"Loading captions from {len(data_paths)} file(s):")
+    for p in data_paths:
+        print(f"  {p}")
+    uid_to_data = load_action_data(data_paths)
     print(f"  Total UIDs: {len(uid_to_data)}")
 
     # Split
@@ -550,7 +644,7 @@ def main():
     judge_per_seg = min(args.judge_per_seg, 4)
     work_items = [
         (uid, uid_to_data[uid], args.frame_strategy, args.num_frames,
-         images_dir, args.history_vision, args.max_segs, build_judge, judge_per_seg)
+         images_dir, args.history_vision, args.history_window, build_judge, judge_per_seg)
         for uid in uids
     ]
 

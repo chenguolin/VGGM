@@ -400,6 +400,7 @@ def evaluate_sample(
     num_frames_vlm: int,
     use_video: bool,
     history_vision: str,
+    history_window: int,
     temperature: float,
     enable_thinking: bool,
 ) -> dict:
@@ -455,6 +456,15 @@ def evaluate_sample(
     # Run prediction — use GT `global_caption`, `control_agent`, and seg0
     # as `initial_context` (these are user-provided in the real T2V
     # pipeline, not predicted by the VLM).
+    # Compute per-segment frame counts from image tensors
+    seg_frame_counts = []
+    for ci in range(num_clips):
+        frames = clip_images[ci] if clip_images is not None else None
+        if frames is not None and hasattr(frames, "shape") and frames.ndim >= 1:
+            seg_frame_counts.append(frames.shape[0])
+        else:
+            seg_frame_counts.append(0)
+
     initial_context = {
         "global_caption": gt_global_caption,
         "control_agent": gt_control_agent,
@@ -462,6 +472,7 @@ def evaluate_sample(
             "action_label": gt_action_labels[0] if gt_action_labels else "",
             "caption_abs": gt_captions_abs[0] if gt_captions_abs else "",
             "end_state": gt_end_states[0] if gt_end_states else "",
+            "estimated_frames": seg_frame_counts[0] if seg_frame_counts else 0,
         },
     }
     prediction = predictor.predict_sequence(
@@ -469,6 +480,7 @@ def evaluate_sample(
         videos_per_segment=videos_per_segment if use_video else None,
         initial_context=initial_context,
         history_vision=history_vision,
+        history_window=history_window,
         temperature=temperature,
         enable_thinking=enable_thinking,
     )
@@ -590,6 +602,11 @@ def main():
                              "'none' = text-only history; "
                              "'last' = only previous segment's key frames; "
                              "'all' = all history segments' key frames.")
+    parser.add_argument("--history_window", type=int, default=24,
+                        help="Sliding window size for history segments. "
+                             "When > 0, only seg0 (sink) + last W segments "
+                             "are in full detail; middle segments compressed "
+                             "into action-label chain. 0 = no windowing.")
     parser.add_argument("--use_video", action="store_true",
                         help="Pass segments as video files instead of frames.")
     parser.add_argument("--temperature", type=float, default=0.,
@@ -657,6 +674,7 @@ def main():
                         predictor, sample, tmp_dir,
                         args.frame_strategy, args.num_frames_for_vlm,
                         args.use_video, args.history_vision,
+                        args.history_window,
                         args.temperature, args.enable_thinking,
                     )
                     predict_results.append(result)

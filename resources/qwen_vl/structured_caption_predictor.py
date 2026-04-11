@@ -316,6 +316,7 @@ class StructuredCaptionPredictor:
         control_agent: str = "",
         history: Optional[list[dict]] = None,
         history_images: Optional[list[Optional[list[str]]]] = None,
+        history_window: int = 0,
         max_new_tokens: int = 512,
         temperature: float = 0.,
         enable_thinking: bool = False,
@@ -334,6 +335,10 @@ class StructuredCaptionPredictor:
                 segment.  When provided, key frames from previous segments
                 are included as visual context alongside their text
                 descriptions.
+            history_window: Max recent segments to include in full detail.
+                When > 0, seg0 is kept as a sink, middle segments are
+                compressed into an action-label chain, and only the last
+                W segments keep full text + frames.  0 = no windowing.
             max_new_tokens: Max generation length.
             temperature: Sampling temperature (0 = greedy).
             enable_thinking: Enable Qwen3 reasoning mode.
@@ -356,33 +361,78 @@ class StructuredCaptionPredictor:
             "text": f"Video overview: {global_caption}\nMain character: {control_agent}",
         })
 
-        # History segments: interleave key frames and text descriptions
+        # ── Partition history: sink + skipped + window ────────────
+        n_hist = len(history)
+        use_window = history_window > 0 and n_hist > history_window + 1
+
+        if use_window:
+            sink_idx = [0]
+            window_start = n_hist - history_window
+            skipped_idx = list(range(1, window_start))
+            window_idx = list(range(window_start, n_hist))
+        else:
+            sink_idx = []
+            skipped_idx = []
+            window_idx = list(range(n_hist))
+
+        def _seg_text(i, seg):
+            """Format segment text with frame count."""
+            if i == 0:
+                scene = seg.get("caption_abs", "N/A")
+            else:
+                scene = seg.get("caption_delta", "") or seg.get("caption_abs", "N/A")
+            est = seg.get("estimated_frames", "")
+            frames_str = f" ({est} frames)" if est else ""
+            desc = (
+                f"Segment {i + 1}{frames_str}: "
+                f"[{seg.get('action_label', 'N/A')}] {scene}"
+            )
+            end = seg.get("end_state", "")
+            if end:
+                desc += f" End state: {end}"
+            return desc
+
+        def _add_images(i):
+            """Append image entries for segment *i*."""
+            imgs = history_images[i] if i < len(history_images) else None
+            if imgs:
+                for img_path in imgs:
+                    user_content.append({
+                        "type": "image",
+                        "image": img_path,
+                        "min_pixels": 64 * 28 * 28,
+                        "max_pixels": self.max_pixels,
+                    })
+
+        # ── Build history ─────────────────────────────────────────
         if history:
             user_content.append({"type": "text", "text": "Previous segments:"})
-            for i, seg in enumerate(history):
-                # History key frames (if available)
-                hist_imgs = history_images[i] if i < len(history_images) else None
-                if hist_imgs:
-                    for img_path in hist_imgs:
-                        user_content.append({
-                            "type": "image",
-                            "image": img_path,
-                            "min_pixels": 64 * 28 * 28,
-                            "max_pixels": self.max_pixels,
-                        })
-                # History text: seg1 uses `caption_abs`, seg2+ uses `caption_delta`
-                if i == 0:
-                    scene = seg.get("caption_abs", "N/A")
-                else:
-                    scene = seg.get("caption_delta", "") or seg.get("caption_abs", "N/A")
-                seg_desc = (
-                    f"Segment {i + 1}: [{seg.get('action_label', 'N/A')}] "
-                    f"{scene}"
-                )
-                end = seg.get("end_state", "")
-                if end:
-                    seg_desc += f" End state: {end}"
-                user_content.append({"type": "text", "text": seg_desc})
+
+            # Sink (seg0): always full text + frames
+            for i in sink_idx:
+                _add_images(i)
+                user_content.append({"type": "text", "text": _seg_text(i, history[i])})
+
+            # Skipped: action-label chain summary
+            if skipped_idx:
+                labels = []
+                for i in skipped_idx:
+                    seg = history[i]
+                    est = seg.get("estimated_frames", "")
+                    f_str = f" ({est}f)" if est else ""
+                    labels.append(f"{seg.get('action_label', '?')}{f_str}")
+                user_content.append({
+                    "type": "text",
+                    "text": (
+                        f"[Segments {skipped_idx[0] + 1}-{skipped_idx[-1] + 1} "
+                        f"summary: " + " → ".join(labels) + "]"
+                    ),
+                })
+
+            # Window: full text + frames
+            for i in window_idx:
+                _add_images(i)
+                user_content.append({"type": "text", "text": _seg_text(i, history[i])})
 
         # Instruction
         user_content.append({
@@ -476,6 +526,7 @@ class StructuredCaptionPredictor:
         images_per_segment: Optional[list[Optional[list[str]]]] = None,
         videos_per_segment: Optional[list[Optional[str]]] = None,
         history_vision: str = "all",
+        history_window: int = 0,
         initial_context: Optional[dict] = None,
         max_new_tokens: int = 512,
         temperature: float = 0.,
@@ -568,6 +619,7 @@ class StructuredCaptionPredictor:
                 control_agent=control_agent,
                 history=segments,
                 history_images=hist_images,
+                history_window=history_window,
                 max_new_tokens=max_new_tokens,
                 temperature=temperature,
                 enable_thinking=enable_thinking,
